@@ -7,7 +7,8 @@ use aiken/math
 use cardano/address.{Address}
 use cardano/assets.{Assets}
 use cardano/transaction.{
-  InlineDatum, Input, Output, OutputReference, Transaction, ValidityRange,
+  InlineDatum, Input, NoDatum, Output, OutputReference, Transaction,
+  ValidityRange,
 }
 use cardano_account_custody_contract/account
 use cardano_account_custody_contract/state
@@ -163,6 +164,30 @@ pub fn pays_only_recipients(
   )
 }
 
+/// Whether every output paid back to the account, other than the control
+/// output, is a plain deposit carrying no datum. An output under a datum
+/// hash can only be spent by whoever knows the preimage, so a grantee could
+/// otherwise put the whole balance beyond reach without any of it counting
+/// as leaving; an inline datum is refused as well, since a deposit has no
+/// use for one and the owner's deposits never carry any.
+pub fn deposits_carry_no_datum(
+  outputs: List<Output>,
+  account_address: Address,
+  script_hash: ScriptHash,
+  stake_key_hash: VerificationKeyHash,
+) -> Bool {
+  list.all(
+    outputs,
+    fn(output) {
+      or {
+        output.address != account_address,
+        account.holds_state_nft(output.value, script_hash, stake_key_hash),
+        output.datum == NoDatum,
+      }
+    },
+  )
+}
+
 /// Whether the transaction spends exactly one control UTxO of the account,
 /// so that the grant's accounting runs over a single state.
 pub fn spends_one_control_utxo(
@@ -226,4 +251,12 @@ fn scope_after_spend(scope: Scope, leaving: Assets) -> Scope {
 pub fn carries_state(output: Output, expected: AccountState) -> Bool {
   let data: Data = expected
   output.datum == InlineDatum(data)
+}
+
+/// Whether a control output carries no reference script. Every transaction
+/// that spends a UTxO pays a fee for the size of the reference script it
+/// holds, so a grantee could otherwise attach a large script to the state
+/// it hands back and raise the cost of the owner's next spend.
+pub fn carries_no_reference_script(output: Output) -> Bool {
+  output.reference_script == None
 }

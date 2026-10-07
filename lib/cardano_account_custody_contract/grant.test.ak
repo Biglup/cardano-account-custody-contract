@@ -3,10 +3,11 @@ use aiken/crypto
 use aiken/interval
 use cardano/address
 use cardano/assets.{Assets}
-use cardano/transaction.{DatumHash, NoDatum}
+use cardano/transaction.{DatumHash, InlineDatum, NoDatum}
 use cardano_account_custody_contract/grant.{
-  carries_state, ends_before_expiry, grantee_message, is_authorised_by_grantee,
-  leaving_value, message_domain, pays_only_recipients, quantity_of_asset,
+  carries_no_reference_script, carries_state, deposits_carry_no_datum,
+  ends_before_expiry, grantee_message, is_authorised_by_grantee, leaving_value,
+  message_domain, pays_only_recipients, quantity_of_asset,
   spends_one_control_utxo, state_after_spend, stays_within_scope,
 }
 use cardano_account_custody_contract/test_helpers.{
@@ -296,6 +297,45 @@ test pays_only_recipients_compares_the_full_address() {
   )
 }
 
+test deposits_carry_no_datum_accepts_the_control_and_plain_deposits() {
+  deposits_carry_no_datum(
+    [
+      control_output(state(), 2_000_000),
+      fund_output(assets.from_lovelace(1)),
+      output(
+        recipient_address(),
+        assets.from_lovelace(1),
+        DatumHash(device_key),
+      ),
+    ],
+    account_address(),
+    script_hash,
+    stake_key_hash,
+  )
+}
+
+test deposits_carry_no_datum_rejects_a_deposit_under_a_datum_hash() {
+  !deposits_carry_no_datum(
+    [
+      control_output(state(), 2_000_000),
+      output(account_address(), assets.from_lovelace(1), DatumHash(device_key)),
+    ],
+    account_address(),
+    script_hash,
+    stake_key_hash,
+  )
+}
+
+test deposits_carry_no_datum_rejects_a_deposit_under_an_inline_datum() {
+  let data: Data = 42
+  !deposits_carry_no_datum(
+    [output(account_address(), assets.from_lovelace(1), InlineDatum(data))],
+    account_address(),
+    script_hash,
+    stake_key_hash,
+  )
+}
+
 test spends_one_control_utxo_accepts_a_single_control_input() {
   spends_one_control_utxo(
     [
@@ -415,4 +455,16 @@ test carries_state_rejects_a_datum_given_by_hash() {
     DatumHash(stranger_key),
   )
   !carries_state(hashed, state())
+}
+
+test carries_no_reference_script_accepts_a_plain_control_output() {
+  carries_no_reference_script(control_output(state(), 1))
+}
+
+test carries_no_reference_script_rejects_a_reference_script() {
+  let weighted = transaction.Output {
+    ..control_output(state(), 1),
+    reference_script: Some(script_hash),
+  }
+  !carries_no_reference_script(weighted)
 }

@@ -1420,6 +1420,18 @@ test spend_with_grant_rejects_extra_tokens_on_the_control_output() {
   )
 }
 
+test spend_with_grant_rejects_a_reference_script_on_the_control_output() {
+  let weighted = Output {
+    ..control_output(with_caps(granted_state(), 0, 3_000_000, 0), 2_000_000),
+    reference_script: Some(script_hash),
+  }
+  !spend_lovelace(
+    interval.before(expiry - 1),
+    [weighted, change(assets.from_lovelace(8_000_000)), payout(2_000_000)],
+    [stranger_key],
+  )
+}
+
 test spend_with_grant_rejects_a_state_nft_sent_outside_the_account() {
   let stray = output(
     recipient_address(),

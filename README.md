@@ -47,7 +47,15 @@ reduces the grant's remaining cap by the net outflow of its asset and, for
 a grant whose asset is not lovelace, the remaining lovelace cap by the net
 outflow of lovelace, each clamped at zero. A net inflow of an asset leaves
 its cap exactly as it was: a cap never increases through an agent spend,
-whatever the agent deposits alongside.
+whatever the agent deposits alongside. Every output a grant spend pays
+back to the account, other than the control output, must be a plain
+deposit with no datum: a script output under a datum hash can only be
+spent by whoever knows the preimage, so without this rule a grantee could
+put the whole balance beyond reach without any of it counting as leaving.
+The control output a grant spend recreates may carry no reference script:
+every transaction that spends a UTxO pays a fee for the size of the
+reference script it holds, so a grantee could otherwise attach a large
+script to the state and raise the cost of the owner's next spend.
 
 ## Grantee signatures
 
@@ -136,7 +144,9 @@ compromise, independently of the device keys. In the intended deployment
 the stake key and the device keys derive from the same credential, so this
 adds no trust beyond what the devices already carry, but off-chain code
 must check that no state NFT of the stake key exists before creating an
-account.
+account. The adversarial review in `docs/security-review.md` records this
+and every other vulnerability class that was attacked, with the tests in
+`validators/attacks.test.ak` that show each attempt refused.
 
 ## Build and test
 

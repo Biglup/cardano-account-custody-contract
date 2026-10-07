@@ -5,7 +5,8 @@ use cardano/assets.{PolicyId}
 use cardano/transaction.{Output, OutputReference, Transaction}
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/grant.{
-  carries_state, ends_before_expiry, is_authorised_by_grantee, leaving_value,
+  carries_no_reference_script, carries_state, deposits_carry_no_datum,
+  ends_before_expiry, is_authorised_by_grantee, leaving_value,
   pays_only_recipients, spends_one_control_utxo, state_after_spend,
   stays_within_scope,
 }
@@ -47,9 +48,15 @@ use cardano_account_custody_contract/types.{
 /// leaving the account address stays within the per call cap, the
 /// remaining cap and the remaining lovelace cap, nothing of any other asset
 /// leaves, every output away from the account goes to an allowed
-/// recipient, and the single control output carries the same state with
-/// only that grant's remaining caps reduced by what left. Only one control
-/// UTxO of the account may be spent, so the accounting runs over one state.
+/// recipient, every output paid back to the account other than the control
+/// output is a plain deposit with no datum, so the balance can never be
+/// parked under a datum hash nobody can spend, and the single control
+/// output carries the same state with only that grant's remaining caps
+/// reduced by what left and no reference script, since every transaction
+/// spending a UTxO pays for the reference script it holds and a grantee
+/// could otherwise raise the cost of the owner's next spend. Only one
+/// control UTxO of the account may be spent, so the accounting runs over
+/// one state.
 ///
 /// The validator maintains one invariant about its tokens: a state NFT
 /// named N only ever sits at the account address of N, in exactly one
@@ -161,6 +168,12 @@ validator account {
           ends_before_expiry(self.validity_range, grant.scope.expires_at),
           stays_within_scope(grant.scope, leaving),
           pays_only_recipients(self.outputs, address, grant.scope.recipients),
+          deposits_carry_no_datum(
+            self.outputs,
+            address,
+            script_hash,
+            stake_key_hash,
+          ),
           spends_one_control_utxo(self.inputs, script_hash, stake_key_hash),
           custody.state_nfts_sit_at_their_own_addresses(
             list.map(self.inputs, fn(input) { input.output }),
@@ -176,6 +189,7 @@ validator account {
             stake_key_hash,
           ),
           carries_state(control, state_after_spend(state, slot, leaving)),
+          carries_no_reference_script(control),
         }
       }
     }
