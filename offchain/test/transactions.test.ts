@@ -464,7 +464,7 @@ describe('spendWithGrant', () => {
     ).rejects.toThrow(/does not cover/);
   });
 
-  it('counts a deposit made alongside the spend against what leaves', async () => {
+  it('decrements the cap of a restricted recipient grant by the payout and fee', async () => {
     const { provider, agent } = scenario(grantedState, funds());
     const tx = await spendWithGrant({
       wallet: agent,
@@ -479,6 +479,23 @@ describe('spendWithGrant', () => {
     const encoded = Cometa.plutusDataToCbor(encodeAccountState(stateOf(tx)));
     expect(encoded).toBe(Cometa.plutusDataToCbor(withoutCborCache(controlOutputOf(tx).datum!)));
     expect(stateOf(tx).grants[2]!.scope.cap).toBe(15_000_000n - 2_000_000n - transactionBodyParts(tx).fee);
+  });
+
+  /**
+   * The builder only ever selects fund UTxOs the account already owns, so
+   * a transaction it assembles can never carry a net deposit: whatever a
+   * grant spend returns to the account is money the account itself put
+   * up, and what leaves always equals the payout plus the fee. The clamp
+   * that keeps a net deposit from raising a cap is exercised directly
+   * against `stateAfterSpend`, the function the validator's own check
+   * mirrors, instead.
+   */
+  it('keeps a cap as it was, rather than raising it, when the net outflow is a deposit', () => {
+    const depositOnly = stateAfterSpend(grantedState, 0n, { '': -5_000_000n });
+    expect(depositOnly.grants[0]!.scope.cap).toBe(grantedState.grants[0]!.scope.cap);
+
+    const depositExceedingThePayout = stateAfterSpend(grantedState, 2n, { '': -3_000_000n });
+    expect(depositExceedingThePayout.grants[2]!.scope.cap).toBe(grantedState.grants[2]!.scope.cap);
   });
 });
 

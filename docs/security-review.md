@@ -14,7 +14,7 @@ claims what those tests and the reasoning below establish.
   (`Device`, `SpendWithGrant`, `Fund`).
 - Libraries: `lib/cardano_account_custody_contract/{types,state,account,grant}.ak`.
 - Toolchain: Aiken v1.1.24, Plutus V3, aiken-lang/stdlib v4.0.0.
-- Tests: 274 checks under `aiken check -D`, of which 70 live in
+- Tests: 275 checks under `aiken check -D`, of which 71 live in
   `validators/attacks.test.ak`: 54 `attack_` tests, 1 `trust_assumption_`
   test, 14 `budget_` tests and 1 sanity check of the signature fixture.
   The remaining 204 are the functional suite in
@@ -473,7 +473,7 @@ and run the heaviest handlers over it. `aiken check` reports the
 execution units below. Each figure includes the cost of building the
 fixture, which the `budget_baseline_` tests measure on their own, and
 excludes the on-chain cost of decoding the script context, which the
-test harness does not charge. The net figures are therefore indicative
+`aiken check` runner does not charge. The net figures are therefore indicative
 and must be confirmed on preprod with the real transaction builder.
 The mainnet limit per transaction is 14,000,000 memory units and
 10,000,000,000 CPU steps.
@@ -582,7 +582,7 @@ No other attack succeeded.
   Batch sweeps of many deposits to stay within the execution budget.
 - Parameter choices. `max_grants` 16 and `max_recipients` 8 put the
   heaviest owner operation at about 72 percent of the memory budget in
-  the test harness. Measure on preprod with real transactions; lower
+  the `aiken check` runner. Measure on preprod with real transactions; lower
   one of the two bounds if the on-chain figure, which includes context
   decoding, approaches the limit. Grant caps and expiries are the
   owner's choice; a grant with an empty recipient list lets the grantee

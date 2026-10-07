@@ -746,13 +746,13 @@ test device_rejects_forging_another_accounts_control_output_from_a_stray_nft() {
   )
 }
 
-test device_rejects_a_control_output_at_another_stake_credential() fail {
+test device_rejects_a_control_output_at_another_stake_credential() {
   let misplaced = output(
     other_account_address(),
     control_value(stake_key_hash, 2_000_000),
     state_datum(state()),
   )
-  spend(
+  !spend(
     Some(state()),
     Device,
     0,

@@ -9,6 +9,7 @@
 //// prevent.
 
 use account
+use aiken/builtin
 use aiken/cbor
 use aiken/collection/list
 use aiken/interval.{Interval, IntervalBound, NegativeInfinity}
@@ -555,7 +556,14 @@ test attack_datum_hijacking_grant_spend_control_datum_given_by_hash() {
 /// state followed by an extra constructor field. Decoding it as an
 /// `AccountState` aborts, so a padded datum can never be stored.
 test attack_datum_hijacking_padded_state_datum_on_a_device_rewrite() fail {
-  let padded: Data = (state().devices, state().grants, 0, 7)
+  let devices: Data = state().devices
+  let grants: Data = state().grants
+  let grant_generation: Data = 0
+  let extra_field: Data = 7
+  let padded: Data = builtin.constr_data(
+    0,
+    [devices, grants, grant_generation, extra_field],
+  )
   let tx = transaction(
     [input(0, control_output(state(), 2_000_000))],
     [
@@ -774,26 +782,36 @@ test attack_other_redeemer_grant_on_a_deposit_with_a_forged_state() {
   !spend(Some(forged), SpendWithGrant { slot: 0, signature: None }, 1, tx)
 }
 
-/// The grantee tries to delete the account: the mint handler burns the
-/// state NFT as long as the control UTxO is spent, but the control UTxO's
-/// own handler, on the agent path, aborts for lack of a control output.
-test attack_other_redeemer_delete_account_with_the_control_spent_by_grant() fail {
-  let tx = transaction(
+fn delete_account_with_the_control_spent_by_grant_transaction() -> Transaction {
+  transaction(
     [input(0, control_output(granted_state(), 2_000_000))],
     [payout(2_000_000)],
     burn(),
     [stranger_key],
     interval.before(expiry - 1),
   )
-  and {
-    mint(DeleteAccount, tx),
-    spend(
-      Some(granted_state()),
-      SpendWithGrant { slot: 0, signature: None },
-      0,
-      tx,
-    ),
-  }
+}
+
+/// The grantee tries to delete the account: the mint handler accepts,
+/// since it only asks that the control UTxO be spent.
+test attack_other_redeemer_delete_account_with_the_control_spent_by_grant_mint_accepts() {
+  mint(
+    DeleteAccount,
+    delete_account_with_the_control_spent_by_grant_transaction(),
+  )
+}
+
+/// The control UTxO's own handler, on the agent path, aborts for lack of
+/// a control output; even with one, the remaining cap and carries_state
+/// checks would refuse it too, so the missing output is not the only
+/// refusal.
+test attack_other_redeemer_delete_account_with_the_control_spent_by_grant() fail {
+  spend(
+    Some(granted_state()),
+    SpendWithGrant { slot: 0, signature: None },
+    0,
+    delete_account_with_the_control_spent_by_grant_transaction(),
+  )
 }
 
 /// The mint redeemers are swapped: `CreateAccount` on a burn and
