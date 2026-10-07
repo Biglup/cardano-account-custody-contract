@@ -1,0 +1,443 @@
+{
+  "preamble": {
+    "title": "biglup/cardano_account_custody_contract",
+    "description": "Cardano account custody contract: a stable per-user address with owner keys and on-chain bounded, revocable agent grants.",
+    "version": "0.0.0",
+    "plutusVersion": "v3",
+    "compiler": {
+      "name": "Aiken",
+      "version": "v1.1.24+bacbeb3"
+    },
+    "license": "Apache-2.0"
+  },
+  "validators": [
+    {
+      "title": "account.account.mint",
+      "redeemer": {
+        "title": "_redeemer",
+        "schema": {
+          "$ref": "#/definitions/cardano_account_custody_contract~1types~1MintRedeemer"
+        }
+      },
+      "compiledCode": "59014601010029800aba2aba1aab9faab9eaab9dab9a488888966002646465300130053754003370e90014dc3a400130080039804001244444b30013003005899912cc004c0140062b3001300d3754007168b201c8acc004c0180062b3001300d3754007168b201c8b2016402c6eb8c034c02cdd500318051baa0018acc004c0100162653001300e00198071807800cc02cdd50012444b300130070018acc004c03cdd5002c5a2c80822b3001300800189919912cc004c05400626464b3001300c001899192cc004c06400a2d16405c6eb8c05c004c050dd50014566002601a003159800980a1baa0028b459015459012202430123754002602800316404c6eb4c048004c04c004c03cdd5002c56600266e1d20040018acc004c03cdd5002c5a2c80822c806900d201a18059baa0068b201240243007300800130070013003375400f149a26cac8009",
+      "hash": "3bf35ec7b29c829711cf75ff1e0742a9d7a17406c25526be4d3c75c8"
+    },
+    {
+      "title": "account.account.spend",
+      "datum": {
+        "title": "_datum",
+        "schema": {
+          "$ref": "#/definitions/cardano_account_custody_contract~1types~1AccountState"
+        }
+      },
+      "redeemer": {
+        "title": "_redeemer",
+        "schema": {
+          "$ref": "#/definitions/cardano_account_custody_contract~1types~1AccountRedeemer"
+        }
+      },
+      "compiledCode": "59014601010029800aba2aba1aab9faab9eaab9dab9a488888966002646465300130053754003370e90014dc3a400130080039804001244444b30013003005899912cc004c0140062b3001300d3754007168b201c8acc004c0180062b3001300d3754007168b201c8b2016402c6eb8c034c02cdd500318051baa0018acc004c0100162653001300e00198071807800cc02cdd50012444b300130070018acc004c03cdd5002c5a2c80822b3001300800189919912cc004c05400626464b3001300c001899192cc004c06400a2d16405c6eb8c05c004c050dd50014566002601a003159800980a1baa0028b459015459012202430123754002602800316404c6eb4c048004c04c004c03cdd5002c56600266e1d20040018acc004c03cdd5002c5a2c80822c806900d201a18059baa0068b201240243007300800130070013003375400f149a26cac8009",
+      "hash": "3bf35ec7b29c829711cf75ff1e0742a9d7a17406c25526be4d3c75c8"
+    },
+    {
+      "title": "account.account.else",
+      "redeemer": {
+        "schema": {}
+      },
+      "compiledCode": "59014601010029800aba2aba1aab9faab9eaab9dab9a488888966002646465300130053754003370e90014dc3a400130080039804001244444b30013003005899912cc004c0140062b3001300d3754007168b201c8acc004c0180062b3001300d3754007168b201c8b2016402c6eb8c034c02cdd500318051baa0018acc004c0100162653001300e00198071807800cc02cdd50012444b300130070018acc004c03cdd5002c5a2c80822b3001300800189919912cc004c05400626464b3001300c001899192cc004c06400a2d16405c6eb8c05c004c050dd50014566002601a003159800980a1baa0028b459015459012202430123754002602800316404c6eb4c048004c04c004c03cdd5002c56600266e1d20040018acc004c03cdd5002c5a2c80822c806900d201a18059baa0068b201240243007300800130070013003375400f149a26cac8009",
+      "hash": "3bf35ec7b29c829711cf75ff1e0742a9d7a17406c25526be4d3c75c8"
+    }
+  ],
+  "definitions": {
+    "ByteArray": {
+      "dataType": "bytes"
+    },
+    "Int": {
+      "dataType": "integer"
+    },
+    "List<aiken/crypto/VerificationKeyHash>": {
+      "dataType": "list",
+      "items": {
+        "$ref": "#/definitions/aiken~1crypto~1VerificationKeyHash"
+      }
+    },
+    "List<cardano/address/Address>": {
+      "dataType": "list",
+      "items": {
+        "$ref": "#/definitions/cardano~1address~1Address"
+      }
+    },
+    "List<cardano_account_custody_contract/types/Grant>": {
+      "dataType": "list",
+      "items": {
+        "$ref": "#/definitions/cardano_account_custody_contract~1types~1Grant"
+      }
+    },
+    "Option<ByteArray>": {
+      "title": "Option",
+      "anyOf": [
+        {
+          "title": "Some",
+          "description": "An optional value.",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "$ref": "#/definitions/ByteArray"
+            }
+          ]
+        },
+        {
+          "title": "None",
+          "description": "Nothing.",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": []
+        }
+      ]
+    },
+    "Option<cardano/address/StakeCredential>": {
+      "title": "Option",
+      "anyOf": [
+        {
+          "title": "Some",
+          "description": "An optional value.",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "$ref": "#/definitions/cardano~1address~1StakeCredential"
+            }
+          ]
+        },
+        {
+          "title": "None",
+          "description": "Nothing.",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": []
+        }
+      ]
+    },
+    "aiken/crypto/ScriptHash": {
+      "title": "ScriptHash",
+      "dataType": "bytes"
+    },
+    "aiken/crypto/VerificationKey": {
+      "title": "VerificationKey",
+      "dataType": "bytes"
+    },
+    "aiken/crypto/VerificationKeyHash": {
+      "title": "VerificationKeyHash",
+      "dataType": "bytes"
+    },
+    "cardano/address/Address": {
+      "title": "Address",
+      "description": "A Cardano `Address` typically holding one or two credential references.\n\n Note that legacy bootstrap addresses (a.k.a. 'Byron addresses') are\n completely excluded from Plutus contexts. Thus, from an on-chain\n perspective only exists addresses of type 00, 01, ..., 07 as detailed\n in [CIP-0019 :: Shelley Addresses](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0019/#shelley-addresses).",
+      "anyOf": [
+        {
+          "title": "Address",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "payment_credential",
+              "$ref": "#/definitions/cardano~1address~1PaymentCredential"
+            },
+            {
+              "title": "stake_credential",
+              "$ref": "#/definitions/Option<cardano~1address~1StakeCredential>"
+            }
+          ]
+        }
+      ]
+    },
+    "cardano/address/Credential": {
+      "title": "Credential",
+      "description": "A general structure for representing an on-chain `Credential`.\n\n Credentials are always one of two kinds: a direct public/private key\n pair, or a script (native or Plutus).",
+      "anyOf": [
+        {
+          "title": "VerificationKey",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "$ref": "#/definitions/aiken~1crypto~1VerificationKeyHash"
+            }
+          ]
+        },
+        {
+          "title": "Script",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": [
+            {
+              "$ref": "#/definitions/aiken~1crypto~1ScriptHash"
+            }
+          ]
+        }
+      ]
+    },
+    "cardano/address/PaymentCredential": {
+      "title": "PaymentCredential",
+      "description": "A general structure for representing an on-chain `Credential`.\n\n Credentials are always one of two kinds: a direct public/private key\n pair, or a script (native or Plutus).",
+      "anyOf": [
+        {
+          "title": "VerificationKey",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "$ref": "#/definitions/aiken~1crypto~1VerificationKeyHash"
+            }
+          ]
+        },
+        {
+          "title": "Script",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": [
+            {
+              "$ref": "#/definitions/aiken~1crypto~1ScriptHash"
+            }
+          ]
+        }
+      ]
+    },
+    "cardano/address/StakeCredential": {
+      "title": "StakeCredential",
+      "description": "Represent a type of object that can be represented either inline (by hash)\n or via a reference (i.e. a pointer to an on-chain location).\n\n This is mainly use for capturing pointers to a stake credential\n registration certificate in the case of so-called pointer addresses.",
+      "anyOf": [
+        {
+          "title": "Inline",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "$ref": "#/definitions/cardano~1address~1Credential"
+            }
+          ]
+        },
+        {
+          "title": "Pointer",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": [
+            {
+              "title": "slot_number",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "transaction_index",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "certificate_index",
+              "$ref": "#/definitions/Int"
+            }
+          ]
+        }
+      ]
+    },
+    "cardano/assets/AssetName": {
+      "title": "AssetName",
+      "dataType": "bytes"
+    },
+    "cardano/assets/PolicyId": {
+      "title": "PolicyId",
+      "dataType": "bytes"
+    },
+    "cardano_account_custody_contract/types/AccountRedeemer": {
+      "title": "AccountRedeemer",
+      "description": "The redeemer for the account validator's spend handler.\n\n `Device` is the owner path: any device key may rewrite the state freely,\n as long as the result stays well formed. `SpendWithGrant` is the agent\n path: the named grant's remaining caps bound what the transaction may\n take. `Fund` is for a plain deposit UTxO at the account address, which\n only requires that the account's own state NFT is spent alongside it.",
+      "anyOf": [
+        {
+          "title": "Device",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": []
+        },
+        {
+          "title": "SpendWithGrant",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": [
+            {
+              "title": "slot",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "signature",
+              "description": "The 64 byte r||s secp256k1 ECDSA signature over the transaction,\n required when the grant's grantee is `Secp256k1`. `None` when the\n grantee is `Ed25519`, which authorises through `extra_signatories`\n instead.",
+              "$ref": "#/definitions/Option<ByteArray>"
+            }
+          ]
+        },
+        {
+          "title": "Fund",
+          "dataType": "constructor",
+          "index": 2,
+          "fields": []
+        }
+      ]
+    },
+    "cardano_account_custody_contract/types/AccountState": {
+      "title": "AccountState",
+      "description": "The account's on-chain state: its owner devices, its outstanding grants,\n and a counter bumped whenever grants are replaced wholesale.",
+      "anyOf": [
+        {
+          "title": "AccountState",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "devices",
+              "$ref": "#/definitions/List<aiken~1crypto~1VerificationKeyHash>"
+            },
+            {
+              "title": "grants",
+              "$ref": "#/definitions/List<cardano_account_custody_contract~1types~1Grant>"
+            },
+            {
+              "title": "grant_generation",
+              "$ref": "#/definitions/Int"
+            }
+          ]
+        }
+      ]
+    },
+    "cardano_account_custody_contract/types/Asset": {
+      "title": "Asset",
+      "description": "An asset class: a policy id paired with an asset name. Lovelace is\n represented by the empty policy id and the empty asset name, mirroring\n `cardano/assets.ada_policy_id` and `cardano/assets.ada_asset_name`.",
+      "anyOf": [
+        {
+          "title": "Asset",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "policy_id",
+              "$ref": "#/definitions/cardano~1assets~1PolicyId"
+            },
+            {
+              "title": "asset_name",
+              "$ref": "#/definitions/cardano~1assets~1AssetName"
+            }
+          ]
+        }
+      ]
+    },
+    "cardano_account_custody_contract/types/Grant": {
+      "title": "Grant",
+      "description": "A single revocable permission held by a grantee, identified by its slot\n in `AccountState.grants`.",
+      "anyOf": [
+        {
+          "title": "Grant",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "slot",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "grantee",
+              "$ref": "#/definitions/cardano_account_custody_contract~1types~1Grantee"
+            },
+            {
+              "title": "scope",
+              "$ref": "#/definitions/cardano_account_custody_contract~1types~1Scope"
+            }
+          ]
+        }
+      ]
+    },
+    "cardano_account_custody_contract/types/Grantee": {
+      "title": "Grantee",
+      "description": "A key that can authorise a grant, either Cardano's own Ed25519 keys or\n a Secp256k1 key: a 33 byte compressed secp256k1 public key, verified on\n chain with the secp256k1 ECDSA builtin, as used by custodial signing\n services.",
+      "anyOf": [
+        {
+          "title": "Ed25519",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "$ref": "#/definitions/aiken~1crypto~1VerificationKeyHash"
+            }
+          ]
+        },
+        {
+          "title": "Secp256k1",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": [
+            {
+              "$ref": "#/definitions/aiken~1crypto~1VerificationKey"
+            }
+          ]
+        }
+      ]
+    },
+    "cardano_account_custody_contract/types/MintRedeemer": {
+      "title": "MintRedeemer",
+      "description": "The redeemer for the account validator's mint handler, which creates or\n retires the account's state NFT.",
+      "anyOf": [
+        {
+          "title": "CreateAccount",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": []
+        },
+        {
+          "title": "DeleteAccount",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": []
+        }
+      ]
+    },
+    "cardano_account_custody_contract/types/Scope": {
+      "title": "Scope",
+      "description": "The bounds of a grant: which asset it covers, how much of it may leave\n the account per call and in total, how much lovelace may leave with it,\n when it stops being usable, and which destinations it allows.",
+      "anyOf": [
+        {
+          "title": "Scope",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "asset",
+              "description": "The asset class this scope's caps apply to.",
+              "$ref": "#/definitions/cardano_account_custody_contract~1types~1Asset"
+            },
+            {
+              "title": "per_call_cap",
+              "description": "The most of `asset` that may leave the account in a single\n transaction.",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "cap",
+              "description": "The most of `asset` that may leave the account over the grant's\n lifetime, reduced by what has already left.",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "lovelace_cap",
+              "description": "The most lovelace that may leave the account alongside `asset`,\n reduced by what has already left. Applies only when `asset` is not\n lovelace; must be zero when `asset` is lovelace, since the asset cap\n already covers lovelace in that case.",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "expires_at",
+              "description": "The POSIX time, in milliseconds, after which the grant can no longer\n be used. Must be greater than zero; there is no value that means the\n grant never expires.",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "recipients",
+              "description": "The addresses funds may be sent to. An empty list means any\n destination is allowed.",
+              "$ref": "#/definitions/List<cardano~1address~1Address>"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
