@@ -9,9 +9,7 @@ use cardano_account_custody_contract/account
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
-/// Whether the grantee authorised the transaction: the grantee is the hash
-/// of an Ed25519 verification key, so it signs the transaction itself and
-/// must appear among its required signers.
+/// Whether the grantee is among the transaction's required signers.
 pub fn is_authorised_by_grantee(
   grantee: VerificationKeyHash,
   extra_signatories: List<VerificationKeyHash>,
@@ -19,10 +17,8 @@ pub fn is_authorised_by_grantee(
   list.has(extra_signatories, grantee)
 }
 
-/// Whether the transaction can only be applied before the grant expires:
-/// its validity range must end at a finite time no later than
-/// `expires_at`. A range open at the top could be applied at any time, so
-/// it never passes.
+/// Whether the validity range ends at a finite time no later than
+/// `expires_at`; an open upper bound never passes.
 pub fn ends_before_expiry(
   validity_range: ValidityRange,
   expires_at: Int,
@@ -33,9 +29,8 @@ pub fn ends_before_expiry(
   }
 }
 
-/// The value leaving an address in a transaction: everything spent from
-/// it minus everything paid back to it, per asset class. A negative
-/// quantity means the transaction adds that asset to the address.
+/// The value spent from an address minus the value paid back to it, per
+/// asset class; a negative quantity is a net deposit.
 pub fn leaving_value(
   inputs: List<Input>,
   outputs: List<Output>,
@@ -71,11 +66,9 @@ pub fn quantity_of_asset(value: Assets, asset: Asset) -> Int {
   assets.quantity_of(value, asset.policy_id, asset.asset_name)
 }
 
-/// Whether a value leaving the account stays within a scope: no more of
-/// the scoped asset than the per call cap and the remaining cap, no more
-/// lovelace than the lovelace per call cap and the remaining lovelace cap
-/// when the scoped asset is not lovelace itself, and nothing at all of any
-/// other asset class.
+/// Whether a leaving value stays within the scope: the scoped asset within
+/// its per call and remaining caps, lovelace within its caps when the
+/// scoped asset is not lovelace, and nothing else leaving.
 pub fn stays_within_scope(scope: Scope, leaving: Assets) -> Bool {
   let asset_leaving = quantity_of_asset(leaving, scope.asset)
   let lovelace_leaving = assets.lovelace_of(leaving)
@@ -93,8 +86,8 @@ pub fn stays_within_scope(scope: Scope, leaving: Assets) -> Bool {
   }
 }
 
-/// Whether no asset class other than the scoped asset and lovelace has a
-/// positive quantity in a leaving value.
+/// Whether only the scoped asset and lovelace have a positive leaving
+/// quantity.
 fn nothing_else_leaves(leaving: Assets, asset: Asset) -> Bool {
   assets.reduce(
     leaving,
@@ -106,8 +99,8 @@ fn nothing_else_leaves(leaving: Assets, asset: Asset) -> Bool {
   )
 }
 
-/// Whether every output paid away from the account goes to one of the
-/// scope's recipients. An empty recipient list allows any destination.
+/// Whether every output away from the account goes to a listed recipient;
+/// an empty list allows any destination.
 pub fn pays_only_recipients(
   outputs: List<Output>,
   account_address: Address,
@@ -122,11 +115,7 @@ pub fn pays_only_recipients(
 }
 
 /// Whether every output paid back to the account, other than the control
-/// output, is a plain deposit carrying no datum. An output under a datum
-/// hash can only be spent by whoever knows the preimage, so a grantee could
-/// otherwise put the whole balance beyond reach without any of it counting
-/// as leaving; an inline datum is refused as well, since a deposit has no
-/// use for one and the owner's deposits never carry any.
+/// output, carries no datum. See README, Agent spend checks.
 pub fn deposits_carry_no_datum(
   outputs: List<Output>,
   account_address: Address,
@@ -145,8 +134,7 @@ pub fn deposits_carry_no_datum(
   )
 }
 
-/// Whether the transaction spends exactly one control UTxO of the account,
-/// so that the grant's accounting runs over a single state.
+/// Whether exactly one control UTxO of the account is spent.
 pub fn spends_one_control_utxo(
   inputs: List<Input>,
   script_hash: ScriptHash,
@@ -160,13 +148,8 @@ pub fn spends_one_control_utxo(
   ) == 1
 }
 
-/// The state the account must carry after a grant spend: the same state
-/// with the used grant's remaining cap reduced by the net outflow of its
-/// asset, and its remaining lovelace cap reduced by the net outflow of
-/// lovelace when its asset is not lovelace. A net inflow of either asset
-/// leaves its cap as it was, so a cap never increases through an agent
-/// spend. Every other field, including every other grant, stays as it
-/// was.
+/// The state after a grant spend: unchanged except that the used grant's
+/// remaining caps are reduced by the net outflow, never increased.
 pub fn state_after_spend(
   current: AccountState,
   slot: Int,
@@ -187,10 +170,8 @@ pub fn state_after_spend(
   }
 }
 
-/// A scope with its remaining caps reduced by a leaving value: each cap
-/// loses the net outflow of its asset, clamped at zero, so a deposit made
-/// alongside the spend never raises a cap above what the owner granted.
-/// The per call caps bound single transactions and never change.
+/// The scope with each remaining cap reduced by max(0, net outflow) of its
+/// asset; per call caps never change.
 fn scope_after_spend(scope: Scope, leaving: Assets) -> Scope {
   let lovelace_cap = if state.is_lovelace(scope.asset) {
     scope.lovelace_cap
@@ -204,17 +185,14 @@ fn scope_after_spend(scope: Scope, leaving: Assets) -> Scope {
   }
 }
 
-/// Whether a control output carries exactly the expected state as its
-/// inline datum, compared byte for byte as data.
+/// Whether the output's inline datum equals the expected state as data.
 pub fn carries_state(output: Output, expected: AccountState) -> Bool {
   let data: Data = expected
   output.datum == InlineDatum(data)
 }
 
-/// Whether a control output carries no reference script. Every transaction
-/// that spends a UTxO pays a fee for the size of the reference script it
-/// holds, so a grantee could otherwise attach a large script to the state
-/// it hands back and raise the cost of the owner's next spend.
+/// Whether the output carries no reference script. See README, Agent spend
+/// checks.
 pub fn carries_no_reference_script(output: Output) -> Bool {
   output.reference_script == None
 }

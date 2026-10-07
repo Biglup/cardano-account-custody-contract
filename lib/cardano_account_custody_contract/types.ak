@@ -2,54 +2,35 @@ use aiken/crypto.{VerificationKeyHash}
 use cardano/address.{Address}
 use cardano/assets.{AssetName, PolicyId}
 
-/// An asset class: a policy id paired with an asset name. Lovelace is
-/// represented by the empty policy id and the empty asset name, mirroring
-/// `cardano/assets.ada_policy_id` and `cardano/assets.ada_asset_name`.
+/// An asset class: a policy id paired with an asset name. Lovelace is the
+/// empty policy id and the empty asset name, as in `cardano/assets`.
 pub type Asset {
   policy_id: PolicyId,
   asset_name: AssetName,
 }
 
-/// The bounds of a grant: which asset it covers, how much of it may leave
-/// the account per call and in total, how much lovelace may leave with it
-/// per call and in total, when it stops being usable, and which
-/// destinations it allows.
-///
-/// The fields are serialised as Plutus Data in the order they are declared:
-/// asset, per_call_cap, cap, lovelace_per_call_cap, lovelace_cap,
-/// expires_at, recipients.
+/// The bounds of a grant: the asset it covers, its caps, its expiry and its
+/// allowed destinations. Fields serialise as Plutus Data in declaration
+/// order.
 pub type Scope {
-  /// The asset class this scope's caps apply to.
+  /// The asset class the caps apply to.
   asset: Asset,
-  /// The most of `asset` that may leave the account in a single
-  /// transaction.
+  /// Most of `asset` that may leave the account in one transaction.
   per_call_cap: Int,
-  /// The most of `asset` that may leave the account over the grant's
-  /// lifetime, reduced by what has already left.
+  /// Remaining `asset` that may leave over the grant's lifetime.
   cap: Int,
-  /// The most lovelace that may leave the account alongside `asset` in a
-  /// single transaction. Applies only when `asset` is not lovelace; must
-  /// be zero when `asset` is lovelace, since the asset caps already cover
-  /// lovelace in that case.
+  /// Lovelace cap per transaction when `asset` is not lovelace; else zero.
   lovelace_per_call_cap: Int,
-  /// The most lovelace that may leave the account alongside `asset` over
-  /// the grant's lifetime, reduced by what has already left. Applies only
-  /// when `asset` is not lovelace; must be zero when `asset` is lovelace,
-  /// since the asset caps already cover lovelace in that case.
+  /// Remaining lifetime lovelace cap when `asset` is not lovelace; else zero.
   lovelace_cap: Int,
-  /// The POSIX time, in milliseconds, after which the grant can no longer
-  /// be used. Must be greater than zero; there is no value that means the
-  /// grant never expires.
+  /// POSIX time in milliseconds after which the grant is unusable; must be > 0.
   expires_at: Int,
-  /// The addresses funds may be sent to. An empty list means any
-  /// destination is allowed.
+  /// Addresses funds may be sent to; an empty list allows any destination.
   recipients: List<Address>,
 }
 
-/// A single revocable permission held by a grantee, identified by its slot
-/// in `AccountState.grants`. The grantee is the hash of an Ed25519
-/// verification key and authorises a spend by signing the transaction as
-/// one of its required signers.
+/// A revocable permission identified by its slot in `AccountState.grants`.
+/// The grantee is an Ed25519 key hash that must sign as a required signer.
 pub type Grant {
   slot: Int,
   grantee: VerificationKeyHash,
