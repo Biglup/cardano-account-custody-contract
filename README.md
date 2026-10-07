@@ -586,6 +586,41 @@ persisted account record alone, removing it, revoking every grant, and a
 final sweep that leaves only the control UTxO in place. The document
 carries the transaction links and the ledger errors.
 
+## Prior art
+
+Bullet ([orbistry/bullet](https://github.com/orbistry/bullet)) was
+evaluated before this contract was written. It is an Aiken smart wallet
+with hot, cold and intention validators, and it was the recommended
+starting point. The evaluation built it, ran its tests and read the
+validators for the properties this project needs. The findings:
+
+- Bullet has no owner and agent distinction. Its hot keys form one set
+  counted against `hot_quorum` by `hot_spend` and against `wallet_quorum`
+  by `wallet_spend`; no field marks a key as belonging to an agent.
+- Bullet's intention constraints (`lib/constraint_utils.ak`) are equality
+  checks on outputs, inputs, redeemers and mint quantities. There is no per
+  key spending cap, no cumulative cap and no per key expiry; `AfterVal` and
+  `BeforeVal` bound the transaction's validity interval, not a key's
+  lifetime. The grant semantics this project needs (per call cap,
+  cumulative cap, lovelace caps, expiry and a recipient list per agent,
+  revocable by the owner) would have required changing the intention
+  validator, which is the largest and most complex piece of Bullet.
+- Rotating credentials in Bullet (`change_credential_auth.cold_control`)
+  requires a signature from every current cold key and from every key of
+  the new hot and cold sets. Passkey-held keys cannot sign a message hash
+  out of band, so this flow does not fit a wallet whose devices are
+  WebAuthn credentials.
+- Bullet's cold key, nonce, proxy and delete machinery solves problems this
+  project does not have: the owner set here is a small list of device keys
+  with no cold tier, and the account is permanent.
+
+Building on Bullet would have meant forking it and rewriting its intention
+validator for grants, with the rest of its surface still to audit. Writing
+the contract from scratch gave a smaller surface with the exact grant
+semantics in the validator, checked by 306 Aiken tests, 107 off-chain
+tests and the twenty preprod flows in
+[docs/preprod-evidence.md](docs/preprod-evidence.md).
+
 ## Limitations
 
 - One control UTxO per account serialises every operation on it: owner and
