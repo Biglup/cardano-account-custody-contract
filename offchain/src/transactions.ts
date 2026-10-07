@@ -7,6 +7,7 @@ import type {
   PlutusScript,
   ProtocolParameters,
   Provider,
+  RewardAddress,
   SlotConfig,
   TransactionBuilder,
   TxEvaluator,
@@ -16,7 +17,7 @@ import type {
   Value,
   Wallet,
 } from '@biglup/cometa';
-import { accountAddress, paymentKeyHashOf, stateNftAssetId } from './address.js';
+import { accountAddress, paymentKeyHashOf, rewardAddress, stateNftAssetId } from './address.js';
 import { accountScript } from './blueprint.js';
 import { Cometa } from './cometa.js';
 import {
@@ -27,17 +28,12 @@ import {
   encodeAccountState,
   encodeAddress,
   encodeMintRedeemer,
+  encodeStakeRedeemer,
 } from './data.js';
-import {
-  compareInputs,
-  granteeMessage,
-  granteePublicKey,
-  grantMessagePartsOf,
-  signGrantMessage,
-  slotToPosixTime,
-  transactionBodyParts,
-} from './message.js';
+import { compareInputs, slotToPosixTime, transactionBodyParts } from './body.js';
+import type { AccountRecord } from './discovery.js';
 import { DEFAULT_ADA_PER_UTXO_BYTE, minimumUtxoLovelace } from './output.js';
+import { stakeScript, stakeScriptHash } from './stake-script.js';
 import {
   assertWellFormed,
   findGrant,
@@ -67,20 +63,38 @@ export interface AccountOutput {
   value: Value;
 }
 
+/**
+ * How a builder identifies the account: by the verification key hash of
+ * its initial device, the owner its stake script is applied to, from
+ * which the stake credential, the address and the state NFT all derive,
+ * or by the record a client persisted, which a device other than the
+ * owner holds instead since it cannot derive the address from its own key.
+ */
+export type AccountIdentity = { owner: string; record?: never } | { record: AccountRecord; owner?: never };
+
 /** What every builder needs to know about the account it acts on. */
-export interface AccountParams {
+export type AccountParams = AccountIdentity & {
   /** The wallet that builds, pays for and signs the transaction. */
   wallet: Wallet;
-  /** The stake key hash naming the account. */
-  stakeKeyHash: string;
+  /**
+   * A wallet that pays for the transaction in place of the account: it
+   * funds the fee, the lovelace the control output needs beyond what it
+   * held, and at creation the control UTxO and the registration deposit,
+   * provides the collateral and receives the change, so that the device
+   * wallet only signs. Without a sponsor an owner operation is paid from
+   * the account's own fund UTxOs and the device wallet provides the
+   * collateral alone, while creation, which has no account to pay from
+   * yet, is paid by the device wallet.
+   */
+  sponsor?: Wallet;
   /** The account script; the blueprint's validator when omitted. */
   script?: PlutusScript;
   /** The network the account address lives on; the testnet when omitted. */
   networkId?: NetworkId;
-}
+};
 
 /** Account parameters for builders that must read the account's UTxOs. */
-export interface AccountUtxoParams extends AccountParams {
+export type AccountUtxoParams = AccountParams & {
   /** The provider that lists the UTxOs at the account address. */
   provider: Provider;
   /**
@@ -90,10 +104,10 @@ export interface AccountUtxoParams extends AccountParams {
    * alone.
    */
   minimumChangeLovelace?: bigint;
-}
+};
 
 /** Parameters of account creation. */
-export interface CreateAccountParams extends AccountParams {
+export type CreateAccountParams = AccountParams & {
   /** The initial state, which must be well formed. */
   state: AccountState;
   /** The lovelace the control UTxO carries, raised to its minimum UTxO value when too low. */
@@ -105,16 +119,14 @@ export interface CreateAccountParams extends AccountParams {
    * network's protocol parameters.
    */
   provider?: Provider;
-}
-
-/** The keys that authorise an agent spend, by grantee kind. */
-export type GranteeSigner = { kind: 'ed25519'; keyHash: string } | { kind: 'secp256k1'; privateKey: Uint8Array | string };
+};
 
 /** Parameters of an agent spend. */
-export interface SpendWithGrantParams extends AccountUtxoParams {
+export type SpendWithGrantParams = AccountUtxoParams & {
   slot: bigint;
   outputs: AccountOutput[];
-  grantee: GranteeSigner;
+  /** The key hash of the grant's grantee, which signs the transaction as a required signer. */
+  grantee: string;
   /** The slot the transaction stops being valid at, which must start no later than the grant's expiry. */
   validUntilSlot: bigint;
   /** The slot timing of the network; preprod's when omitted. */
@@ -131,17 +143,15 @@ export interface SpendWithGrantParams extends AccountUtxoParams {
    * grant must still exist, since its state is what the datum rewrites.
    */
   unchecked?: boolean;
-}
+};
 
 /** The lovelace a freshly created control UTxO carries unless its state needs more. */
 export const DEFAULT_CONTROL_LOVELACE = 2_000_000n;
 
 /**
  * The default execution budget of the control UTxO's spend on the agent
- * path. A secp256k1 spend over a small state measures at about 1.36
- * million memory units and 615 million steps, so the budget leaves room
- * for larger states and more inputs, which raise the real cost because
- * the validator serialises the transaction for the grantee message.
+ * path, which leaves room for larger states and more inputs than a small
+ * grant spend needs.
  */
 export const DEFAULT_CONTROL_EXECUTION_UNITS: ExUnits = { memory: 4_000_000, steps: 2_000_000_000 };
 
@@ -154,15 +164,15 @@ export const DEFAULT_FUND_EXECUTION_UNITS: ExUnits = { memory: 500_000, steps: 2
 /** The most times a grant spend is rebuilt while its fee and state settle. */
 const MAX_BALANCING_ROUNDS = 4;
 
-/** A signature sized placeholder that stands in for the grantee's signature while the transaction settles. */
-const SIGNATURE_PLACEHOLDER = '00'.repeat(64);
-
-/** The identifiers derived from the script and the stake key hash of an account. */
+/** The identifiers derived from the account script and the owner of an account. */
 interface Account {
   script: PlutusScript;
   scriptHash: string;
-  stakeKeyHash: string;
+  owner: string;
+  stakeScript: PlutusScript;
+  stakeScriptHash: string;
   address: string;
+  rewardAddress: RewardAddress;
   nftAssetId: string;
   networkId: NetworkId;
 }
@@ -180,15 +190,30 @@ export interface FundSelection {
   remainder: Balance;
 }
 
-/** Derives the account identifiers from the builder parameters. */
-const resolveAccount = ({ stakeKeyHash, script = accountScript(), networkId = Cometa.NetworkId.Testnet }: AccountParams): Account => {
+/**
+ * Derives the account identifiers from the builder parameters, applying
+ * the stake script to the owner and the account script. A record names
+ * the same owner, so the derivation is the same either way; the stake
+ * script is always rebuilt since the record cannot carry it.
+ */
+const resolveAccount = (params: AccountParams): Account => {
+  const { script = accountScript(), networkId = Cometa.NetworkId.Testnet, record } = params;
+  const owner = record ? record.owner : params.owner;
   const scriptHash = Cometa.computeScriptHash(script);
+  const stake = stakeScript(owner, scriptHash);
+  const stakeHash = stakeScriptHash(stake);
+  if (record && record.stakeScriptHash !== stakeHash) {
+    throw new Error(`The record's stake credential ${record.stakeScriptHash} does not match the owner ${record.owner}`);
+  }
   return {
     script,
     scriptHash,
-    stakeKeyHash,
-    address: accountAddress(scriptHash, stakeKeyHash, networkId).toString(),
-    nftAssetId: stateNftAssetId(scriptHash, stakeKeyHash),
+    owner,
+    stakeScript: stake,
+    stakeScriptHash: stakeHash,
+    address: accountAddress(scriptHash, stakeHash, networkId).toString(),
+    rewardAddress: rewardAddress(stakeHash, networkId),
+    nftAssetId: stateNftAssetId(scriptHash, stakeHash),
     networkId,
   };
 };
@@ -221,6 +246,9 @@ export const findAccountUtxos = async (provider: Provider, params: AccountParams
 /** The redeemers of the owner path and the fund path, which carry no data. */
 const deviceRedeemer = encodeAccountRedeemer({ kind: 'device' });
 const fundRedeemer = encodeAccountRedeemer({ kind: 'fund' });
+
+/** The redeemer of every stake script run, which carries no data. */
+const operateRedeemer = encodeStakeRedeemer();
 
 /** An account state as the inline datum of a control output. */
 const stateDatum = (state: AccountState): Datum => ({
@@ -336,19 +364,23 @@ const inlineState = (builder: TransactionBuilder, account: Account, coins: bigin
 const assertAccountAbsent = async (provider: Provider, account: Account): Promise<void> => {
   const utxos = await provider.getUnspentOutputs(account.address);
   if (utxos.some((utxo) => holdsStateNft(utxo, account.nftAssetId))) {
-    throw new Error(`An account for stake key hash ${account.stakeKeyHash} already exists at ${account.address}`);
+    throw new Error(`An account for owner ${account.owner} already exists at ${account.address}`);
   }
 };
 
 /**
- * Builds the transaction that creates an account: it mints the state NFT
- * named after the stake key hash, which the stake key must sign for, and
- * locks it at the account address with the initial state inline. The
- * control output holds the requested lovelace or its minimum UTxO value,
- * whichever is higher, with the wallet paying for it. The validator
- * cannot tell that an account already exists, and a second control UTxO
- * would split the account in two, so when a provider is given creation
- * is refused while a UTxO holding the state NFT sits at the address.
+ * Builds the transaction that creates an account: it registers the
+ * account's stake credential with the deposit the protocol parameters
+ * set, which the stake script authorises on the owner's signature, mints
+ * the state NFT named after that credential, and locks it at the account
+ * address with the initial state inline. The control output holds the
+ * requested lovelace or its minimum UTxO value, whichever is higher, with
+ * the sponsor, or the wallet when there is none, paying for it and for the
+ * deposit while the owner only signs. The ledger refuses to
+ * register a credential twice, so the account can be created only once
+ * for as long as it exists; when a provider is given, creation is also
+ * refused ahead of the chain while a UTxO holding the state NFT sits at
+ * the address.
  */
 export const createAccount = async (params: CreateAccountParams): Promise<string> => {
   const account = resolveAccount(params);
@@ -358,10 +390,11 @@ export const createAccount = async (params: CreateAccountParams): Promise<string
     await assertAccountAbsent(params.provider, account);
     adaPerUtxoByte = adaPerUtxoByteOf(await params.provider.getParameters());
   }
-  const builder = await params.wallet.createTransactionBuilder();
+  const builder = await (params.sponsor ?? params.wallet).createTransactionBuilder();
+  builder.registerStakeAddress({ rewardAddress: account.rewardAddress, redeemer: operateRedeemer });
   builder.mintToken({ assetIdHex: account.nftAssetId, amount: 1n, redeemer: encodeMintRedeemer({ kind: 'createAccount' }) });
   inlineState(builder, account, controlLovelace(account, params.lovelace ?? DEFAULT_CONTROL_LOVELACE, state, adaPerUtxoByte), state);
-  return builder.addSigner(account.stakeKeyHash).addScript(account.script).build();
+  return builder.addSigner(account.owner).addScript(account.script).addScript(account.stakeScript).build();
 };
 
 /** Builds a plain transfer to the account address, which anyone can make. */
@@ -371,40 +404,76 @@ export const deposit = async (params: AccountParams & { value: Value }): Promise
   return builder.sendValue({ address: account.address, value: params.value }).build();
 };
 
+/** A step adding a withdrawal or a certificate of the account's stake credential to a builder. */
+type StakeOperation = (builder: TransactionBuilder, account: Account) => TransactionBuilder;
+
+/**
+ * The fee no transaction exceeds under the protocol parameters: the size
+ * fee of the largest transaction allowed plus the price of the largest
+ * execution budget allowed. An owner operation paid from the account
+ * reserves this much before its real fee is known, and what the reserve
+ * leaves over returns to the account as change.
+ */
+const maximumFee = (parameters: ProtocolParameters): bigint =>
+  BigInt(parameters.minFeeB) + BigInt(parameters.minFeeA) * BigInt(parameters.maxTxSize) + executionFee(parameters.maxTxExUnits, parameters.executionCosts);
+
 /**
  * Builds an owner transaction: the control UTxO is spent with the device
- * redeemer and recreated with the next state, the fund UTxOs needed for
- * the outputs are spent alongside it with the fund redeemer, and whatever
- * they hold beyond the outputs returns to the account. The wallet pays
- * the fee, funds any lovelace the control output needs beyond what it
- * held once the state has grown, and must hold one of the account's
- * device keys.
+ * redeemer and recreated with the next state, fund UTxOs are spent
+ * alongside it with the fund redeemer, and the outputs are paid. Without a
+ * sponsor the account pays its own way: the funds spent also cover the
+ * fee, the lovelace the control output needs beyond what it held once the
+ * state has grown, and a change output back to the account, with the fee
+ * reserved at the most a transaction can cost so that the change settles
+ * whatever the real fee turns out to be; the device wallet, which must
+ * hold one of the account's device keys, then only signs and provides the
+ * collateral. With a sponsor the funds spent cover the outputs alone,
+ * whatever they hold beyond the outputs returns to the account, and the
+ * sponsor pays the fee and the control output's growth and receives the
+ * change. A stake operation, when given, rides on the same transaction
+ * with the stake script attached, the spent control UTxO showing the stake
+ * script the device that signs.
  */
 const buildDeviceSpend = async (
   params: AccountUtxoParams,
   outputs: AccountOutput[],
   nextState: (state: AccountState) => AccountState,
+  stakeOperation?: StakeOperation,
 ): Promise<string> => {
   const account = resolveAccount(params);
   const { control, funds, state } = await findAccountUtxos(params.provider, params);
   const device = await deviceOf(params.wallet, state);
   const next = assertWellFormed(nextState(state));
-  const adaPerUtxoByte = adaPerUtxoByteOf(await params.provider.getParameters());
-  const required = sumOutputs(outputs);
-  const { selected, remainder } = selectWithChangeFloor(changeFloor(params, account, adaPerUtxoByte), (minimumChange) =>
-    selectFundUtxos(funds, required, minimumChange),
-  );
-  const builder = await params.wallet.createTransactionBuilder();
+  const parameters = await params.provider.getParameters();
+  const adaPerUtxoByte = adaPerUtxoByteOf(parameters);
+  const coins = controlLovelace(account, control.output.value.coins, next, adaPerUtxoByte);
+  const requested = sumOutputs(outputs);
+  const floor = changeFloor(params, account, adaPerUtxoByte);
+  const builder = await (params.sponsor ?? params.wallet).createTransactionBuilder();
+  let selected: UTxO[];
+  if (params.sponsor) {
+    const selection = selectWithChangeFloor(floor, (minimumChange) => selectFundUtxos(funds, requested, minimumChange));
+    selected = selection.selected;
+    if (!isZeroBalance(selection.remainder)) {
+      builder.sendValue({ address: account.address, value: toValue(selection.remainder) });
+    }
+  } else {
+    const required = addBalances(requested, { [LOVELACE_ASSET_ID]: coins - control.output.value.coins + maximumFee(parameters) });
+    selected = selectWithChangeFloor(floor, (minimumChange) =>
+      selectFundUtxos(funds, addBalances(required, { [LOVELACE_ASSET_ID]: minimumChange }), 0n),
+    ).selected;
+    builder.setCoinSelector(accountOnlyCoinSelector).setChangeAddress(account.address);
+  }
   builder.addInput({ utxo: control, redeemer: deviceRedeemer });
   for (const utxo of selected) {
     builder.addInput({ utxo, redeemer: fundRedeemer });
   }
-  inlineState(builder, account, controlLovelace(account, control.output.value.coins, next, adaPerUtxoByte), next);
+  inlineState(builder, account, coins, next);
   for (const output of outputs) {
     builder.sendValue(output);
   }
-  if (!isZeroBalance(remainder)) {
-    builder.sendValue({ address: account.address, value: toValue(remainder) });
+  if (stakeOperation) {
+    stakeOperation(builder, account).addScript(account.stakeScript);
   }
   return builder.addSigner(device).addScript(account.script).build();
 };
@@ -438,26 +507,29 @@ export const revokeGrant = (params: AccountUtxoParams & { slot: bigint }): Promi
 export const revokeAllGrants = (params: AccountUtxoParams): Promise<string> =>
   buildDeviceSpend(params, [], stateWithoutGrants);
 
+/** The state of the account unchanged, for owner transactions that only operate the stake credential. */
+const sameState = (state: AccountState): AccountState => state;
+
 /**
- * Builds the transaction that retires an account: the control UTxO and
- * every fund UTxO are spent, the state NFT is burned, and what the
- * account held goes to the wallet as change.
+ * Builds an owner transaction withdrawing the rewards of the account's
+ * stake credential. The ledger only accepts a withdrawal of the whole
+ * reward balance, which the provider reports when no amount is given; a
+ * withdrawal of zero is valid and runs the stake script all the same. The
+ * withdrawn lovelace joins the transaction's balance, so without a
+ * sponsor it returns to the account as change.
  */
-export const deleteAccount = async (params: AccountUtxoParams): Promise<string> => {
-  const account = resolveAccount(params);
-  const { control, funds, state } = await findAccountUtxos(params.provider, params);
-  const device = await deviceOf(params.wallet, state);
-  const builder = await params.wallet.createTransactionBuilder();
-  builder.addInput({ utxo: control, redeemer: deviceRedeemer });
-  for (const utxo of funds) {
-    builder.addInput({ utxo, redeemer: fundRedeemer });
-  }
-  return builder
-    .mintToken({ assetIdHex: account.nftAssetId, amount: -1n, redeemer: encodeMintRedeemer({ kind: 'deleteAccount' }) })
-    .addSigner(device)
-    .addScript(account.script)
-    .build();
+export const withdrawRewards = async (params: AccountUtxoParams & { amount?: bigint }): Promise<string> => {
+  const amount = params.amount ?? (await params.provider.getRewardsBalance(resolveAccount(params).rewardAddress.toBech32()));
+  return buildDeviceSpend(params, [], sameState, (builder, account) =>
+    builder.withdrawRewards({ rewardAddress: account.rewardAddress, amount, redeemer: operateRedeemer }),
+  );
 };
+
+/** Builds an owner transaction delegating the account's stake credential to a pool, given by its bech32 id. */
+export const delegateStake = (params: AccountUtxoParams & { poolId: string }): Promise<string> =>
+  buildDeviceSpend(params, [], sameState, (builder, account) =>
+    builder.delegateStake({ rewardAddress: account.rewardAddress, poolId: params.poolId, redeemer: operateRedeemer }),
+  );
 
 /**
  * A coin selector that spends nothing beyond the inputs the builder was
@@ -547,14 +619,9 @@ const selectGrantFunds = (
 /** Whether two addresses are equal as the validator compares them, ignoring the network id. */
 const sameAddress = (a: string, b: string): boolean => Cometa.deepEqualsPlutusData(encodeAddress(a), encodeAddress(b));
 
-/** Throws unless the signer holds the key the grant names as its grantee. */
-const assertGranteeMatches = (grant: Grant, grantee: GranteeSigner): void => {
-  const matches =
-    grant.grantee.kind === grantee.kind &&
-    (grantee.kind === 'ed25519'
-      ? grant.grantee.kind === 'ed25519' && grant.grantee.keyHash === grantee.keyHash
-      : grant.grantee.kind === 'secp256k1' && grant.grantee.publicKey === granteePublicKey(grantee.privateKey));
-  if (!matches) {
+/** Throws unless the signer is the key the grant names as its grantee. */
+const assertGranteeMatches = (grant: Grant, grantee: string): void => {
+  if (grant.grantee !== grantee) {
     throw new Error(`The signer is not the grantee of grant ${grant.slot}`);
   }
 };
@@ -589,21 +656,18 @@ const leavingBalance = (txCbor: string, account: Account, inputs: UTxO[]): Balan
  * caps reduced by what leaves; the fund UTxOs covering the outputs are
  * spent with the fund redeemer, and the fee and the change come out of
  * and go back to the account, so that only the requested outputs leave
- * it. The wallet provides the collateral and, for an Ed25519 grantee, the
- * signature.
+ * it. The grantee is a required signer and the wallet, which must hold
+ * its key, provides the collateral and the signature.
  *
  * The fee is part of what leaves, and the recreated state depends on it,
  * so the transaction is rebuilt until the state it carries matches the
- * value that leaves. A secp256k1 grantee then signs the settled body and
- * the transaction is built once more with the signature in the redeemer,
- * which changes nothing the signature covers.
+ * value that leaves.
  *
  * The scripts are never evaluated: the validator refuses every draft
  * whose fee differs from the one the state was computed against, and a
  * provider reports that refusal as a failure, so the redeemers carry the
  * fixed budgets instead. The defaults cover a small state; a larger state
- * or more inputs raise the real cost, since the validator serialises the
- * transaction for the grantee message, and the execution units option
+ * or more inputs raise the real cost, and the execution units option
  * raises the budgets for them.
  *
  * The scope, recipient and expiry checks mirror the validator's rules so
@@ -641,7 +705,7 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
   const inputs = [control, ...selected];
   const evaluator = fixedBudgetEvaluator(control.input, budgets);
 
-  const build = async (leaving: Balance, signature?: string): Promise<{ tx: string; state: AccountState }> => {
+  const build = async (leaving: Balance): Promise<{ tx: string; state: AccountState }> => {
     const violation = params.unchecked ? undefined : scopeViolation(grant.scope, leaving);
     if (violation) {
       throw new Error(`Grant ${grant.slot} refuses the spend: ${violation}`);
@@ -649,12 +713,7 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
     const next = stateAfterSpend(state, params.slot, leaving);
     const builder = await params.wallet.createTransactionBuilder();
     builder.setTxEvaluator(evaluator).setCoinSelector(accountOnlyCoinSelector).setChangeAddress(account.address);
-    builder.addInput({
-      utxo: control,
-      redeemer: encodeAccountRedeemer(
-        signature === undefined ? { kind: 'spendWithGrant', slot: params.slot } : { kind: 'spendWithGrant', slot: params.slot, signature },
-      ),
-    });
+    builder.addInput({ utxo: control, redeemer: encodeAccountRedeemer({ kind: 'spendWithGrant', slot: params.slot }) });
     for (const utxo of selected) {
       builder.addInput({ utxo, redeemer: fundRedeemer });
     }
@@ -662,37 +721,20 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
     for (const output of params.outputs) {
       builder.sendValue(output);
     }
-    if (params.grantee.kind === 'ed25519') {
-      builder.addSigner(params.grantee.keyHash);
-    }
-    const tx = await builder.setInvalidAfter(params.validUntilSlot).addScript(account.script).build();
+    const tx = await builder.addSigner(params.grantee).setInvalidAfter(params.validUntilSlot).addScript(account.script).build();
     return { tx, state: next };
   };
 
-  const placeholder = params.grantee.kind === 'secp256k1' ? SIGNATURE_PLACEHOLDER : undefined;
-  let leaving = requested;
-  let built = await build(leaving, placeholder);
+  let built = await build(requested);
   for (let round = 0; round < MAX_BALANCING_ROUNDS; round += 1) {
     const actual = leavingBalance(built.tx, account, inputs);
     if (Cometa.deepEqualsPlutusData(encodeAccountState(stateAfterSpend(state, params.slot, actual)), encodeAccountState(built.state))) {
-      leaving = actual;
-      break;
+      return built.tx;
     }
     if (round === MAX_BALANCING_ROUNDS - 1) {
       throw new Error('The grant spend did not settle on a fee and state');
     }
-    leaving = actual;
-    built = await build(leaving, placeholder);
+    built = await build(actual);
   }
-  if (params.grantee.kind !== 'secp256k1') {
-    return built.tx;
-  }
-  const message = granteeMessage(grantMessagePartsOf(built.tx, control.input, slotConfig));
-  const signature = Cometa.uint8ArrayToHex(signGrantMessage(params.grantee.privateKey, message));
-  const signed = await build(leaving, signature);
-  const signedMessage = granteeMessage(grantMessagePartsOf(signed.tx, control.input, slotConfig));
-  if (Cometa.uint8ArrayToHex(signedMessage) !== Cometa.uint8ArrayToHex(message)) {
-    throw new Error('The transaction body changed after the grantee signed it');
-  }
-  return signed.tx;
+  return built.tx;
 };

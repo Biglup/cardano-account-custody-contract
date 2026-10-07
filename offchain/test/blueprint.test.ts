@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { accountAddress, isAccountAddress, paymentKeyHashOf, stakeKeyHashOf, stateNftAssetId } from '../src/address.js';
+import { accountAddress, isAccountAddress, paymentKeyHashOf, rewardAddress, stateNftAssetId } from '../src/address.js';
 import { accountScript, accountScriptHash, accountValidator, loadBlueprint } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
-import { OWNER_PAYMENT_KEY, OWNER_STAKE_KEY, enterpriseAddress } from './support/account.js';
+import { OWNER_PAYMENT_KEY, OWNER_STAKE_KEY, enterpriseAddress, ownerStakeScriptHash } from './support/account.js';
 
 describe('blueprint', () => {
   it('loads the account validator as a Plutus V3 script', () => {
@@ -17,7 +17,7 @@ describe('blueprint', () => {
     const blueprint = loadBlueprint();
     const hash = accountScriptHash(accountScript(blueprint));
     expect(hash).toBe(accountValidator(blueprint).hash);
-    for (const validator of blueprint.validators) {
+    for (const validator of blueprint.validators.filter((entry) => entry.title.startsWith('account.account.'))) {
       expect(validator.hash).toBe(hash);
     }
   });
@@ -30,25 +30,33 @@ describe('blueprint', () => {
 describe('account address', () => {
   const scriptHash = accountScriptHash(accountScript());
 
-  it('pays to the script and stakes with the user key', () => {
-    const address = accountAddress(scriptHash, OWNER_STAKE_KEY);
+  it('pays to the script and stakes with the user stake script', () => {
+    const address = accountAddress(scriptHash, ownerStakeScriptHash);
     const base = address.asBase();
-    expect(address.getType()).toBe(Cometa.AddressType.BasePaymentScriptStakeKey);
+    expect(address.getType()).toBe(Cometa.AddressType.BasePaymentScriptStakeScript);
     expect(address.getNetworkId()).toBe(Cometa.NetworkId.Testnet);
     expect(base?.getPaymentCredential()).toEqual({ hash: scriptHash, type: Cometa.CredentialType.ScriptHash });
-    expect(base?.getStakeCredential()).toEqual({ hash: OWNER_STAKE_KEY, type: Cometa.CredentialType.KeyHash });
+    expect(base?.getStakeCredential()).toEqual({ hash: ownerStakeScriptHash, type: Cometa.CredentialType.ScriptHash });
     expect(address.toString().startsWith('addr_test1')).toBe(true);
-    expect(stakeKeyHashOf(address)).toBe(OWNER_STAKE_KEY);
     expect(paymentKeyHashOf(address)).toBeUndefined();
-    expect(isAccountAddress(address.toString(), scriptHash, OWNER_STAKE_KEY)).toBe(true);
+    expect(isAccountAddress(address.toString(), scriptHash, ownerStakeScriptHash)).toBe(true);
     expect(isAccountAddress(address, scriptHash, OWNER_PAYMENT_KEY)).toBe(false);
+    expect(isAccountAddress(address, OWNER_PAYMENT_KEY, ownerStakeScriptHash)).toBe(false);
   });
 
-  it('names the state NFT after the script hash and the stake key hash', () => {
-    const assetId = stateNftAssetId(scriptHash, OWNER_STAKE_KEY);
-    expect(assetId).toBe(`${scriptHash}${OWNER_STAKE_KEY}`);
+  it('derives the reward account from the stake script', () => {
+    const reward = rewardAddress(ownerStakeScriptHash);
+    expect(reward.getCredential()).toEqual({ hash: ownerStakeScriptHash, type: Cometa.CredentialType.ScriptHash });
+    expect(reward.getNetworkId()).toBe(Cometa.NetworkId.Testnet);
+    expect(reward.toBech32().startsWith('stake_test17')).toBe(true);
+    expect(Cometa.RewardAddress.fromBech32(reward.toBech32()).getCredential()).toEqual(reward.getCredential());
+  });
+
+  it('names the state NFT after the script hash and the stake script hash', () => {
+    const assetId = stateNftAssetId(scriptHash, ownerStakeScriptHash);
+    expect(assetId).toBe(`${scriptHash}${ownerStakeScriptHash}`);
     expect(Cometa.policyIdFromAssetId(assetId)).toBe(scriptHash);
-    expect(Cometa.assetNameFromAssetId(assetId)).toBe(OWNER_STAKE_KEY);
+    expect(Cometa.assetNameFromAssetId(assetId)).toBe(ownerStakeScriptHash);
   });
 
   it('reads the keys of a wallet address', () => {
@@ -58,9 +66,8 @@ describe('account address', () => {
       { hash: OWNER_STAKE_KEY, type: Cometa.CredentialType.KeyHash },
     ).toAddress();
     expect(paymentKeyHashOf(wallet)).toBe(OWNER_PAYMENT_KEY);
-    expect(stakeKeyHashOf(wallet)).toBe(OWNER_STAKE_KEY);
     expect(paymentKeyHashOf(enterpriseAddress(OWNER_PAYMENT_KEY))).toBe(OWNER_PAYMENT_KEY);
-    expect(stakeKeyHashOf(enterpriseAddress(OWNER_PAYMENT_KEY))).toBeUndefined();
-    expect(isAccountAddress(wallet, scriptHash, OWNER_STAKE_KEY)).toBe(false);
+    expect(isAccountAddress(wallet, scriptHash, ownerStakeScriptHash)).toBe(false);
+    expect(isAccountAddress(enterpriseAddress(OWNER_PAYMENT_KEY), scriptHash, ownerStakeScriptHash)).toBe(false);
   });
 });

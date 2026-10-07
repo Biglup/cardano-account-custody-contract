@@ -24,7 +24,7 @@ const hasDuplicates = <T>(items: T[]): boolean => new Set(items).size !== items.
 
 /** Why a scope is not well formed, or undefined when it is. */
 export const scopeDefect = (scope: Scope): string | undefined => {
-  if (scope.perCallCap < 0n || scope.cap < 0n || scope.lovelaceCap < 0n) {
+  if (scope.perCallCap < 0n || scope.cap < 0n || scope.lovelacePerCallCap < 0n || scope.lovelaceCap < 0n) {
     return 'caps must not be negative';
   }
   if (scope.expiresAt <= 0n) {
@@ -33,8 +33,8 @@ export const scopeDefect = (scope: Scope): string | undefined => {
   if (scope.recipients.length > MAX_RECIPIENTS) {
     return `a scope may list at most ${MAX_RECIPIENTS} recipients`;
   }
-  if (isLovelace(scope.asset) && scope.lovelaceCap !== 0n) {
-    return 'a lovelace scope must have a zero lovelace cap';
+  if (isLovelace(scope.asset) && (scope.lovelacePerCallCap !== 0n || scope.lovelaceCap !== 0n)) {
+    return 'a lovelace scope must have zero lovelace caps';
   }
   return undefined;
 };
@@ -123,9 +123,10 @@ export const stateWithoutGrants = (state: AccountState): AccountState => ({
 const clampedOutflow = (quantity: bigint): bigint => (quantity > 0n ? quantity : 0n);
 
 /**
- * A scope with its remaining caps reduced by a leaving balance: each cap
- * loses the net outflow of its asset, clamped at zero, so a deposit made
- * alongside the spend never raises a cap above what the owner granted.
+ * A scope with its remaining caps reduced by a leaving balance: each
+ * cumulative cap loses the net outflow of its asset, clamped at zero, so a
+ * deposit made alongside the spend never raises a cap above what the owner
+ * granted. The per call caps bound every spend alike and never change.
  */
 export const scopeAfterSpend = (scope: Scope, leaving: Balance): Scope => ({
   ...scope,
@@ -149,8 +150,9 @@ export const stateAfterSpend = (state: AccountState, slot: bigint, leaving: Bala
 /**
  * Why a leaving balance breaks a scope, or undefined when it stays within
  * it: no more of the scoped asset than the per call cap and the remaining
- * cap, no more lovelace than the remaining lovelace cap when the scoped
- * asset is not lovelace, and nothing of any other asset class.
+ * cap, no more lovelace than the lovelace per call cap and the remaining
+ * lovelace cap when the scoped asset is not lovelace, and nothing of any
+ * other asset class.
  */
 export const scopeViolation = (scope: Scope, leaving: Balance): string | undefined => {
   const assetId = assetIdOf(scope.asset);
@@ -162,6 +164,9 @@ export const scopeViolation = (scope: Scope, leaving: Balance): string | undefin
     return `${assetLeaving} of the scoped asset exceeds the remaining cap of ${scope.cap}`;
   }
   const lovelaceLeaving = quantityOf(leaving, LOVELACE_ASSET_ID);
+  if (!isLovelace(scope.asset) && lovelaceLeaving > scope.lovelacePerCallCap) {
+    return `${lovelaceLeaving} lovelace exceeds the lovelace per call cap of ${scope.lovelacePerCallCap}`;
+  }
   if (!isLovelace(scope.asset) && lovelaceLeaving > scope.lovelaceCap) {
     return `${lovelaceLeaving} lovelace exceeds the remaining lovelace cap of ${scope.lovelaceCap}`;
   }

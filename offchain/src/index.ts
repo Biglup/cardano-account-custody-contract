@@ -1,9 +1,11 @@
 export { Cometa } from './cometa.js';
 export * from './blueprint.js';
+export * from './stake-script.js';
+export * from './discovery.js';
 export * from './address.js';
 export * from './data.js';
 export * from './state.js';
 export * from './value.js';
 export * from './output.js';
-export * from './message.js';
+export * from './body.js';
 export * from './transactions.js';

@@ -41,7 +41,10 @@ describe('well formedness', () => {
     expect(stateDefect({ ...initialState, grants: Array.from({ length: MAX_GRANTS + 1 }, (_, i) => ({ ...grant, slot: BigInt(i) })) })).toMatch(/at most/);
     expect(stateDefect({ ...initialState, grants: [{ ...grant, scope: { ...grant.scope, cap: -1n } }] })).toMatch(/caps/);
     expect(stateDefect({ ...initialState, grants: [{ ...grant, scope: { ...grant.scope, expiresAt: 0n } }] })).toMatch(/expiry/);
-    expect(stateDefect({ ...initialState, grants: [{ ...grant, scope: { ...grant.scope, lovelaceCap: 1n } }] })).toMatch(/lovelace cap/);
+    expect(stateDefect({ ...initialState, grants: [{ ...grant, scope: { ...grant.scope, lovelaceCap: 1n } }] })).toMatch(/zero lovelace caps/);
+    expect(stateDefect({ ...initialState, grants: [{ ...grant, scope: { ...grant.scope, lovelacePerCallCap: 1n } }] })).toMatch(/zero lovelace caps/);
+    expect(stateDefect({ ...initialState, grants: [{ ...grant, scope: { ...grant.scope, lovelacePerCallCap: -1n } }] })).toMatch(/caps must not be negative/);
+    expect(stateDefect({ ...initialState, grants: [{ ...grantedState.grants[1]!, scope: { ...tokenScope(), lovelacePerCallCap: 1n } }] })).toBeUndefined();
     expect(() => assertWellFormed({ ...initialState, devices: [] })).toThrow(/not well formed/);
   });
 });
@@ -70,6 +73,8 @@ describe('state after spend', () => {
     const after = stateAfterSpend(grantedState, 1n, { [TOKEN_ASSET_ID]: 7n, '': 1_000_000n });
     expect(after.grants[1]!.scope.cap).toBe(43n);
     expect(after.grants[1]!.scope.lovelaceCap).toBe(2_000_000n);
+    expect(after.grants[1]!.scope.perCallCap).toBe(10n);
+    expect(after.grants[1]!.scope.lovelacePerCallCap).toBe(2_500_000n);
     expect(after.grants[0]).toEqual(grantedState.grants[0]);
     expect(after.grants[2]).toEqual(grantedState.grants[2]);
   });
@@ -93,8 +98,10 @@ describe('scope violations', () => {
     expect(scopeViolation(lovelaceScope(), { '': 10_000_000n })).toBeUndefined();
     expect(scopeViolation(lovelaceScope(), { '': 10_000_001n })).toMatch(/per call cap/);
     expect(scopeViolation({ ...lovelaceScope(), cap: 1n }, { '': 2n })).toMatch(/remaining cap/);
-    expect(scopeViolation(tokenScope(), { [TOKEN_ASSET_ID]: 10n, '': 3_000_000n })).toBeUndefined();
-    expect(scopeViolation(tokenScope(), { [TOKEN_ASSET_ID]: 1n, '': 3_000_001n })).toMatch(/lovelace cap/);
+    expect(scopeViolation(tokenScope(), { [TOKEN_ASSET_ID]: 10n, '': 2_500_000n })).toBeUndefined();
+    expect(scopeViolation(tokenScope(), { [TOKEN_ASSET_ID]: 1n, '': 2_500_001n })).toMatch(/lovelace per call cap of 2500000/);
+    expect(scopeViolation({ ...tokenScope(), lovelaceCap: 1_000_000n }, { [TOKEN_ASSET_ID]: 1n, '': 1_000_001n })).toMatch(/remaining lovelace cap of 1000000/);
+    expect(scopeViolation({ ...tokenScope(), lovelacePerCallCap: 0n }, { [TOKEN_ASSET_ID]: 1n })).toBeUndefined();
     expect(scopeViolation(lovelaceScope(), { '': 1n, [TOKEN_ASSET_ID]: 1n })).toMatch(/does not cover/);
     expect(scopeViolation(lovelaceScope(), { [TOKEN_ASSET_ID]: -1n })).toBeUndefined();
   });

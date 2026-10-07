@@ -25,8 +25,20 @@ const NODE_REFUSAL_MESSAGE = /ValidationTagMismatch|PlutusFailure/;
 /** The lovelace in one tADA. */
 export const TADA = 1_000_000n;
 
-/** The lovelace the Ed25519 agent wallet receives for collateral and fees. */
+/** The lovelace the agent wallet receives for collateral and fees. */
 export const AGENT_WALLET_LOVELACE = 10n * TADA;
+
+/**
+ * The lovelace the owner wallet receives once, as the single UTxO it
+ * offers as collateral. The owner holds no other ADA: creation is paid by
+ * the funding wallet as sponsor and every later owner operation is paid
+ * from the account's own funds, so the owner only ever signs. Collateral
+ * is only taken when a transaction fails in phase two, which the builder
+ * never lets happen, and even then the collateral return the builder sets
+ * would give back everything above the amount owed; a sponsored
+ * production flow provides the owner's collateral the same way.
+ */
+export const OWNER_COLLATERAL_LOVELACE = 5n * TADA;
 
 /** The lovelace deposited into the account. */
 export const DEPOSIT_LOVELACE = 50n * TADA;
@@ -34,7 +46,7 @@ export const DEPOSIT_LOVELACE = 50n * TADA;
 /** The lovelace the owner spends in the first device spend. */
 export const DEVICE_SPEND_LOVELACE = 5n * TADA;
 
-/** The lovelace of each grant spend the Ed25519 agent attempts. */
+/** The lovelace of each grant spend the agent attempts. */
 export const GRANT_SPEND_LOVELACE = 8n * TADA;
 
 /** The lovelace of the grant spend aimed at an address outside the recipients. */
@@ -43,11 +55,11 @@ export const STRANGER_SPEND_LOVELACE = 3n * TADA;
 /** The lovelace of the grant spend attempted after the grant was revoked. */
 export const REVOKED_SPEND_LOVELACE = 1n * TADA;
 
-/** The lovelace the secp256k1 agent spends. */
-export const SECP256K1_SPEND_LOVELACE = 2n * TADA;
-
 /** The lovelace the new device spends. */
 export const NEW_DEVICE_SPEND_LOVELACE = 1n * TADA;
+
+/** The rewards withdrawn in every withdrawal flow: the account earns none during the run, so only a zero withdrawal is valid. */
+export const WITHDRAWN_LOVELACE = 0n;
 
 /** The per call cap of every grant issued in the run. */
 export const PER_CALL_CAP = 10n * TADA;
@@ -64,12 +76,10 @@ export const SHORT_GRANT_LIFETIME_MS = 90n * 1000n;
 /** The least balance the funding wallet needs before the run starts. */
 export const MINIMUM_FUNDING_LOVELACE = 200n * TADA;
 
-/** The slot of the grant issued to the Ed25519 agent. */
-export const ED25519_GRANT_SLOT = 0n;
-/** The slot of the grant issued to the secp256k1 agent. */
-export const SECP256K1_GRANT_SLOT = 1n;
+/** The slot of the first grant issued to the agent. */
+export const AGENT_GRANT_SLOT = 0n;
 /** The slot of the short lived grant used to prove the expiry rule. */
-export const SHORT_GRANT_SLOT = 2n;
+export const SHORT_GRANT_SLOT = 1n;
 
 /**
  * The flows of the preprod run in order. Each flow either confirms a
@@ -78,24 +88,26 @@ export const SHORT_GRANT_SLOT = 2n;
  * submitted so that the node refuses it with the validator's own failure.
  */
 export const FLOW_PLAN: Flow[] = [
-  { step: 1, description: 'createAccount mints the state NFT with the owner key as the only device', outcome: 'confirmed' },
-  { step: 2, description: 'deposit 50 tADA into the account with a plain transfer', outcome: 'confirmed' },
-  { step: 3, description: 'spendWithDevice 5 tADA to the owner address', outcome: 'confirmed' },
-  { step: 4, description: 'issueGrant slot 0 to the Ed25519 agent: 10 tADA per call, 15 tADA in total, owner as the only recipient', outcome: 'confirmed' },
-  { step: 5, description: 'spendWithGrant 8 tADA to the owner address signed by the Ed25519 agent', outcome: 'confirmed' },
-  { step: 6, description: 'spendWithGrant 8 tADA again, beyond the remaining cap', outcome: 'refused by the builder', expectedMessage: /exceeds the remaining cap/ },
-  { step: 7, description: 'spendWithGrant 8 tADA again, beyond the remaining cap, built unchecked, signed and submitted', outcome: 'refused by the node', expectedMessage: NODE_REFUSAL_MESSAGE },
-  { step: 8, description: 'spendWithGrant 3 tADA to an address outside the recipients', outcome: 'refused by the builder', expectedMessage: /is not a recipient/ },
-  { step: 9, description: 'spendWithGrant 3 tADA to an address outside the recipients, built unchecked, signed and submitted', outcome: 'refused by the node', expectedMessage: NODE_REFUSAL_MESSAGE },
-  { step: 10, description: 'revokeGrant slot 0', outcome: 'confirmed' },
-  { step: 11, description: 'spendWithGrant 1 tADA with the revoked grant', outcome: 'refused by the builder', expectedMessage: /no grant in slot/ },
-  { step: 12, description: 'issueGrant slot 1 to the secp256k1 agent and spendWithGrant 2 tADA with its signature', outcome: 'confirmed' },
-  { step: 13, description: 'issueGrant slot 2 expiring in 90 seconds, then spendWithGrant after the expiry', outcome: 'refused by the builder', expectedMessage: /starts after grant .* expires/ },
-  { step: 14, description: 'spendWithGrant 1 tADA with the expired grant, built unchecked with a validity range ending after the expiry, signed and submitted', outcome: 'refused by the node', expectedMessage: NODE_REFUSAL_MESSAGE },
-  { step: 15, description: 'addDevice the agent wallet key, then spendWithDevice 1 tADA signed by the new device', outcome: 'confirmed' },
-  { step: 16, description: 'removeDevice the agent wallet key', outcome: 'confirmed' },
-  { step: 17, description: 'revokeAllGrants', outcome: 'confirmed' },
-  { step: 18, description: 'deleteAccount burns the state NFT and returns the funds to the funding wallet', outcome: 'confirmed' },
+  { step: 1, description: 'createAccount, sponsored by the funding wallet and signed by the owner key, registers the stake credential with its deposit and mints the state NFT with the owner key as the only device', outcome: 'confirmed' },
+  { step: 2, description: 'deposit 50 tADA into the account with a plain transfer from the funding wallet', outcome: 'confirmed' },
+  { step: 3, description: 'spendWithDevice 5 tADA to the owner address, fee paid from the account', outcome: 'confirmed' },
+  { step: 4, description: 'withdrawRewards of zero from the reward account signed by the owner device', outcome: 'confirmed' },
+  { step: 5, description: 'delegateStake to an active preprod pool signed by the owner device', outcome: 'confirmed' },
+  { step: 6, description: 'issueGrant slot 0 to the agent key: 10 tADA per call, 15 tADA in total, owner as the only recipient', outcome: 'confirmed' },
+  { step: 7, description: 'spendWithGrant 8 tADA to the owner address signed by the agent', outcome: 'confirmed' },
+  { step: 8, description: 'spendWithGrant 8 tADA again, beyond the remaining cap', outcome: 'refused by the builder', expectedMessage: /exceeds the remaining cap/ },
+  { step: 9, description: 'spendWithGrant 8 tADA again, beyond the remaining cap, built unchecked, signed and submitted', outcome: 'refused by the node', expectedMessage: NODE_REFUSAL_MESSAGE },
+  { step: 10, description: 'spendWithGrant 3 tADA to an address outside the recipients', outcome: 'refused by the builder', expectedMessage: /is not a recipient/ },
+  { step: 11, description: 'spendWithGrant 3 tADA to an address outside the recipients, built unchecked, signed and submitted', outcome: 'refused by the node', expectedMessage: NODE_REFUSAL_MESSAGE },
+  { step: 12, description: 'revokeGrant slot 0', outcome: 'confirmed' },
+  { step: 13, description: 'spendWithGrant 1 tADA with the revoked grant', outcome: 'refused by the builder', expectedMessage: /no grant in slot/ },
+  { step: 14, description: 'issueGrant slot 1 expiring in 90 seconds, then spendWithGrant after the expiry', outcome: 'refused by the builder', expectedMessage: /starts after grant .* expires/ },
+  { step: 15, description: 'spendWithGrant 1 tADA with the expired grant, built unchecked with a validity range ending after the expiry, signed and submitted', outcome: 'refused by the node', expectedMessage: NODE_REFUSAL_MESSAGE },
+  { step: 16, description: 'addDevice the agent wallet key, then spendWithDevice 1 tADA signed by the new device, which finds the account by its persisted record and its own wallet alone', outcome: 'confirmed' },
+  { step: 17, description: 'withdrawRewards of zero from the reward account signed by the new device, again from the account record and its own wallet alone', outcome: 'confirmed' },
+  { step: 18, description: 'removeDevice the agent wallet key', outcome: 'confirmed' },
+  { step: 19, description: 'revokeAllGrants', outcome: 'confirmed' },
+  { step: 20, description: 'spendWithDevice, sponsored by the funding wallet, sweeps every fund UTxO back to it, leaving only the control UTxO at the account address', outcome: 'confirmed' },
 ];
 
 /** The reasons a step can fail: refused by the contract or its builder, or broken by something else. */
@@ -248,8 +260,12 @@ export const supportingRow = ({ description, txId }: SupportingTransaction): str
 export const evidenceDocument = (facts: {
   date: string;
   fundingAddress: string;
+  ownerAddress: string;
   accountAddress: string;
   scriptHash: string;
+  stakeScriptHash: string;
+  rewardAddress: string;
+  poolId: string;
   records: FlowRecord[];
   supporting: SupportingTransaction[];
 }): string =>
@@ -263,13 +279,26 @@ export const evidenceDocument = (facts: {
     'were built without those checks, signed and submitted, and quote the',
     'ledger error Blockfrost returned when the validator failed in phase two;',
     'the node rejects such a transaction before it enters a block, so no',
-    'collateral is consumed.',
+    'collateral is consumed. The account stake credential is the hash of the',
+    "account's own stake script, applied to the owner key and the account",
+    'script hash: creation registers it with the deposit, and the owner device',
+    'and later the second device operate its reward account. The owner wallet',
+    'holds no ADA beyond one collateral UTxO: the funding wallet sponsors the',
+    'creation and every later owner operation is paid from the account. An',
+    'account is never deleted and its credential stays registered, so the run',
+    'ends by sweeping the funds back and leaving the control UTxO in place;',
+    'every run therefore creates its account for a fresh owner key of the',
+    'mnemonic.',
     '',
     `- Date: ${facts.date}`,
     `- Funding address: \`${facts.fundingAddress}\``,
+    `- Owner address: \`${facts.ownerAddress}\``,
     `- Account address: \`${facts.accountAddress}\``,
     `- Account script hash: \`${facts.scriptHash}\``,
     `- State NFT policy id: \`${facts.scriptHash}\``,
+    `- Account stake credential: \`${facts.stakeScriptHash}\``,
+    `- Reward address: \`${facts.rewardAddress}\``,
+    `- Delegated pool: \`${facts.poolId}\``,
     '',
     '| Step | Flow | Transactions | Outcome |',
     '| ---- | ---- | ------------ | ------- |',

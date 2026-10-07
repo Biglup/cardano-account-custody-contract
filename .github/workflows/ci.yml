@@ -16,6 +16,7 @@ jobs:
       - run: aiken fmt --check
       - run: aiken check -D
       - run: aiken build
+      - run: git diff --exit-code plutus.json
 
   offchain:
     runs-on: ubuntu-latest

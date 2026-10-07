@@ -15,10 +15,10 @@ import type {
   VkeyWitnessSet,
   Wallet,
 } from '@biglup/cometa';
-import { stakeKeyHashOf, toAddress } from '../../src/address.js';
+import { toAddress } from '../../src/address.js';
 import { Cometa } from '../../src/cometa.js';
-import { decodeAccountRedeemer, decodeAccountState, encodeAccountState } from '../../src/data.js';
-import { type ValidityRange, transactionBodyParts, upperBoundTime, withoutCborCache } from '../../src/message.js';
+import { type ValidityRange, transactionBodyParts, upperBoundTime } from '../../src/body.js';
+import { decodeAccountRedeemer, decodeAccountState, encodeAccountState, withoutCborCache } from '../../src/data.js';
 import { findGrant, scopeViolation, stateAfterSpend } from '../../src/state.js';
 import { type Balance, LOVELACE_ASSET_ID, addBalances, quantityOf, subtractBalances, toBalance } from '../../src/value.js';
 
@@ -104,11 +104,14 @@ export const FAKE_EXECUTION_UNITS = { memory: 1_500_000, steps: 700_000_000 };
 /** The bech32 form of an address, used to key the canned UTxOs. */
 const addressKey = (address: Address | string): string => (typeof address === 'string' ? address : address.toString());
 
-/** The asset id of the state NFT an account address's control UTxO holds, when the address is a script base address. */
+/** The asset id of the state NFT an account address's control UTxO holds, when the address is a script base address with a script stake part. */
 const stateNftOf = (address: string): string | undefined => {
-  const payment = toAddress(address).asBase()?.getPaymentCredential();
-  const stakeKeyHash = stakeKeyHashOf(address);
-  return payment?.type === Cometa.CredentialType.ScriptHash && stakeKeyHash !== undefined ? `${payment.hash}${stakeKeyHash}` : undefined;
+  const base = toAddress(address).asBase();
+  const payment = base?.getPaymentCredential();
+  const stake = base?.getStakeCredential();
+  return payment?.type === Cometa.CredentialType.ScriptHash && stake?.type === Cometa.CredentialType.ScriptHash
+    ? `${payment.hash}${stake.hash}`
+    : undefined;
 };
 
 /**

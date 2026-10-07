@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Cometa } from '../src/cometa.js';
-import { decodeAccountState, encodeAccountState } from '../src/data.js';
-import { granteeMessage, grantMessagePartsOf, slotToPosixTime, transactionBodyParts, verifyGrantSignature, withoutCborCache } from '../src/message.js';
+import { decodeAccountState, encodeAccountState, withoutCborCache } from '../src/data.js';
+import { slotToPosixTime, transactionBodyParts } from '../src/body.js';
 import { minimumLovelaceForSize, minimumUtxoLovelace, serialiseOutput } from '../src/output.js';
 import { stateAfterSpend, stateWithDevice, stateWithGrant, stateWithoutDevice, stateWithoutGrant, stateWithoutGrants } from '../src/state.js';
 import {
@@ -9,7 +9,7 @@ import {
   DEFAULT_FUND_EXECUTION_UNITS,
   addDevice,
   createAccount,
-  deleteAccount,
+  delegateStake,
   deposit,
   findAccountUtxos,
   issueGrant,
@@ -20,17 +20,18 @@ import {
   selectFundUtxos,
   spendWithDevice,
   spendWithGrant,
+  withdrawRewards,
 } from '../src/transactions.js';
 import { toBalance } from '../src/value.js';
 import {
   AGENT_PAYMENT_KEY,
   AGENT_STAKE_KEY,
+  AGENT_UTXO_TX,
   CONTROL_LOVELACE,
-  GRANTEE_PRIVATE_KEY,
-  GRANTEE_PUBLIC_KEY,
   OTHER_DEVICE_KEY,
   OWNER_PAYMENT_KEY,
-  OWNER_STAKE_KEY,
+  OWNER_UTXO_TX,
+  SPONSOR_UTXO_TX,
   TOKEN_ASSET_ID,
   VALID_UNTIL_SLOT,
   address,
@@ -41,6 +42,9 @@ import {
   initialState,
   lovelaceScope,
   nftAssetId,
+  ownerRewardAddress,
+  ownerStakeScript,
+  ownerStakeScriptHash,
   recipientAddress,
   redeemerOf,
   scenario,
@@ -50,6 +54,10 @@ import { ProviderEvaluatedWallet } from './support/fake.js';
 
 const DEVICE_REDEEMER = 'd87980';
 const FUND_REDEEMER = 'd87b80';
+const OPERATE_REDEEMER = 'd87980';
+const KEY_DEPOSIT = '2000000';
+const POOL_ID = 'pool1pu5jlj4q9w9jlxeu370a3c9myx47md5j5m2str0naunn2q3lkdy';
+const CONTROL_INPUT = { txId: '11'.repeat(32), index: 0 };
 
 interface InspectedTx {
   body: {
@@ -60,8 +68,14 @@ interface InspectedTx {
     mint?: { script_hash: string; assets: Record<string, string> }[];
     required_signers?: string[];
     collateral?: unknown[];
+    certs?: { tag: string; credential: { tag: string; value: string }; coin?: string; pool_keyhash?: string }[];
+    withdrawals?: { key: string; value: string }[];
+    reference_inputs?: { transaction_id: string; index: number }[];
   };
-  witness_set: { plutus_scripts?: { language: string }[]; redeemers?: { tag: string; index: number; ex_units: { mem: string; steps: string } }[] };
+  witness_set: {
+    plutus_scripts?: { language: string }[];
+    redeemers?: { tag: string; index: number; ex_units: { mem: string; steps: string }; data: { tag: string; alternative: string; data: unknown[] } }[];
+  };
 }
 
 const inspect = (tx: string): InspectedTx => Cometa.inspectTx(tx) as InspectedTx;
@@ -76,9 +90,33 @@ const controlOutputOf = (tx: string) => {
 
 const stateOf = (tx: string) => decodeAccountState(withoutCborCache(controlOutputOf(tx).datum!));
 
-const expectScriptAttached = (tx: string) => {
-  expect(inspect(tx).witness_set.plutus_scripts?.map((entry) => entry.language)).toEqual(['plutus_v3']);
+/** The flat program bytes a script carries, which the witness set holds without the blueprint's CBOR wrapper. */
+const programOf = (bytes: string) => bytes.slice(6);
+
+/** Asserts which of the account script and the stake script the witness set carries. */
+const expectScriptsAttached = (tx: string, { account = true, stake = false }: { account?: boolean; stake?: boolean } = {}) => {
+  expect(inspect(tx).witness_set.plutus_scripts?.map((entry) => entry.language)).toEqual(Array<string>(Number(account) + Number(stake)).fill('plutus_v3'));
+  expect(tx.includes(programOf(script.bytes))).toBe(account);
+  expect(tx.includes(programOf(ownerStakeScript.bytes))).toBe(stake);
 };
+
+const expectScriptAttached = (tx: string) => expectScriptsAttached(tx);
+
+/** The certificates of a transaction, every one of which the stake script witnesses with the operate redeemer. */
+const certificatesOf = (tx: string) => {
+  const inspected = inspect(tx);
+  const certificateRedeemers = inspected.witness_set.redeemers?.filter((redeemer) => redeemer.tag === 'cert') ?? [];
+  expect(certificateRedeemers.map((redeemer) => [Number(redeemer.index), redeemer.data.alternative, redeemer.data.data])).toEqual(
+    (inspected.body.certs ?? []).map((_, index) => [index, '0', []]),
+  );
+  return inspected.body.certs ?? [];
+};
+
+/** The lovelace the outputs at an address hold in total. */
+const lovelaceAt = (tx: string, at: string) => outputsAt(tx, at).reduce((total, output) => total + output.value.coins, 0n);
+
+/** The lovelace of the plain change outputs a transaction returns to the account. */
+const accountChangeOf = (tx: string) => outputsAt(tx, address).filter((output) => output.datum === undefined).map((output) => output.value);
 
 const spendsInput = (tx: string, input: { txId: string; index: number }) =>
   transactionBodyParts(tx).inputs.some((candidate) => candidate.txId === input.txId && candidate.index === input.index);
@@ -99,40 +137,62 @@ const expectFixedBudgets = (tx: string) => {
 };
 
 describe('createAccount', () => {
-  it('mints the state NFT into a control output signed by the stake key', async () => {
+  it('registers the stake credential with the deposit and mints the state NFT into a control output signed by the owner device', async () => {
     const { owner } = scenario(undefined, []);
-    const tx = await createAccount({ wallet: owner, stakeKeyHash: OWNER_STAKE_KEY, state: initialState, script });
+    const tx = await createAccount({ wallet: owner, owner: OWNER_PAYMENT_KEY, state: initialState, script });
     const inspected = inspect(tx);
-    expect(inspected.body.mint).toEqual([{ script_hash: Cometa.policyIdFromAssetId(nftAssetId), assets: { [OWNER_STAKE_KEY]: '1' } }]);
-    expect(inspected.body.required_signers).toEqual([OWNER_STAKE_KEY]);
-    expect(inspected.witness_set.redeemers?.map((redeemer) => redeemer.tag)).toEqual(['mint']);
-    expectScriptAttached(tx);
+    expect(inspected.body.mint).toEqual([{ script_hash: Cometa.policyIdFromAssetId(nftAssetId), assets: { [ownerStakeScriptHash]: '1' } }]);
+    expect(inspected.body.required_signers).toEqual([OWNER_PAYMENT_KEY]);
+    expect(certificatesOf(tx)).toEqual([
+      { tag: 'registration', credential: { tag: 'script_hash', value: ownerStakeScriptHash }, coin: KEY_DEPOSIT },
+    ]);
+    expect(inspected.witness_set.redeemers?.map((redeemer) => redeemer.tag).sort()).toEqual(['cert', 'mint']);
+    expect(inspected.body.withdrawals).toBeUndefined();
+    expectScriptsAttached(tx, { account: true, stake: true });
     const control = controlOutputOf(tx);
     expect(control.value).toEqual({ coins: 2_000_000n, assets: { [nftAssetId]: 1n } });
     expect(stateOf(tx)).toEqual(initialState);
-    expect(Cometa.readRedeemersFromTx(tx).map((redeemer) => Cometa.plutusDataToCbor(redeemer.data))).toEqual(['d87980']);
+    expect(Cometa.readRedeemersFromTx(tx).map((redeemer) => Cometa.plutusDataToCbor(redeemer.data))).toEqual([OPERATE_REDEEMER, 'd87980']);
+    expect(inspected.body.inputs.map((input) => input.transaction_id)).toEqual([OWNER_UTXO_TX]);
+    expect(50_000_000n - lovelaceAt(tx, owner.address.toString()) - transactionBodyParts(tx).fee).toBe(CONTROL_LOVELACE + BigInt(KEY_DEPOSIT));
+  });
+
+  it('lets a sponsor fund the creation, the deposit and the collateral while the owner only signs', async () => {
+    const { owner, sponsor } = scenario(undefined, []);
+    const tx = await createAccount({ wallet: owner, sponsor, owner: OWNER_PAYMENT_KEY, state: initialState, script });
+    const inspected = inspect(tx);
+    expect(inspected.body.inputs.map((input) => input.transaction_id)).toEqual([SPONSOR_UTXO_TX]);
+    expect(JSON.stringify(inspected.body.collateral)).toContain(SPONSOR_UTXO_TX);
+    expect(inspected.body.required_signers).toEqual([OWNER_PAYMENT_KEY]);
+    expect(certificatesOf(tx)).toEqual([
+      { tag: 'registration', credential: { tag: 'script_hash', value: ownerStakeScriptHash }, coin: KEY_DEPOSIT },
+    ]);
+    expect(outputsAt(tx, owner.address.toString())).toHaveLength(0);
+    expect(60_000_000n - lovelaceAt(tx, sponsor.address.toString()) - transactionBodyParts(tx).fee).toBe(CONTROL_LOVELACE + BigInt(KEY_DEPOSIT));
+    expect(stateOf(tx)).toEqual(initialState);
+    expectScriptsAttached(tx, { account: true, stake: true });
   });
 
   it('refuses a state that is not well formed', async () => {
     const { owner } = scenario(undefined, []);
     await expect(
-      createAccount({ wallet: owner, stakeKeyHash: OWNER_STAKE_KEY, state: { ...initialState, devices: [] }, script }),
+      createAccount({ wallet: owner, owner: OWNER_PAYMENT_KEY, state: { ...initialState, devices: [] }, script }),
     ).rejects.toThrow(/not well formed/);
   });
 
   it('refuses to create an account whose state NFT already exists when it can look', async () => {
     const existing = scenario(initialState, []);
     await expect(
-      createAccount({ wallet: existing.owner, provider: existing.provider, stakeKeyHash: OWNER_STAKE_KEY, state: initialState, script }),
+      createAccount({ wallet: existing.owner, provider: existing.provider, owner: OWNER_PAYMENT_KEY, state: initialState, script }),
     ).rejects.toThrow(/already exists/);
     const fresh = scenario(undefined, [fundUtxo(0, { coins: 10_000_000n })]);
-    const tx = await createAccount({ wallet: fresh.owner, provider: fresh.provider, stakeKeyHash: OWNER_STAKE_KEY, state: initialState, script });
+    const tx = await createAccount({ wallet: fresh.owner, provider: fresh.provider, owner: OWNER_PAYMENT_KEY, state: initialState, script });
     expect(stateOf(tx)).toEqual(initialState);
   });
 
   it('gives the control output at least its minimum UTxO value when the state needs more', async () => {
     const { owner, provider } = scenario(undefined, []);
-    const tx = await createAccount({ wallet: owner, provider, stakeKeyHash: OWNER_STAKE_KEY, state: grantedState, script });
+    const tx = await createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: grantedState, script });
     const coins = expectControlAboveMinimum(tx);
     expect(coins).toBeGreaterThan(CONTROL_LOVELACE);
     expect(coins).toBe(minimumUtxoLovelace(controlOutputOf(tx), 4310n));
@@ -142,7 +202,7 @@ describe('createAccount', () => {
 describe('deposit', () => {
   it('pays the value to the account address with no datum', async () => {
     const { owner } = scenario(initialState, []);
-    const tx = await deposit({ wallet: owner, stakeKeyHash: OWNER_STAKE_KEY, value: { coins: 10_000_000n }, script });
+    const tx = await deposit({ wallet: owner, owner: OWNER_PAYMENT_KEY, value: { coins: 10_000_000n }, script });
     const outputs = outputsAt(tx, address);
     expect(outputs).toHaveLength(1);
     expect(outputs[0]!.value).toEqual({ coins: 10_000_000n });
@@ -154,7 +214,7 @@ describe('deposit', () => {
 describe('findAccountUtxos', () => {
   it('separates the control UTxO from the funds and decodes the state', async () => {
     const { provider, owner } = scenario(grantedState, [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })]);
-    const found = await findAccountUtxos(provider, { wallet: owner, stakeKeyHash: OWNER_STAKE_KEY, script });
+    const found = await findAccountUtxos(provider, { wallet: owner, owner: OWNER_PAYMENT_KEY, script });
     expect(found.control.input).toEqual({ txId: '11'.repeat(32), index: 0 });
     expect(found.funds.map((fund) => fund.input.index)).toEqual([0, 1]);
     expect(found.state).toEqual(grantedState);
@@ -162,7 +222,7 @@ describe('findAccountUtxos', () => {
 
   it('demands exactly one control UTxO', async () => {
     const { provider, owner } = scenario(undefined, []);
-    const params = { wallet: owner, stakeKeyHash: OWNER_STAKE_KEY, script };
+    const params = { wallet: owner, owner: OWNER_PAYMENT_KEY, script };
     await expect(findAccountUtxos(provider, params)).rejects.toThrow(/exactly one control UTxO/);
     provider.addUtxo(controlUtxo(initialState, 0));
     provider.addUtxo(controlUtxo(initialState, 1));
@@ -195,31 +255,52 @@ describe('selectFundUtxos', () => {
 });
 
 describe('spendWithDevice', () => {
-  it('spends the control and fund UTxOs, recreates the state and returns the change to the account', async () => {
+  it('pays the outputs and the fee from the account, recreates the state and returns the change to the account', async () => {
     const { provider, owner } = scenario(initialState, [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })]);
     const payout = { address: recipientAddress, value: { coins: 5_000_000n } };
-    const tx = await spendWithDevice({ wallet: owner, provider, stakeKeyHash: OWNER_STAKE_KEY, outputs: [payout], script });
-    expect(redeemerOf(tx, { txId: '11'.repeat(32), index: 0 })).toBe(DEVICE_REDEEMER);
+    const tx = await spendWithDevice({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, outputs: [payout], script });
+    expect(redeemerOf(tx, CONTROL_INPUT)).toBe(DEVICE_REDEEMER);
     expect(redeemerOf(tx, { txId: '22'.repeat(32), index: 0 })).toBe(FUND_REDEEMER);
     expect(spendsInput(tx, { txId: '22'.repeat(32), index: 1 })).toBe(false);
+    expect(spendsInput(tx, { txId: OWNER_UTXO_TX, index: 0 })).toBe(false);
     expect(controlOutputOf(tx).value.coins).toBe(CONTROL_LOVELACE);
     expect(stateOf(tx)).toEqual(initialState);
-    const change = outputsAt(tx, address).filter((output) => output.datum === undefined);
-    expect(change.map((output) => output.value)).toEqual([{ coins: 5_000_000n }]);
+    const fee = transactionBodyParts(tx).fee;
+    expect(fee).toBeGreaterThan(0n);
+    expect(accountChangeOf(tx)).toEqual([{ coins: 10_000_000n - 5_000_000n - fee }]);
     expect(outputsAt(tx, recipientAddress).map((output) => output.value)).toEqual([{ coins: 5_000_000n }]);
+    expect(outputsAt(tx, owner.address.toString())).toHaveLength(0);
     const inspected = inspect(tx);
     expect(inspected.body.required_signers).toEqual([OWNER_PAYMENT_KEY]);
-    expect(inspected.body.inputs.some((input) => input.transaction_id === '33'.repeat(32))).toBe(true);
+    expect(JSON.stringify(inspected.body.collateral)).toContain(OWNER_UTXO_TX);
     expectScriptAttached(tx);
   });
 
+  it('lets a sponsor pay the fee and take the change while the funds cover the outputs alone', async () => {
+    const { provider, owner, sponsor } = scenario(initialState, [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })]);
+    const payout = { address: recipientAddress, value: { coins: 5_000_000n } };
+    const tx = await spendWithDevice({ wallet: owner, sponsor, provider, owner: OWNER_PAYMENT_KEY, outputs: [payout], script });
+    expect(redeemerOf(tx, CONTROL_INPUT)).toBe(DEVICE_REDEEMER);
+    expect(redeemerOf(tx, { txId: '22'.repeat(32), index: 0 })).toBe(FUND_REDEEMER);
+    expect(spendsInput(tx, { txId: '22'.repeat(32), index: 1 })).toBe(false);
+    expect(spendsInput(tx, { txId: OWNER_UTXO_TX, index: 0 })).toBe(false);
+    expect(spendsInput(tx, { txId: SPONSOR_UTXO_TX, index: 0 })).toBe(true);
+    expect(accountChangeOf(tx)).toEqual([{ coins: 5_000_000n }]);
+    expect(outputsAt(tx, owner.address.toString())).toHaveLength(0);
+    expect(60_000_000n - lovelaceAt(tx, sponsor.address.toString())).toBe(transactionBodyParts(tx).fee);
+    const inspected = inspect(tx);
+    expect(inspected.body.required_signers).toEqual([OWNER_PAYMENT_KEY]);
+    expect(JSON.stringify(inspected.body.collateral)).toContain(SPONSOR_UTXO_TX);
+  });
+
   it('can rewrite the state in the same transaction', async () => {
-    const { provider, owner } = scenario(initialState, [fundUtxo(0, { coins: 10_000_000n })]);
+    const { provider, owner, sponsor } = scenario(initialState, [fundUtxo(0, { coins: 10_000_000n })]);
     const newState = stateWithDevice(initialState, OTHER_DEVICE_KEY);
     const tx = await spendWithDevice({
       wallet: owner,
+      sponsor,
       provider,
-      stakeKeyHash: OWNER_STAKE_KEY,
+      owner: OWNER_PAYMENT_KEY,
       outputs: [{ address: recipientAddress, value: { coins: 10_000_000n } }],
       newState,
       script,
@@ -229,87 +310,115 @@ describe('spendWithDevice', () => {
   });
 
   it('refuses a wallet that is not a device', async () => {
-    const { provider, agent } = scenario(initialState, []);
-    await expect(spendWithDevice({ wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, outputs: [], script })).rejects.toThrow(
+    const { provider, agent } = scenario(initialState, [fundUtxo(0, { coins: 10_000_000n })]);
+    await expect(spendWithDevice({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, outputs: [], script })).rejects.toThrow(
       /not a device/,
     );
+  });
+
+  it('reserves the most a transaction can cost from the funds and refuses when they cannot cover it', async () => {
+    const funds = [fundUtxo(0, { coins: 3_000_000n }), fundUtxo(1, { coins: 2_000_000n })];
+    const { provider, owner } = scenario(initialState, funds);
+    const payout = { address: recipientAddress, value: { coins: 1_000_000n } };
+    const tx = await spendWithDevice({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, outputs: [payout], script });
+    expect(spendsInput(tx, { txId: '22'.repeat(32), index: 0 })).toBe(true);
+    expect(spendsInput(tx, { txId: '22'.repeat(32), index: 1 })).toBe(true);
+    const fee = transactionBodyParts(tx).fee;
+    expect(accountChangeOf(tx)).toEqual([{ coins: 5_000_000n - 1_000_000n - fee }]);
+    expect(5_000_000n - 1_000_000n - fee).toBeGreaterThanOrEqual(minimumUtxoLovelace({ address, value: { coins: 0n } }, 4310n));
+    const lean = scenario(initialState, [fundUtxo(0, { coins: 2_000_000n })]);
+    await expect(
+      spendWithDevice({ wallet: lean.owner, provider: lean.provider, owner: OWNER_PAYMENT_KEY, outputs: [payout], script }),
+    ).rejects.toThrow(/not hold enough funds/);
   });
 
   it('derives the change floor from the change output, which needs more lovelace when it carries tokens', async () => {
     const funds = [fundUtxo(0, { coins: 3_000_000n, assets: { [TOKEN_ASSET_ID]: 20n } }), fundUtxo(1, { coins: 2_000_000n })];
     const payout = { address: recipientAddress, value: { coins: 2_000_000n, assets: { [TOKEN_ASSET_ID]: 5n } } };
-    const { provider, owner } = scenario(initialState, funds);
-    const tx = await spendWithDevice({ wallet: owner, provider, stakeKeyHash: OWNER_STAKE_KEY, outputs: [payout], script });
+    const { provider, owner, sponsor } = scenario(initialState, funds);
+    const tx = await spendWithDevice({ wallet: owner, sponsor, provider, owner: OWNER_PAYMENT_KEY, outputs: [payout], script });
     expect(spendsInput(tx, { txId: '22'.repeat(32), index: 1 })).toBe(true);
-    const change = outputsAt(tx, address).filter((output) => output.datum === undefined);
-    expect(change.map((output) => output.value)).toEqual([{ coins: 3_000_000n, assets: { [TOKEN_ASSET_ID]: 15n } }]);
+    expect(accountChangeOf(tx)).toEqual([{ coins: 3_000_000n, assets: { [TOKEN_ASSET_ID]: 15n } }]);
     const tokenFloor = minimumUtxoLovelace({ address, value: { coins: 0n, assets: { [TOKEN_ASSET_ID]: 15n } } }, 4310n);
     expect(tokenFloor).toBeGreaterThan(1_000_000n);
     expect(tokenFloor).toBeGreaterThan(minimumUtxoLovelace({ address, value: { coins: 0n } }, 4310n));
     const lovelaceOnly = scenario(initialState, [fundUtxo(0, { coins: 1_500_000n })]);
     const lean = await spendWithDevice({
       wallet: lovelaceOnly.owner,
+      sponsor: lovelaceOnly.sponsor,
       provider: lovelaceOnly.provider,
-      stakeKeyHash: OWNER_STAKE_KEY,
+      owner: OWNER_PAYMENT_KEY,
       outputs: [{ address: recipientAddress, value: { coins: 400_000n } }],
       script,
     });
-    const leanChange = outputsAt(lean, address).filter((output) => output.datum === undefined).map((output) => output.value);
-    expect(leanChange).toEqual([{ coins: 1_100_000n }]);
+    expect(accountChangeOf(lean)).toEqual([{ coins: 1_100_000n }]);
     expect(1_100_000n).toBeGreaterThanOrEqual(minimumUtxoLovelace({ address, value: { coins: 0n } }, 4310n));
     expect(1_100_000n).toBeLessThan(tokenFloor);
   });
 
   it('honours a change floor override', async () => {
     const funds = [fundUtxo(0, { coins: 3_000_000n }), fundUtxo(1, { coins: 2_000_000n })];
-    const { provider, owner } = scenario(initialState, funds);
+    const { provider, owner, sponsor } = scenario(initialState, funds);
     const tx = await spendWithDevice({
       wallet: owner,
+      sponsor,
       provider,
-      stakeKeyHash: OWNER_STAKE_KEY,
+      owner: OWNER_PAYMENT_KEY,
       outputs: [{ address: recipientAddress, value: { coins: 1_000_000n } }],
       minimumChangeLovelace: 2_500_000n,
       script,
     });
     expect(spendsInput(tx, { txId: '22'.repeat(32), index: 1 })).toBe(true);
-    expect(outputsAt(tx, address).filter((output) => output.datum === undefined).map((output) => output.value)).toEqual([{ coins: 4_000_000n }]);
+    expect(accountChangeOf(tx)).toEqual([{ coins: 4_000_000n }]);
   });
 });
 
 describe('state rewrites', () => {
   const params = () => {
-    const { provider, owner } = scenario(grantedState, [fundUtxo(0, { coins: 10_000_000n })]);
-    return { wallet: owner, provider, stakeKeyHash: OWNER_STAKE_KEY, script };
+    const { provider, owner, sponsor } = scenario(grantedState, [fundUtxo(0, { coins: 10_000_000n })]);
+    return { wallet: owner, provider, owner: OWNER_PAYMENT_KEY, script, sponsor };
   };
 
-  it('rewriteState carries the given state and spends no funds', async () => {
+  it('rewriteState carries the given state, paying from a fund UTxO or from the sponsor', async () => {
     const newState = { ...grantedState, grantGeneration: 7n };
-    const tx = await rewriteState({ ...params(), newState });
+    const { sponsor, ...paid } = params();
+    const tx = await rewriteState({ ...paid, newState });
     expect(stateOf(tx)).toEqual(newState);
-    expect(spendsInput(tx, { txId: '22'.repeat(32), index: 0 })).toBe(false);
-    expect(outputsAt(tx, address)).toHaveLength(1);
+    expect(spendsInput(tx, { txId: '22'.repeat(32), index: 0 })).toBe(true);
+    const growth = controlOutputOf(tx).value.coins - CONTROL_LOVELACE;
+    expect(growth).toBeGreaterThan(0n);
+    expect(accountChangeOf(tx)).toEqual([{ coins: 10_000_000n - growth - transactionBodyParts(tx).fee }]);
+    const sponsored = await rewriteState({ ...paid, sponsor, newState });
+    expect(stateOf(sponsored)).toEqual(newState);
+    expect(spendsInput(sponsored, { txId: '22'.repeat(32), index: 0 })).toBe(false);
+    expect(outputsAt(sponsored, address)).toHaveLength(1);
   });
 
   it('addDevice and removeDevice edit the devices', async () => {
     expect(stateOf(await addDevice({ ...params(), device: OTHER_DEVICE_KEY }))).toEqual(stateWithDevice(grantedState, OTHER_DEVICE_KEY));
     await expect(addDevice({ ...params(), device: OWNER_PAYMENT_KEY })).rejects.toThrow(/distinct/);
     await expect(removeDevice({ ...params(), device: OWNER_PAYMENT_KEY })).rejects.toThrow(/at least one device/);
-    const { provider, owner } = scenario(stateWithDevice(grantedState, OTHER_DEVICE_KEY), []);
-    const tx = await removeDevice({ wallet: owner, provider, stakeKeyHash: OWNER_STAKE_KEY, device: OTHER_DEVICE_KEY, script });
+    const { provider, owner } = scenario(stateWithDevice(grantedState, OTHER_DEVICE_KEY), [fundUtxo(0, { coins: 10_000_000n })]);
+    const tx = await removeDevice({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, device: OTHER_DEVICE_KEY, script });
     expect(stateOf(tx)).toEqual(stateWithoutDevice(stateWithDevice(grantedState, OTHER_DEVICE_KEY), OTHER_DEVICE_KEY));
   });
 
-  it('raises the control lovelace with the state, funded by the wallet', async () => {
+  it('raises the control lovelace with the state, paid from the account or by the sponsor', async () => {
     let state = initialState;
     let previous = 0n;
     for (let slot = 0n; slot < 6n; slot += 1n) {
-      const { provider, owner } = scenario(state, []);
-      const grant = { slot, grantee: { kind: 'ed25519' as const, keyHash: AGENT_PAYMENT_KEY }, scope: lovelaceScope([recipientAddress]) };
-      const tx = await issueGrant({ wallet: owner, provider, stakeKeyHash: OWNER_STAKE_KEY, grant, script });
+      const { provider, owner, sponsor } = scenario(state, [fundUtxo(0, { coins: 10_000_000n })]);
+      const grant = { slot, grantee: AGENT_PAYMENT_KEY, scope: lovelaceScope([recipientAddress]) };
+      const tx = await issueGrant({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, grant, script });
       const coins = expectControlAboveMinimum(tx);
       expect(coins).toBeGreaterThanOrEqual(previous);
       expect(coins).toBeGreaterThanOrEqual(CONTROL_LOVELACE);
-      expect(spendsInput(tx, { txId: '33'.repeat(32), index: 0 })).toBe(true);
+      expect(spendsInput(tx, { txId: OWNER_UTXO_TX, index: 0 })).toBe(false);
+      expect(accountChangeOf(tx)).toEqual([{ coins: 10_000_000n - (coins - CONTROL_LOVELACE) - transactionBodyParts(tx).fee }]);
+      const sponsored = await issueGrant({ wallet: owner, sponsor, provider, owner: OWNER_PAYMENT_KEY, grant, script });
+      expect(controlOutputOf(sponsored).value.coins).toBe(coins);
+      expect(spendsInput(sponsored, { txId: '22'.repeat(32), index: 0 })).toBe(false);
+      expect(60_000_000n - lovelaceAt(sponsored, sponsor.address.toString()) - transactionBodyParts(sponsored).fee).toBe(coins - CONTROL_LOVELACE);
       state = stateWithGrant(state, grant);
       previous = coins;
     }
@@ -317,7 +426,7 @@ describe('state rewrites', () => {
   });
 
   it('issueGrant, revokeGrant and revokeAllGrants edit the grants', async () => {
-    const grant = { slot: 3n, grantee: { kind: 'ed25519' as const, keyHash: AGENT_PAYMENT_KEY }, scope: grantedState.grants[0]!.scope };
+    const grant = { slot: 3n, grantee: AGENT_PAYMENT_KEY, scope: grantedState.grants[0]!.scope };
     expect(stateOf(await issueGrant({ ...params(), grant }))).toEqual(stateWithGrant(grantedState, grant));
     await expect(issueGrant({ ...params(), grant: { ...grant, slot: 0n } })).rejects.toThrow(/slots must be distinct/);
     expect(stateOf(await revokeGrant({ ...params(), slot: 1n }))).toEqual(stateWithoutGrant(grantedState, 1n));
@@ -325,43 +434,102 @@ describe('state rewrites', () => {
   });
 });
 
-describe('deleteAccount', () => {
-  it('burns the state NFT and releases every fund UTxO to the wallet', async () => {
-    const { provider, owner } = scenario(grantedState, [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })]);
-    const tx = await deleteAccount({ wallet: owner, provider, stakeKeyHash: OWNER_STAKE_KEY, script });
+describe('stake operations', () => {
+  const params = () => {
+    const { provider, owner, sponsor } = scenario(initialState, [fundUtxo(0, { coins: 10_000_000n })]);
+    return { wallet: owner, provider, owner: OWNER_PAYMENT_KEY, script, sponsor };
+  };
+
+  /** Asserts what every stake operation shares: the control UTxO spent and recreated unchanged, a device signing and both scripts attached. */
+  const expectDeviceStakeOperation = (tx: string, device: string, state = initialState) => {
     const inspected = inspect(tx);
-    expect(inspected.body.mint).toEqual([{ script_hash: Cometa.policyIdFromAssetId(nftAssetId), assets: { [OWNER_STAKE_KEY]: '-1' } }]);
-    expect(inspected.body.required_signers).toEqual([OWNER_PAYMENT_KEY]);
-    expect(redeemerOf(tx, { txId: '11'.repeat(32), index: 0 })).toBe(DEVICE_REDEEMER);
+    expect(redeemerOf(tx, CONTROL_INPUT)).toBe(DEVICE_REDEEMER);
+    expect(stateOf(tx)).toEqual(state);
+    expect(controlOutputOf(tx).value.coins).toBe(CONTROL_LOVELACE);
+    expect(inspected.body.required_signers).toEqual([device]);
+    expect(inspected.body.collateral?.length).toBeGreaterThan(0);
+    expect(inspected.body.mint).toBeUndefined();
+    expect(inspected.body.reference_inputs).toBeUndefined();
+    expectScriptsAttached(tx, { account: true, stake: true });
+  };
+
+  it('withdrawRewards draws the given amount, zero included, from the reward account with the operate redeemer, paid from the account', async () => {
+    const { sponsor, ...owner } = params();
+    const tx = await withdrawRewards({ ...owner, amount: 0n });
+    expectDeviceStakeOperation(tx, OWNER_PAYMENT_KEY);
+    const inspected = inspect(tx);
+    expect(inspected.body.withdrawals).toEqual([{ key: ownerRewardAddress, value: '0' }]);
+    expect(inspected.body.certs).toBeUndefined();
+    expect(inspected.witness_set.redeemers?.filter((redeemer) => redeemer.tag === 'reward').map((redeemer) => [Number(redeemer.index), redeemer.data.alternative])).toEqual([[0, '0']]);
+    expect(Cometa.readRedeemersFromTx(tx).map((redeemer) => Cometa.plutusDataToCbor(redeemer.data)).sort()).toEqual([DEVICE_REDEEMER, FUND_REDEEMER, OPERATE_REDEEMER].sort());
     expect(redeemerOf(tx, { txId: '22'.repeat(32), index: 0 })).toBe(FUND_REDEEMER);
-    expect(redeemerOf(tx, { txId: '22'.repeat(32), index: 1 })).toBe(FUND_REDEEMER);
-    const mintRedeemer = Cometa.readRedeemersFromTx(tx).find((redeemer) => redeemer.purpose === Cometa.RedeemerPurpose.mint);
-    expect(Cometa.plutusDataToCbor(mintRedeemer!.data)).toBe('d87a80');
-    expect(outputsAt(tx, address)).toHaveLength(0);
-    const released = outputsAt(tx, owner.address.toString()).reduce((total, output) => total + output.value.coins, 0n);
-    expect(released + transactionBodyParts(tx).fee).toBe(CONTROL_LOVELACE + 14_000_000n);
-    expect(spendsInput(tx, { txId: '33'.repeat(32), index: 0 })).toBe(false);
+    expect(spendsInput(tx, { txId: OWNER_UTXO_TX, index: 0 })).toBe(false);
+    expect(accountChangeOf(tx)).toEqual([{ coins: 10_000_000n - transactionBodyParts(tx).fee }]);
+    void sponsor;
+  });
+
+  it('withdrawRewards takes the whole reward balance from the provider when no amount is given, with a sponsor paying', async () => {
+    const { sponsor, ...owner } = params();
+    const tx = await withdrawRewards({ ...owner, sponsor });
+    expectDeviceStakeOperation(tx, OWNER_PAYMENT_KEY);
+    expect(inspect(tx).body.withdrawals).toEqual([{ key: ownerRewardAddress, value: '0' }]);
+    expect(spendsInput(tx, { txId: '22'.repeat(32), index: 0 })).toBe(false);
+    expect(spendsInput(tx, { txId: SPONSOR_UTXO_TX, index: 0 })).toBe(true);
+    expect(outputsAt(tx, address)).toHaveLength(1);
+  });
+
+  it('delegateStake publishes a delegation certificate for the stake credential', async () => {
+    const { sponsor, ...owner } = params();
+    const tx = await delegateStake({ ...owner, poolId: POOL_ID });
+    expectDeviceStakeOperation(tx, OWNER_PAYMENT_KEY);
+    expect(certificatesOf(tx)).toEqual([{ tag: 'stake_delegation', credential: { tag: 'script_hash', value: ownerStakeScriptHash }, pool_keyhash: POOL_ID }]);
+    expect(inspect(tx).body.withdrawals).toBeUndefined();
+    expect(redeemerOf(tx, { txId: '22'.repeat(32), index: 0 })).toBe(FUND_REDEEMER);
+    void sponsor;
+  });
+
+  it('lets any device operate the stake credential and refuses a wallet that is not one', async () => {
+    const state = stateWithDevice(initialState, AGENT_PAYMENT_KEY);
+    const { provider, agent } = scenario(state, [fundUtxo(0, { coins: 10_000_000n })]);
+    const tx = await withdrawRewards({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, amount: 0n, script });
+    expectDeviceStakeOperation(tx, AGENT_PAYMENT_KEY, state);
+    expect(spendsInput(tx, { txId: AGENT_UTXO_TX, index: 0 })).toBe(false);
+    expect(JSON.stringify(inspect(tx).body.collateral)).toContain(AGENT_UTXO_TX);
+    const delegated = await delegateStake({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, poolId: POOL_ID, script });
+    expectDeviceStakeOperation(delegated, AGENT_PAYMENT_KEY, state);
+    const stranger = scenario(initialState, [fundUtxo(0, { coins: 10_000_000n })]);
+    await expect(withdrawRewards({ wallet: stranger.agent, provider: stranger.provider, owner: OWNER_PAYMENT_KEY, amount: 0n, script })).rejects.toThrow(/not a device/);
+    await expect(delegateStake({ wallet: stranger.agent, provider: stranger.provider, owner: OWNER_PAYMENT_KEY, poolId: POOL_ID, script })).rejects.toThrow(/not a device/);
+  });
+
+  it('needs the control UTxO to exist and, without a sponsor, funds to pay from', async () => {
+    const { provider, owner } = scenario(undefined, []);
+    await expect(withdrawRewards({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, amount: 0n, script })).rejects.toThrow(/exactly one control UTxO/);
+    const unfunded = scenario(initialState, []);
+    await expect(withdrawRewards({ wallet: unfunded.owner, provider: unfunded.provider, owner: OWNER_PAYMENT_KEY, amount: 0n, script })).rejects.toThrow(/not hold enough funds/);
+    const sponsored = await withdrawRewards({ wallet: unfunded.owner, sponsor: unfunded.sponsor, provider: unfunded.provider, owner: OWNER_PAYMENT_KEY, amount: 0n, script });
+    expect(inspect(sponsored).body.withdrawals).toEqual([{ key: ownerRewardAddress, value: '0' }]);
   });
 });
 
 describe('spendWithGrant', () => {
   const funds = () => [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n, assets: { [TOKEN_ASSET_ID]: 20n } })];
 
-  it('lets an Ed25519 grantee spend lovelace, paying the fee from the account', async () => {
+  it('lets a grantee spend lovelace, paying the fee from the account', async () => {
     const { provider, agent } = scenario(grantedState, funds());
     const payout = { address: recipientAddress, value: { coins: 3_000_000n } };
     const tx = await spendWithGrant({
       wallet: agent,
       provider,
-      stakeKeyHash: OWNER_STAKE_KEY,
+      owner: OWNER_PAYMENT_KEY,
       slot: 0n,
       outputs: [payout],
-      grantee: { kind: 'ed25519', keyHash: AGENT_PAYMENT_KEY },
+      grantee: AGENT_PAYMENT_KEY,
       validUntilSlot: VALID_UNTIL_SLOT,
       script,
     });
     const parts = transactionBodyParts(tx);
-    expect(redeemerOf(tx, { txId: '11'.repeat(32), index: 0 })).toBe('d87a9f00d87a80ff');
+    expect(redeemerOf(tx, { txId: '11'.repeat(32), index: 0 })).toBe('d87a9f00ff');
     expect(redeemerOf(tx, { txId: '22'.repeat(32), index: 0 })).toBe(FUND_REDEEMER);
     expect(spendsInput(tx, { txId: '22'.repeat(32), index: 1 })).toBe(false);
     expect(spendsInput(tx, { txId: '44'.repeat(32), index: 0 })).toBe(false);
@@ -390,10 +558,10 @@ describe('spendWithGrant', () => {
       spendWithGrant({
         wallet: agent,
         provider,
-        stakeKeyHash: OWNER_STAKE_KEY,
+        owner: OWNER_PAYMENT_KEY,
         slot: 0n,
         outputs: [{ address: recipientAddress, value: { coins: 3_000_000n } }],
-        grantee: { kind: 'ed25519', keyHash: AGENT_PAYMENT_KEY },
+        grantee: AGENT_PAYMENT_KEY,
         validUntilSlot: VALID_UNTIL_SLOT,
         script,
       }),
@@ -407,37 +575,32 @@ describe('spendWithGrant', () => {
     const tx = await spendWithGrant({
       wallet: agent,
       provider,
-      stakeKeyHash: OWNER_STAKE_KEY,
+      owner: OWNER_PAYMENT_KEY,
       slot: 0n,
       outputs: [{ address: recipientAddress, value: { coins: 1_000_000n } }],
-      grantee: { kind: 'ed25519', keyHash: AGENT_PAYMENT_KEY },
+      grantee: AGENT_PAYMENT_KEY,
       validUntilSlot: VALID_UNTIL_SLOT,
       script,
     });
     expect(controlOutputOf(tx).value.coins).toBe(CONTROL_LOVELACE);
   });
 
-  it('lets a secp256k1 grantee spend tokens with a signature over the settled body', async () => {
+  it('lets a grantee spend tokens within the lovelace caps', async () => {
     const { provider, agent } = scenario(grantedState, funds());
     const payout = { address: recipientAddress, value: { coins: 1_500_000n, assets: { [TOKEN_ASSET_ID]: 7n } } };
     const tx = await spendWithGrant({
       wallet: agent,
       provider,
-      stakeKeyHash: OWNER_STAKE_KEY,
+      owner: OWNER_PAYMENT_KEY,
       slot: 1n,
       outputs: [payout],
-      grantee: { kind: 'secp256k1', privateKey: GRANTEE_PRIVATE_KEY },
+      grantee: AGENT_PAYMENT_KEY,
       validUntilSlot: VALID_UNTIL_SLOT,
       script,
     });
     const parts = transactionBodyParts(tx);
-    const redeemer = redeemerOf(tx, { txId: '11'.repeat(32), index: 0 });
-    expect(redeemer?.startsWith('d87a9f01d8799f5840')).toBe(true);
-    const signature = redeemer!.slice('d87a9f01d8799f5840'.length, -'ffff'.length);
-    expect(signature).toHaveLength(128);
-    const message = granteeMessage(grantMessagePartsOf(tx, { txId: '11'.repeat(32), index: 0 }));
-    expect(verifyGrantSignature(GRANTEE_PUBLIC_KEY, message, signature)).toBe(true);
-    expect(inspect(tx).body.required_signers).toBeUndefined();
+    expect(redeemerOf(tx, { txId: '11'.repeat(32), index: 0 })).toBe('d87a9f01ff');
+    expect(inspect(tx).body.required_signers).toEqual([AGENT_PAYMENT_KEY]);
     expect(redeemerOf(tx, { txId: '22'.repeat(32), index: 1 })).toBe(FUND_REDEEMER);
     const leaving = { [TOKEN_ASSET_ID]: 7n, '': 1_500_000n + parts.fee };
     expect(stateOf(tx)).toEqual(stateAfterSpend(grantedState, 1n, leaving));
@@ -450,18 +613,20 @@ describe('spendWithGrant', () => {
 
   it('refuses spends the validator would refuse', async () => {
     const { provider, agent } = scenario(grantedState, funds());
-    const base = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, validUntilSlot: VALID_UNTIL_SLOT, script };
-    const ed25519 = { kind: 'ed25519' as const, keyHash: AGENT_PAYMENT_KEY };
+    const base = { wallet: agent, provider, owner: OWNER_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script };
+    const grantee = AGENT_PAYMENT_KEY;
     const payout = (coins: bigint) => [{ address: recipientAddress, value: { coins } }];
-    await expect(spendWithGrant({ ...base, slot: 9n, outputs: payout(1n), grantee: ed25519 })).rejects.toThrow(/no grant in slot 9/);
-    await expect(spendWithGrant({ ...base, slot: 0n, outputs: payout(1n), grantee: { kind: 'ed25519', keyHash: OWNER_PAYMENT_KEY } })).rejects.toThrow(/not the grantee/);
-    await expect(spendWithGrant({ ...base, slot: 1n, outputs: payout(1n), grantee: ed25519 })).rejects.toThrow(/not the grantee/);
-    await expect(spendWithGrant({ ...base, slot: 2n, outputs: [{ address: enterpriseAddress(OTHER_DEVICE_KEY), value: { coins: 1n } }], grantee: ed25519 })).rejects.toThrow(/not a recipient/);
-    await expect(spendWithGrant({ ...base, slot: 0n, outputs: payout(10_000_000n), grantee: ed25519 })).rejects.toThrow(/per call cap/);
-    await expect(spendWithGrant({ ...base, slot: 0n, outputs: payout(1n), grantee: ed25519, validUntilSlot: 300_000_000n })).rejects.toThrow(/expires/);
+    await expect(spendWithGrant({ ...base, slot: 9n, outputs: payout(1n), grantee })).rejects.toThrow(/no grant in slot 9/);
+    await expect(spendWithGrant({ ...base, slot: 0n, outputs: payout(1n), grantee: OWNER_PAYMENT_KEY })).rejects.toThrow(/not the grantee/);
+    await expect(spendWithGrant({ ...base, slot: 2n, outputs: [{ address: enterpriseAddress(OTHER_DEVICE_KEY), value: { coins: 1n } }], grantee })).rejects.toThrow(/not a recipient/);
+    await expect(spendWithGrant({ ...base, slot: 0n, outputs: payout(10_000_000n), grantee })).rejects.toThrow(/per call cap/);
+    await expect(spendWithGrant({ ...base, slot: 0n, outputs: payout(1n), grantee, validUntilSlot: 300_000_000n })).rejects.toThrow(/expires/);
     await expect(
-      spendWithGrant({ ...base, slot: 0n, outputs: [{ address: recipientAddress, value: { coins: 1_000_000n, assets: { [TOKEN_ASSET_ID]: 1n } } }], grantee: ed25519 }),
+      spendWithGrant({ ...base, slot: 0n, outputs: [{ address: recipientAddress, value: { coins: 1_000_000n, assets: { [TOKEN_ASSET_ID]: 1n } } }], grantee }),
     ).rejects.toThrow(/does not cover/);
+    await expect(
+      spendWithGrant({ ...base, slot: 1n, outputs: [{ address: recipientAddress, value: { coins: 2_400_000n, assets: { [TOKEN_ASSET_ID]: 1n } } }], grantee }),
+    ).rejects.toThrow(/exceeds the lovelace per call cap of 2500000/);
   });
 
   it('decrements the cap of a restricted recipient grant by the payout and fee', async () => {
@@ -469,10 +634,10 @@ describe('spendWithGrant', () => {
     const tx = await spendWithGrant({
       wallet: agent,
       provider,
-      stakeKeyHash: OWNER_STAKE_KEY,
+      owner: OWNER_PAYMENT_KEY,
       slot: 2n,
       outputs: [{ address: recipientAddress, value: { coins: 2_000_000n } }],
-      grantee: { kind: 'ed25519', keyHash: AGENT_PAYMENT_KEY },
+      grantee: AGENT_PAYMENT_KEY,
       validUntilSlot: VALID_UNTIL_SLOT,
       script,
     });
@@ -501,7 +666,7 @@ describe('spendWithGrant', () => {
 
 describe('spendWithGrant unchecked', () => {
   const funds = () => [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })];
-  const ed25519 = { kind: 'ed25519' as const, keyHash: AGENT_PAYMENT_KEY };
+  const ed25519 = AGENT_PAYMENT_KEY;
   const nearlyUsedState = {
     ...grantedState,
     grants: grantedState.grants.map((grant) => (grant.slot === 0n ? { ...grant, scope: { ...grant.scope, cap: 6_000_000n } } : grant)),
@@ -509,7 +674,7 @@ describe('spendWithGrant unchecked', () => {
 
   it('builds a spend beyond the remaining cap whose datum carries the cap the validator computes', async () => {
     const { provider, agent } = scenario(nearlyUsedState, funds());
-    const params = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, slot: 0n, grantee: ed25519, validUntilSlot: VALID_UNTIL_SLOT, script };
+    const params = { wallet: agent, provider, owner: OWNER_PAYMENT_KEY, slot: 0n, grantee: ed25519, validUntilSlot: VALID_UNTIL_SLOT, script };
     const outputs = [{ address: recipientAddress, value: { coins: 8_000_000n } }];
     await expect(spendWithGrant({ ...params, outputs })).rejects.toThrow(/exceeds the remaining cap of 6000000/);
     const tx = await spendWithGrant({ ...params, outputs, unchecked: true });
@@ -524,7 +689,7 @@ describe('spendWithGrant unchecked', () => {
   it('builds a spend paying an address outside the recipients', async () => {
     const { provider, agent } = scenario(grantedState, funds());
     const stranger = enterpriseAddress(OTHER_DEVICE_KEY);
-    const params = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, slot: 2n, grantee: ed25519, validUntilSlot: VALID_UNTIL_SLOT, script };
+    const params = { wallet: agent, provider, owner: OWNER_PAYMENT_KEY, slot: 2n, grantee: ed25519, validUntilSlot: VALID_UNTIL_SLOT, script };
     const outputs = [{ address: stranger, value: { coins: 3_000_000n } }];
     await expect(spendWithGrant({ ...params, outputs })).rejects.toThrow(/not a recipient of grant 2/);
     const tx = await spendWithGrant({ ...params, outputs, unchecked: true });
@@ -535,7 +700,7 @@ describe('spendWithGrant unchecked', () => {
 
   it('builds a spend whose validity range ends after the grant expires', async () => {
     const { provider, agent } = scenario(grantedState, funds());
-    const params = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, slot: 0n, grantee: ed25519, validUntilSlot: 300_000_000n, script };
+    const params = { wallet: agent, provider, owner: OWNER_PAYMENT_KEY, slot: 0n, grantee: ed25519, validUntilSlot: 300_000_000n, script };
     const outputs = [{ address: recipientAddress, value: { coins: 1_000_000n } }];
     await expect(spendWithGrant({ ...params, outputs })).rejects.toThrow(/expires/);
     const tx = await spendWithGrant({ ...params, outputs, unchecked: true });
@@ -546,9 +711,9 @@ describe('spendWithGrant unchecked', () => {
 
   it('still needs the grant to exist and the signer to be its grantee', async () => {
     const { provider, agent } = scenario(grantedState, funds());
-    const params = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, validUntilSlot: VALID_UNTIL_SLOT, script, unchecked: true };
+    const params = { wallet: agent, provider, owner: OWNER_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script, unchecked: true };
     const outputs = [{ address: recipientAddress, value: { coins: 1_000_000n } }];
     await expect(spendWithGrant({ ...params, slot: 9n, outputs, grantee: ed25519 })).rejects.toThrow(/no grant in slot 9/);
-    await expect(spendWithGrant({ ...params, slot: 1n, outputs, grantee: ed25519 })).rejects.toThrow(/not the grantee/);
+    await expect(spendWithGrant({ ...params, slot: 0n, outputs, grantee: OWNER_PAYMENT_KEY })).rejects.toThrow(/not the grantee/);
   });
 });

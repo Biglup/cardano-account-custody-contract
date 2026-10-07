@@ -1,29 +1,32 @@
 import type { Address, ConstrPlutusData, Credential, NetworkId, PlutusData } from '@biglup/cometa';
 import { Cometa } from './cometa.js';
 
-/** A key that can authorise a grant: an Ed25519 key hash or a 33 byte compressed secp256k1 public key. */
-export type Grantee = { kind: 'ed25519'; keyHash: string } | { kind: 'secp256k1'; publicKey: string };
-
 /** An asset class as hex policy id and hex asset name; lovelace is the empty pair. */
 export interface Asset {
   policyId: string;
   assetName: string;
 }
 
-/** The bounds of a grant. Times are POSIX milliseconds and recipients are bech32 addresses. */
+/**
+ * The bounds of a grant. Times are POSIX milliseconds and recipients are
+ * bech32 addresses. The lovelace caps bound the lovelace that leaves
+ * alongside a scoped token, per call and in total, and must both be zero
+ * when the scoped asset is lovelace itself.
+ */
 export interface Scope {
   asset: Asset;
   perCallCap: bigint;
   cap: bigint;
+  lovelacePerCallCap: bigint;
   lovelaceCap: bigint;
   expiresAt: bigint;
   recipients: string[];
 }
 
-/** A revocable permission held by a grantee, identified by its slot. */
+/** A revocable permission held by a grantee, the hash of the Ed25519 key that must sign to use it, identified by its slot. */
 export interface Grant {
   slot: bigint;
-  grantee: Grantee;
+  grantee: string;
   scope: Scope;
 }
 
@@ -35,13 +38,10 @@ export interface AccountState {
 }
 
 /** The redeemer of the account validator's spend handler. */
-export type AccountRedeemer =
-  | { kind: 'device' }
-  | { kind: 'spendWithGrant'; slot: bigint; signature?: string }
-  | { kind: 'fund' };
+export type AccountRedeemer = { kind: 'device' } | { kind: 'spendWithGrant'; slot: bigint } | { kind: 'fund' };
 
-/** The redeemer of the account validator's mint handler. */
-export type MintRedeemer = { kind: 'createAccount' } | { kind: 'deleteAccount' };
+/** The redeemer of the account validator's mint handler, whose only action is creating an account. */
+export type MintRedeemer = { kind: 'createAccount' };
 
 /** A constructor with the given index and fields. */
 export const constr = (index: number, fields: PlutusData[] = []): ConstrPlutusData => ({
@@ -168,23 +168,6 @@ export const decodeAddress = (data: PlutusData, networkId: NetworkId = Cometa.Ne
     .toString();
 };
 
-/** A grantee as Plutus data: `Ed25519` is constructor 0 and `Secp256k1` is constructor 1. */
-export const encodeGrantee = (grantee: Grantee): ConstrPlutusData =>
-  grantee.kind === 'ed25519' ? constr(0, [bytes(grantee.keyHash)]) : constr(1, [bytes(grantee.publicKey)]);
-
-/** The grantee a Plutus data value stands for. */
-export const decodeGrantee = (data: PlutusData): Grantee => {
-  const index = constructorIndex(data, 'a grantee');
-  const [key] = expectConstr(data, index, 1, 'a grantee');
-  if (index === 0) {
-    return { kind: 'ed25519', keyHash: expectBytes(key as PlutusData, 'an Ed25519 key hash') };
-  }
-  if (index === 1) {
-    return { kind: 'secp256k1', publicKey: expectBytes(key as PlutusData, 'a secp256k1 public key') };
-  }
-  throw new Error(`Unknown grantee constructor ${index}`);
-};
-
 /** An asset class as Plutus data. */
 export const encodeAsset = (asset: Asset): ConstrPlutusData =>
   constr(0, [bytes(asset.policyId), bytes(asset.assetName)]);
@@ -204,6 +187,7 @@ export const encodeScope = (scope: Scope): ConstrPlutusData =>
     encodeAsset(scope.asset),
     scope.perCallCap,
     scope.cap,
+    scope.lovelacePerCallCap,
     scope.lovelaceCap,
     scope.expiresAt,
     { items: scope.recipients.map((recipient) => encodeAddress(recipient)) },
@@ -211,27 +195,27 @@ export const encodeScope = (scope: Scope): ConstrPlutusData =>
 
 /** The scope a Plutus data value stands for. */
 export const decodeScope = (data: PlutusData, networkId?: NetworkId): Scope => {
-  const fields = expectConstr(data, 0, 6, 'a scope');
+  const fields = expectConstr(data, 0, 7, 'a scope');
   return {
     asset: decodeAsset(field(fields, 0)),
     perCallCap: expectInt(field(fields, 1), 'a per call cap'),
     cap: expectInt(field(fields, 2), 'a cap'),
-    lovelaceCap: expectInt(field(fields, 3), 'a lovelace cap'),
-    expiresAt: expectInt(field(fields, 4), 'an expiry'),
-    recipients: expectList(field(fields, 5), 'recipients').map((recipient) => decodeAddress(recipient, networkId)),
+    lovelacePerCallCap: expectInt(field(fields, 3), 'a lovelace per call cap'),
+    lovelaceCap: expectInt(field(fields, 4), 'a lovelace cap'),
+    expiresAt: expectInt(field(fields, 5), 'an expiry'),
+    recipients: expectList(field(fields, 6), 'recipients').map((recipient) => decodeAddress(recipient, networkId)),
   };
 };
 
-/** A grant as Plutus data. */
-export const encodeGrant = (grant: Grant): ConstrPlutusData =>
-  constr(0, [grant.slot, encodeGrantee(grant.grantee), encodeScope(grant.scope)]);
+/** A grant as Plutus data: the slot, the grantee key hash and the scope. */
+export const encodeGrant = (grant: Grant): ConstrPlutusData => constr(0, [grant.slot, bytes(grant.grantee), encodeScope(grant.scope)]);
 
 /** The grant a Plutus data value stands for. */
 export const decodeGrant = (data: PlutusData, networkId?: NetworkId): Grant => {
   const fields = expectConstr(data, 0, 3, 'a grant');
   return {
     slot: expectInt(field(fields, 0), 'a slot'),
-    grantee: decodeGrantee(field(fields, 1)),
+    grantee: expectBytes(field(fields, 1), 'a grantee key hash'),
     scope: decodeScope(field(fields, 2), networkId),
   };
 };
@@ -254,16 +238,13 @@ export const decodeAccountState = (data: PlutusData, networkId?: NetworkId): Acc
   };
 };
 
-/** A spend redeemer as Plutus data: `Device` is 0, `SpendWithGrant` is 1 and `Fund` is 2. */
+/** A spend redeemer as Plutus data: `Device` is 0, `SpendWithGrant` is 1 with the slot as its only field and `Fund` is 2. */
 export const encodeAccountRedeemer = (redeemer: AccountRedeemer): ConstrPlutusData => {
   switch (redeemer.kind) {
     case 'device':
       return constr(0);
     case 'spendWithGrant':
-      return constr(1, [
-        redeemer.slot,
-        encodeOption(redeemer.signature === undefined ? undefined : bytes(redeemer.signature)),
-      ]);
+      return constr(1, [redeemer.slot]);
     case 'fund':
       return constr(2);
   }
@@ -283,31 +264,41 @@ export const decodeAccountRedeemer = (data: PlutusData): AccountRedeemer => {
   if (index !== 1) {
     throw new Error(`Unknown account redeemer constructor ${index}`);
   }
-  const fields = expectConstr(data, 1, 2, 'the spend with grant redeemer');
-  const slot = expectInt(field(fields, 0), 'a slot');
-  const option = field(fields, 1);
-  if (constructorIndex(option, 'a signature option') === 1) {
-    expectConstr(option, 1, 0, 'a signature option');
-    return { kind: 'spendWithGrant', slot };
-  }
-  const [signature] = expectConstr(option, 0, 1, 'a signature option');
-  return { kind: 'spendWithGrant', slot, signature: expectBytes(signature as PlutusData, 'a signature') };
+  const fields = expectConstr(data, 1, 1, 'the spend with grant redeemer');
+  return { kind: 'spendWithGrant', slot: expectInt(field(fields, 0), 'a slot') };
 };
 
-/** A mint redeemer as Plutus data: `CreateAccount` is 0 and `DeleteAccount` is 1. */
-export const encodeMintRedeemer = (redeemer: MintRedeemer): ConstrPlutusData =>
-  constr(redeemer.kind === 'createAccount' ? 0 : 1);
+/**
+ * Plutus data without the serialisation cache cometa keeps on decoded
+ * values, so that it is re-serialised with the ledger's canonical encoding
+ * and compares equal to freshly built data.
+ */
+export const withoutCborCache = (data: PlutusData): PlutusData => {
+  if (Cometa.isPlutusDataConstr(data)) {
+    return constr(Number(data.constructor), data.fields.items.map(withoutCborCache));
+  }
+  if (Cometa.isPlutusDataList(data)) {
+    return { items: data.items.map(withoutCborCache) };
+  }
+  if (Cometa.isPlutusDataMap(data)) {
+    return { entries: data.entries.map(({ key, value }) => ({ key: withoutCborCache(key), value: withoutCborCache(value) })) };
+  }
+  return data;
+};
+
+/** A mint redeemer as Plutus data: `CreateAccount` is constructor 0 with no fields. */
+export const encodeMintRedeemer = (redeemer: MintRedeemer): ConstrPlutusData => constr(0);
 
 /** The mint redeemer a Plutus data value stands for. */
 export const decodeMintRedeemer = (data: PlutusData): MintRedeemer => {
-  const index = constructorIndex(data, 'a mint redeemer');
-  if (index === 0) {
-    expectConstr(data, 0, 0, 'the create account redeemer');
-    return { kind: 'createAccount' };
-  }
-  if (index === 1) {
-    expectConstr(data, 1, 0, 'the delete account redeemer');
-    return { kind: 'deleteAccount' };
-  }
-  throw new Error(`Unknown mint redeemer constructor ${index}`);
+  expectConstr(data, 0, 0, 'the create account redeemer');
+  return { kind: 'createAccount' };
 };
+
+/**
+ * The redeemer of the account stake validator's withdraw and publish
+ * handlers as Plutus data. Both handlers learn what they authorise from the
+ * script context, so the redeemer carries no choice: `Operate` is its only
+ * value, constructor 0 with no fields.
+ */
+export const encodeStakeRedeemer = (): ConstrPlutusData => constr(0);

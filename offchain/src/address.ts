@@ -1,26 +1,35 @@
-import type { Address, NetworkId } from '@biglup/cometa';
+import type { Address, NetworkId, RewardAddress } from '@biglup/cometa';
 import { Cometa } from './cometa.js';
+import { stakeCredential } from './stake-script.js';
 
 /**
  * The address of a user's account: the account script as the payment
- * credential and the user's own stake key as the stake credential.
+ * credential and the user's own stake script as the stake credential.
  */
 export const accountAddress = (
   scriptHash: string,
-  stakeKeyHash: string,
+  stakeScriptHash: string,
   networkId: NetworkId = Cometa.NetworkId.Testnet,
 ): Address =>
   Cometa.BaseAddress.fromCredentials(
     networkId,
     { hash: scriptHash, type: Cometa.CredentialType.ScriptHash },
-    { hash: stakeKeyHash, type: Cometa.CredentialType.KeyHash },
+    stakeCredential(stakeScriptHash),
   ).toAddress();
 
 /**
- * The asset id of an account's state NFT: the account script hash as the
- * policy id and the user's stake key hash as the asset name.
+ * The reward account of a user's account, which the stake script controls:
+ * withdrawals draw from it and certificates register and delegate
+ * its credential.
  */
-export const stateNftAssetId = (scriptHash: string, stakeKeyHash: string): string => `${scriptHash}${stakeKeyHash}`;
+export const rewardAddress = (stakeScriptHash: string, networkId: NetworkId = Cometa.NetworkId.Testnet): RewardAddress =>
+  Cometa.RewardAddress.fromCredentials(networkId, stakeCredential(stakeScriptHash));
+
+/**
+ * The asset id of an account's state NFT: the account script hash as the
+ * policy id and the user's stake script hash as the asset name.
+ */
+export const stateNftAssetId = (scriptHash: string, stakeScriptHash: string): string => `${scriptHash}${stakeScriptHash}`;
 
 /** Parses an address given either as a string or as a cometa address. */
 export const toAddress = (address: Address | string): Address =>
@@ -36,17 +45,8 @@ export const paymentKeyHashOf = (address: Address | string): string | undefined 
   return credential?.type === Cometa.CredentialType.KeyHash ? credential.hash : undefined;
 };
 
-/**
- * The verification key hash of an address's stake credential, or undefined
- * when the address has no inline key stake credential.
- */
-export const stakeKeyHashOf = (address: Address | string): string | undefined => {
-  const credential = toAddress(address).asBase()?.getStakeCredential();
-  return credential?.type === Cometa.CredentialType.KeyHash ? credential.hash : undefined;
-};
-
-/** Whether an address is the account address of a stake key hash. */
-export const isAccountAddress = (address: Address | string, scriptHash: string, stakeKeyHash: string): boolean => {
+/** Whether an address is the account address of a stake script hash. */
+export const isAccountAddress = (address: Address | string, scriptHash: string, stakeScriptHash: string): boolean => {
   const base = toAddress(address).asBase();
   if (!base) {
     return false;
@@ -56,7 +56,7 @@ export const isAccountAddress = (address: Address | string, scriptHash: string, 
   return (
     payment.type === Cometa.CredentialType.ScriptHash &&
     payment.hash === scriptHash &&
-    stake.type === Cometa.CredentialType.KeyHash &&
-    stake.hash === stakeKeyHash
+    stake.type === Cometa.CredentialType.ScriptHash &&
+    stake.hash === stakeScriptHash
   );
 };

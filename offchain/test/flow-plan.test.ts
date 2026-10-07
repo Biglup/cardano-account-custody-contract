@@ -4,7 +4,6 @@ import {
   FLOW_PLAN,
   GRANT_SPEND_LOVELACE,
   PER_CALL_CAP,
-  SECP256K1_SPEND_LOVELACE,
   NODE_REFUSAL_LENGTH,
   classifyFailure,
   evidenceDocument,
@@ -51,20 +50,33 @@ const SUBMIT_ERROR =
   });
 
 describe('FLOW_PLAN', () => {
-  it('lists the eighteen flows in order', () => {
-    expect(FLOW_PLAN.map((flow) => flow.step)).toEqual(Array.from({ length: 18 }, (_, index) => index + 1));
+  it('lists the twenty flows in order', () => {
+    expect(FLOW_PLAN.map((flow) => flow.step)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+    expect(FLOW_PLAN.some((flow) => /secp256k1/.test(flow.description))).toBe(false);
+  });
+
+  it('registers at creation, operates the stake credential through both devices and ends with a sweep that keeps the control UTxO', () => {
+    expect(FLOW_PLAN[0]!.description).toContain('registers the stake credential');
+    expect(FLOW_PLAN.filter((flow) => /withdrawRewards|delegateStake/.test(flow.description)).map((flow) => flow.step)).toEqual([4, 5, 17]);
+    expect(FLOW_PLAN[16]!.description).toContain('signed by the new device');
+    expect(FLOW_PLAN[15]!.description).toContain('addDevice');
+    expect(FLOW_PLAN[19]!.description).toContain('leaving only the control UTxO');
+    expect(FLOW_PLAN.some((flow) => /deleteAccount|deregister/.test(flow.description))).toBe(false);
+    for (const step of [4, 5, 17]) {
+      expect(FLOW_PLAN[step - 1]!.outcome).toBe('confirmed');
+    }
   });
 
   it('expects the builder to refuse the cap, recipient, revoked grant and expiry spends', () => {
-    expect(FLOW_PLAN.filter((flow) => flow.outcome === 'refused by the builder').map((flow) => flow.step)).toEqual([6, 8, 11, 13]);
+    expect(FLOW_PLAN.filter((flow) => flow.outcome === 'refused by the builder').map((flow) => flow.step)).toEqual([8, 10, 13, 14]);
   });
 
   it('expects the node to refuse the unchecked cap, recipient and expiry spends', () => {
-    expect(FLOW_PLAN.filter((flow) => flow.outcome === 'refused by the node').map((flow) => flow.step)).toEqual([7, 9, 14]);
+    expect(FLOW_PLAN.filter((flow) => flow.outcome === 'refused by the node').map((flow) => flow.step)).toEqual([9, 11, 15]);
   });
 
   it('follows every builder refusal the node can also show with the unchecked submission', () => {
-    for (const step of [6, 8, 13]) {
+    for (const step of [8, 10, 14]) {
       expect(FLOW_PLAN[step]!.outcome).toBe('refused by the node');
       expect(FLOW_PLAN[step]!.description).toContain('unchecked');
     }
@@ -72,10 +84,10 @@ describe('FLOW_PLAN', () => {
 
   it('matches each builder refusal against the message recorded in the preprod evidence, and not against an unrelated builder error', () => {
     const evidenceMessages: Record<number, string> = {
-      6: 'Grant 0 refuses the spend: 8000000 of the scoped asset exceeds the remaining cap of 6145453',
-      8: 'addr_test1qpq5gz7gyn39a0jh7sln54yrx7a72mgtmsm0zckkhve03zgkyqa8k48398gsyllkypnjqhavl6ghmejkwudrka28g8cqkygz08 is not a recipient of grant 0',
-      11: 'The account has no grant in slot 0',
-      13: 'Slot 135663435 starts after grant 2 expires',
+      8: 'Grant 0 refuses the spend: 8000000 of the scoped asset exceeds the remaining cap of 6156805',
+      10: 'addr_test1qpq5gz7gyn39a0jh7sln54yrx7a72mgtmsm0zckkhve03zgkyqa8k48398gsyllkypnjqhavl6ghmejkwudrka28g8cqkygz08 is not a recipient of grant 0',
+      13: 'The account has no grant in slot 0',
+      14: 'Slot 135678122 starts after grant 1 expires',
     };
     const unrelatedBuilderError = 'Grant 0 refuses the spend: the agent does not hold enough funds';
     for (const [step, message] of Object.entries(evidenceMessages)) {
@@ -89,7 +101,7 @@ describe('FLOW_PLAN', () => {
     const nodeRefusalMessage =
       'ConwayUtxowFailure (UtxoFailure (UtxosFailure (ValidationTagMismatch Phase2Valid (FailedUnexpectedly (PlutusFailure "boom")))))';
     const unrelatedSubmissionError = 'BadInputsUTxO';
-    for (const step of [7, 9, 14]) {
+    for (const step of [9, 11, 15]) {
       const flow = FLOW_PLAN[step - 1]!;
       expect(flow.expectedMessage?.test(nodeRefusalMessage)).toBe(true);
       expect(flow.expectedMessage?.test(unrelatedSubmissionError)).toBe(false);
@@ -101,7 +113,6 @@ describe('FLOW_PLAN', () => {
     expect(GRANT_SPEND_LOVELACE + feeAndAllowance).toBeLessThanOrEqual(PER_CALL_CAP);
     expect(GRANT_SPEND_LOVELACE + feeAndAllowance).toBeLessThanOrEqual(CAP);
     expect(2n * GRANT_SPEND_LOVELACE).toBeGreaterThan(CAP - GRANT_SPEND_LOVELACE);
-    expect(SECP256K1_SPEND_LOVELACE + feeAndAllowance).toBeLessThanOrEqual(PER_CALL_CAP);
   });
 });
 
@@ -179,11 +190,11 @@ describe('evidence', () => {
   });
 
   it('quotes the refusal of a refused flow, naming who refused and escaping pipes', () => {
-    expect(evidenceRow({ flow: FLOW_PLAN[5]!, txIds: [], refusal: 'Grant 0 refuses the spend' })).toBe(
-      `| 6 | ${FLOW_PLAN[5]!.description} | none | refused by the builder: "Grant 0 refuses the spend" |`,
+    expect(evidenceRow({ flow: FLOW_PLAN[7]!, txIds: [], refusal: 'Grant 0 refuses the spend' })).toBe(
+      `| 8 | ${FLOW_PLAN[7]!.description} | none | refused by the builder: "Grant 0 refuses the spend" |`,
     );
-    expect(evidenceRow({ flow: FLOW_PLAN[6]!, txIds: [], refusal: 'PlutusFailure :| []' })).toBe(
-      `| 7 | ${FLOW_PLAN[6]!.description} | none | refused by the node: "PlutusFailure :\\| []" |`,
+    expect(evidenceRow({ flow: FLOW_PLAN[8]!, txIds: [], refusal: 'PlutusFailure :| []' })).toBe(
+      `| 9 | ${FLOW_PLAN[8]!.description} | none | refused by the node: "PlutusFailure :\\| []" |`,
     );
   });
 
@@ -191,14 +202,22 @@ describe('evidence', () => {
     const document = evidenceDocument({
       date: '2026-10-07',
       fundingAddress: 'addr_test1funding',
+      ownerAddress: 'addr_test1owner',
       accountAddress: 'addr_test1account',
       scriptHash: 'cd'.repeat(28),
+      stakeScriptHash: 'ef'.repeat(28),
+      rewardAddress: 'stake_test1reward',
+      poolId: 'pool1pool',
       records: [{ flow: FLOW_PLAN[0]!, txIds: [TX_ID] }],
       supporting: [{ description: 'fund the agent wallet', txId: TX_ID }],
     });
     expect(document).toContain('- Date: 2026-10-07');
+    expect(document).toContain('- Owner address: `addr_test1owner`');
     expect(document).toContain('- Account address: `addr_test1account`');
     expect(document).toContain(`- State NFT policy id: \`${'cd'.repeat(28)}\``);
+    expect(document).toContain(`- Account stake credential: \`${'ef'.repeat(28)}\``);
+    expect(document).toContain('- Reward address: `stake_test1reward`');
+    expect(document).toContain('- Delegated pool: `pool1pool`');
     expect(document).toContain('| 1 | createAccount');
     expect(document).toContain('| fund the agent wallet |');
     expect(document).toContain('no\ncollateral is consumed');

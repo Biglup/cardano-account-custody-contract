@@ -8,18 +8,18 @@ import {
   decodeAccountState,
   decodeAddress,
   decodeGrant,
-  decodeGrantee,
   decodeMintRedeemer,
   decodeScope,
   encodeAccountRedeemer,
   encodeAccountState,
   encodeAddress,
   encodeGrant,
-  encodeGrantee,
   encodeMintRedeemer,
   encodeScope,
+  encodeStakeRedeemer,
+  withoutCborCache,
 } from '../src/data.js';
-import { GRANTEE_PUBLIC_KEY, OWNER_PAYMENT_KEY, address, grantedState, recipientAddress } from './support/account.js';
+import { AGENT_PAYMENT_KEY, OWNER_PAYMENT_KEY, address, grantedState, lovelaceScope, recipientAddress } from './support/account.js';
 
 const cbor = (data: Parameters<typeof Cometa.plutusDataToCbor>[0]): string => Cometa.plutusDataToCbor(data);
 
@@ -29,7 +29,7 @@ describe('account state', () => {
     expect(cbor(encodeAccountState(state))).toBe(`d8799f9f581c${OWNER_PAYMENT_KEY}ff8000ff`);
   });
 
-  it('round trips a state with both grantee kinds and recipients', () => {
+  it('round trips a state with grants and recipients', () => {
     const encoded = encodeAccountState(grantedState);
     expect(decodeAccountState(Cometa.cborToPlutusData(cbor(encoded)))).toEqual(grantedState);
   });
@@ -40,20 +40,11 @@ describe('account state', () => {
   });
 });
 
-describe('grantee', () => {
-  it('uses constructor 0 for Ed25519 and 1 for secp256k1', () => {
-    expect(cbor(encodeGrantee({ kind: 'ed25519', keyHash: OWNER_PAYMENT_KEY }))).toBe(`d8799f581c${OWNER_PAYMENT_KEY}ff`);
-    expect(cbor(encodeGrantee({ kind: 'secp256k1', publicKey: GRANTEE_PUBLIC_KEY }))).toBe(`d87a9f5821${GRANTEE_PUBLIC_KEY}ff`);
-  });
-
-  it('round trips and rejects other constructors', () => {
-    for (const grantee of [
-      { kind: 'ed25519', keyHash: OWNER_PAYMENT_KEY } as const,
-      { kind: 'secp256k1', publicKey: GRANTEE_PUBLIC_KEY } as const,
-    ]) {
-      expect(decodeGrantee(encodeGrantee(grantee))).toEqual(grantee);
-    }
-    expect(() => decodeGrantee({ constructor: 2n, fields: { items: [new Uint8Array(1)] } })).toThrow(/grantee/);
+describe('grant', () => {
+  it('encodes the slot, the grantee key hash and the scope', () => {
+    const grant = grantedState.grants[0]!;
+    expect(cbor(encodeGrant(grant)).startsWith(`d8799f00581c${AGENT_PAYMENT_KEY}d8799f`)).toBe(true);
+    expect(() => decodeGrant({ constructor: 0n, fields: { items: [0n, { constructor: 0n, fields: { items: [] } }, encodeScope(grant.scope)] } })).toThrow(/grantee/);
   });
 });
 
@@ -69,6 +60,12 @@ describe('scope and grant', () => {
     const scope = grantedState.grants[0]?.scope;
     expect(scope).toBeDefined();
     expect(cbor(encodeScope(scope!)).startsWith('d8799fd8799f4040ff')).toBe(true);
+  });
+
+  it('encodes the seven scope fields in declaration order, the lovelace per call cap before the lovelace cap', () => {
+    const scope = { ...lovelaceScope(), lovelacePerCallCap: 1n, lovelaceCap: 2n };
+    expect(cbor(encodeScope(scope))).toBe('d8799fd8799f4040ff1a009896801a00e4e1c001021b000001a3185c500080ff');
+    expect(() => decodeScope(Cometa.cborToPlutusData('d8799fd8799f4040ff1a009896801a00e4e1c0021b000001a3185c500080ff'))).toThrow(/scope/);
   });
 });
 
@@ -103,8 +100,7 @@ describe('address', () => {
 describe('redeemers', () => {
   it('uses the declaration order of the account redeemer constructors', () => {
     expect(cbor(encodeAccountRedeemer({ kind: 'device' }))).toBe('d87980');
-    expect(cbor(encodeAccountRedeemer({ kind: 'spendWithGrant', slot: 1n }))).toBe('d87a9f01d87a80ff');
-    expect(cbor(encodeAccountRedeemer({ kind: 'spendWithGrant', slot: 1n, signature: 'ab' }))).toBe('d87a9f01d8799f41abffff');
+    expect(cbor(encodeAccountRedeemer({ kind: 'spendWithGrant', slot: 1n }))).toBe('d87a9f01ff');
     expect(cbor(encodeAccountRedeemer({ kind: 'fund' }))).toBe('d87b80');
   });
 
@@ -112,22 +108,34 @@ describe('redeemers', () => {
     const redeemers: AccountRedeemer[] = [
       { kind: 'device' },
       { kind: 'spendWithGrant', slot: 3n },
-      { kind: 'spendWithGrant', slot: 3n, signature: '00'.repeat(64) },
       { kind: 'fund' },
     ];
     for (const redeemer of redeemers) {
       expect(decodeAccountRedeemer(encodeAccountRedeemer(redeemer))).toEqual(redeemer);
     }
     expect(() => decodeAccountRedeemer({ constructor: 3n, fields: { items: [] } })).toThrow(/redeemer/);
+    expect(() => decodeAccountRedeemer({ constructor: 1n, fields: { items: [3n, { constructor: 1n, fields: { items: [] } }] } })).toThrow(/redeemer/);
   });
 
-  it('uses constructor 0 for CreateAccount and 1 for DeleteAccount', () => {
+  it('uses constructor 0 for CreateAccount, the only mint action', () => {
     expect(cbor(encodeMintRedeemer({ kind: 'createAccount' }))).toBe('d87980');
-    expect(cbor(encodeMintRedeemer({ kind: 'deleteAccount' }))).toBe('d87a80');
-    const redeemers: MintRedeemer[] = [{ kind: 'createAccount' }, { kind: 'deleteAccount' }];
-    for (const redeemer of redeemers) {
-      expect(decodeMintRedeemer(encodeMintRedeemer(redeemer))).toEqual(redeemer);
-    }
-    expect(() => decodeMintRedeemer({ constructor: 2n, fields: { items: [] } })).toThrow(/redeemer/);
+    const redeemer: MintRedeemer = { kind: 'createAccount' };
+    expect(decodeMintRedeemer(encodeMintRedeemer(redeemer))).toEqual(redeemer);
+    expect(() => decodeMintRedeemer({ constructor: 1n, fields: { items: [] } })).toThrow(/redeemer/);
+  });
+});
+
+describe('stake redeemer', () => {
+  it('encodes Operate as constructor 0 with no fields', () => {
+    expect(cbor(encodeStakeRedeemer())).toBe('d87980');
+  });
+});
+
+describe('withoutCborCache', () => {
+  it('drops the serialisation cache before re-encoding', () => {
+    const cached = Cometa.cborToPlutusData('d8799f9f0102ffa14000ff');
+    const stripped = withoutCborCache(cached);
+    expect(JSON.stringify(stripped, (_, v: unknown) => (typeof v === 'bigint' ? v.toString() : v))).not.toContain('cbor');
+    expect(Cometa.plutusDataToCbor(stripped)).toBe('d8799f9f0102ffa14000ff');
   });
 });
