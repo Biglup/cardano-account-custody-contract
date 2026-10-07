@@ -287,7 +287,7 @@ export const withoutCborCache = (data: PlutusData): PlutusData => {
 };
 
 /** A mint redeemer as Plutus data: `CreateAccount` is constructor 0 with no fields. */
-export const encodeMintRedeemer = (redeemer: MintRedeemer): ConstrPlutusData => constr(0);
+export const encodeMintRedeemer = (): ConstrPlutusData => constr(0);
 
 /** The mint redeemer a Plutus data value stands for. */
 export const decodeMintRedeemer = (data: PlutusData): MintRedeemer => {

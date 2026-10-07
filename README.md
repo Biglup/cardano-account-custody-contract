@@ -382,27 +382,6 @@ locked for the life of the account, and a dormant account remains. No key
 can mint a second control UTxO, and the owner key, after creation, is one
 device among the others.
 
-## Vocabulary
-
-Terms with no established Cardano equivalent keep their Midnight ACC name;
-where Cardano already has an established term, that term is used.
-
-| Midnight ACC term    | This contract's term  | Meaning                                                   |
-| --------------------- | ---------------------- | ---------------------------------------------------------- |
-| devices                | devices                | The owner's keys; any one authorises the owner path       |
-| grants                 | grants                 | The account's bounded, revocable permissions                |
-| slot                   | slot                   | A grant's identifier, distinct within `grants` but not its list index |
-| scope                  | scope                  | A grant's bounds: asset, caps, expiry, recipients           |
-| issue_grant            | issue_grant            | Owner action that adds a grant to the state                 |
-| revoke_grant           | revoke_grant           | Owner action that removes one grant from the state          |
-| revoke_all_grants      | revoke_all_grants      | Owner action that clears every grant from the state         |
-| grant_generation       | grant_generation       | Counter bumped by `revoke_all_grants` only                  |
-| withdraw                | spend                   | Taking funds out of the account (`spend_with_device`, `spend_with_grant`); on Cardano "withdraw" is reserved for rewards |
-| fund                   | deposit                | Adding funds to the account, a plain transfer with no datum |
-| account token          | state NFT               | The NFT marking the account's control UTxO                  |
-| account identity       | stake credential        | The hash of the account's own stake script, which makes the address and the NFT name the owner's own |
-| owner                  | owner                   | The initial device key, the stake script's parameter; authorises creation only |
-
 ## Data types
 
 All types live in `lib/cardano_account_custody_contract/types.ak`. Aiken

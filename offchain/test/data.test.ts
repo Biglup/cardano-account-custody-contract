@@ -118,9 +118,9 @@ describe('redeemers', () => {
   });
 
   it('uses constructor 0 for CreateAccount, the only mint action', () => {
-    expect(cbor(encodeMintRedeemer({ kind: 'createAccount' }))).toBe('d87980');
+    expect(cbor(encodeMintRedeemer())).toBe('d87980');
     const redeemer: MintRedeemer = { kind: 'createAccount' };
-    expect(decodeMintRedeemer(encodeMintRedeemer(redeemer))).toEqual(redeemer);
+    expect(decodeMintRedeemer(encodeMintRedeemer())).toEqual(redeemer);
     expect(() => decodeMintRedeemer({ constructor: 1n, fields: { items: [] } })).toThrow(/redeemer/);
   });
 });

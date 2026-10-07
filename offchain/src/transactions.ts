@@ -392,7 +392,7 @@ export const createAccount = async (params: CreateAccountParams): Promise<string
   }
   const builder = await (params.sponsor ?? params.wallet).createTransactionBuilder();
   builder.registerStakeAddress({ rewardAddress: account.rewardAddress, redeemer: operateRedeemer });
-  builder.mintToken({ assetIdHex: account.nftAssetId, amount: 1n, redeemer: encodeMintRedeemer({ kind: 'createAccount' }) });
+  builder.mintToken({ assetIdHex: account.nftAssetId, amount: 1n, redeemer: encodeMintRedeemer() });
   inlineState(builder, account, controlLovelace(account, params.lovelace ?? DEFAULT_CONTROL_LOVELACE, state, adaPerUtxoByte), state);
   return builder.addSigner(account.owner).addScript(account.script).addScript(account.stakeScript).build();
 };
