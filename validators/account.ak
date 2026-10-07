@@ -4,6 +4,12 @@ use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{Output, OutputReference, Transaction}
 use cardano_account_custody_contract/account as custody
+use cardano_account_custody_contract/grant.{
+  carries_state, ends_before_expiry, is_authorised_by_grantee, leaving_value,
+  pays_only_recipients, spends_one_control_utxo, state_after_spend,
+  stays_within_scope,
+}
+use cardano_account_custody_contract/state.{find_grant}
 use cardano_account_custody_contract/types.{
   AccountRedeemer, AccountState, CreateAccount, DeleteAccount, Device, Fund,
   MintRedeemer, SpendWithGrant,
@@ -33,8 +39,17 @@ use cardano_account_custody_contract/types.{
 /// with a device signature the UTxO may be spent freely, as long as the
 /// state NFT is either burned or recreated in a single control output
 /// carrying only lovelace, the NFT and a well formed state.
-/// `SpendWithGrant` is the agent path and is not implemented yet: it fails
-/// unconditionally.
+/// `SpendWithGrant` is the agent path: the grant in the named slot must
+/// exist, its grantee must authorise the transaction, either as a required
+/// signer for an Ed25519 grantee or through a secp256k1 signature over the
+/// transaction for a Secp256k1 grantee, and the transaction must stay
+/// within the grant's scope: it ends before the grant expires, the value
+/// leaving the account address stays within the per call cap, the
+/// remaining cap and the remaining lovelace cap, nothing of any other asset
+/// leaves, every output away from the account goes to an allowed
+/// recipient, and the single control output carries the same state with
+/// only that grant's remaining caps reduced by what left. Only one control
+/// UTxO of the account may be spent, so the accounting runs over one state.
 ///
 /// The validator maintains one invariant about its tokens: a state NFT
 /// named N only ever sits at the account address of N, in exactly one
@@ -124,7 +139,45 @@ validator account {
           },
         }
       }
-      SpendWithGrant { .. } -> fail
+      SpendWithGrant { slot, signature } -> {
+        expect Some(data) = datum
+        expect state: AccountState = data
+        expect Some(grant) = find_grant(state, slot)
+        let address = own.output.address
+        let leaving = leaving_value(self.inputs, self.outputs, address)
+        expect Some(control) = custody.find_control_output(
+          self.outputs,
+          script_hash,
+          stake_key_hash,
+        )
+        and {
+          holds_nft,
+          is_authorised_by_grantee(
+            grant.grantee,
+            signature,
+            output_reference,
+            self,
+          ),
+          ends_before_expiry(self.validity_range, grant.scope.expires_at),
+          stays_within_scope(grant.scope, leaving),
+          pays_only_recipients(self.outputs, address, grant.scope.recipients),
+          spends_one_control_utxo(self.inputs, script_hash, stake_key_hash),
+          custody.state_nfts_sit_at_their_own_addresses(
+            list.map(self.inputs, fn(input) { input.output }),
+            script_hash,
+          ),
+          custody.state_nfts_sit_at_their_own_addresses(
+            self.outputs,
+            script_hash,
+          ),
+          custody.holds_only_lovelace_and_state_nft(
+            control.value,
+            script_hash,
+            stake_key_hash,
+          ),
+          carries_state(control, state_after_spend(state, slot, leaving)),
+        }
+      }
     }
   }
 
