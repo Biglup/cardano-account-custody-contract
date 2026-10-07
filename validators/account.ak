@@ -1,7 +1,12 @@
+use aiken/collection/dict
+use aiken/collection/list
+use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use cardano/assets.{PolicyId}
-use cardano/transaction.{OutputReference, Transaction}
+use cardano/transaction.{Output, OutputReference, Transaction}
+use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/types.{
-  AccountRedeemer, AccountState, MintRedeemer,
+  AccountRedeemer, AccountState, CreateAccount, DeleteAccount, Device, Fund,
+  MintRedeemer, SpendWithGrant,
 }
 
 /// The account's multi-purpose validator. Its script hash is both the
@@ -9,23 +14,137 @@ use cardano_account_custody_contract/types.{
 /// every account address, so the mint and spend handlers share one
 /// identity and can trust each other's checks within a transaction.
 ///
-/// The mint and spend rules are not implemented yet: both handlers fail
+/// The mint handler creates and retires accounts. `CreateAccount` mints
+/// exactly one state NFT named after the user's stake key hash, which the
+/// user must sign for, and requires that it lands in a single control
+/// output at the user's account address holding only lovelace, the NFT and
+/// a well formed inline `AccountState`. `DeleteAccount` burns exactly one
+/// state NFT and requires that the control UTxO holding it is spent in the
+/// same transaction; since that UTxO sits at the account address, the
+/// spend handler runs on it and demands a device signature.
+///
+/// The spend handler guards every UTxO at an account address, with the
+/// account identified by the stake key hash of the UTxO's own address.
+/// `Fund` spends a plain deposit and only requires that the account's own
+/// control UTxO is spent alongside, so the control UTxO's checks run once
+/// over the whole transaction; a deposit may carry any inline datum or
+/// none, since the datum is never read on this path. `Device` is the owner
+/// path: the control UTxO's datum must decode as an `AccountState`, and
+/// with a device signature the UTxO may be spent freely, as long as the
+/// state NFT is either burned or recreated in a single control output
+/// carrying only lovelace, the NFT and a well formed state.
+/// `SpendWithGrant` is the agent path and is not implemented yet: it fails
 /// unconditionally.
+///
+/// The validator maintains one invariant about its tokens: a state NFT
+/// named N only ever sits at the account address of N, in exactly one
+/// control UTxO, or is burned. Account creation and every device spend
+/// check every output of the transaction for it, so a token of the account
+/// policy can never reach a key address, an enterprise script address or
+/// the address of another account, not even at the owner's request, and
+/// the account whose NFT is spent always demands a single control output
+/// at its own address. A device spend checks the spent UTxOs the same way,
+/// so an account never takes part in a transaction that spends a token of
+/// the policy sitting away from its own address, and such a token could
+/// never be turned back into a control UTxO. Since the ledger only moves a
+/// state NFT through a spend of the UTxO holding it, and that UTxO sits at
+/// the account address of its name, the invariant holds across every
+/// transaction.
+///
+/// Creation rests on one trust assumption: the holder of a stake key can
+/// always mint a new control UTxO for their own account, because the mint
+/// handler cannot prove that the account's NFT does not already exist. A
+/// second mint would put the account under two control UTxOs, so off-chain
+/// code must check for an existing state NFT before creating an account.
 validator account {
-  mint(_redeemer: MintRedeemer, _policy_id: PolicyId, _self: Transaction) {
-    fail
+  mint(redeemer: MintRedeemer, policy_id: PolicyId, self: Transaction) {
+    expect [Pair(stake_key_hash, quantity)] = assets.tokens(
+      self.mint,
+      policy_id,
+    )
+      |> dict.to_pairs
+    when (redeemer, quantity) is {
+      (CreateAccount, 1) -> {
+        expect Some(control) = custody.find_control_output(
+          self.outputs,
+          policy_id,
+          stake_key_hash,
+        )
+        and {
+          list.has(self.extra_signatories, stake_key_hash),
+          custody.is_valid_control_output(control, policy_id, stake_key_hash),
+          custody.state_nfts_sit_at_their_own_addresses(self.outputs, policy_id),
+        }
+      }
+      (DeleteAccount, -1) ->
+        custody.has_control_input(self.inputs, policy_id, stake_key_hash)
+      _ -> False
+    }
   }
 
   spend(
-    _datum: Option<AccountState>,
-    _redeemer: AccountRedeemer,
-    _output_reference: OutputReference,
-    _self: Transaction,
+    datum: Option<Data>,
+    redeemer: AccountRedeemer,
+    output_reference: OutputReference,
+    self: Transaction,
   ) {
-    fail
+    let own = custody.own_input(self.inputs, output_reference)
+    let script_hash = custody.script_hash_of(own.output.address)
+    let stake_key_hash = custody.stake_key_hash_of(own.output.address)
+    let holds_nft = custody.holds_state_nft(
+      own.output.value,
+      script_hash,
+      stake_key_hash,
+    )
+    when redeemer is {
+      Fund -> and {
+          !holds_nft,
+          custody.has_control_input(self.inputs, script_hash, stake_key_hash),
+        }
+      Device -> {
+        expect Some(data) = datum
+        expect state: AccountState = data
+        and {
+          holds_nft,
+          list.any(
+            state.devices,
+            fn(device) { list.has(self.extra_signatories, device) },
+          ),
+          custody.state_nfts_sit_at_their_own_addresses(
+            list.map(self.inputs, fn(input) { input.output }),
+            script_hash,
+          ),
+          custody.state_nfts_sit_at_their_own_addresses(
+            self.outputs,
+            script_hash,
+          ),
+          or {
+            custody.burns_state_nft(self.mint, script_hash, stake_key_hash),
+            recreates_control_output(self.outputs, script_hash, stake_key_hash),
+          },
+        }
+      }
+      SpendWithGrant { .. } -> fail
+    }
   }
 
   else(_context) {
     fail
   }
+}
+
+/// Whether the transaction recreates the account's control UTxO: exactly
+/// one output at the account address holds the state NFT, and that output
+/// carries only lovelace, the NFT and a well formed state.
+fn recreates_control_output(
+  outputs: List<Output>,
+  script_hash: ScriptHash,
+  stake_key_hash: VerificationKeyHash,
+) -> Bool {
+  expect Some(control) = custody.find_control_output(
+    outputs,
+    script_hash,
+    stake_key_hash,
+  )
+  custody.is_valid_control_output(control, script_hash, stake_key_hash)
 }
