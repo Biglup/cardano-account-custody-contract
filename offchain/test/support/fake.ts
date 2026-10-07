@@ -18,8 +18,8 @@ import type {
 import { stakeKeyHashOf, toAddress } from '../../src/address.js';
 import { Cometa } from '../../src/cometa.js';
 import { decodeAccountRedeemer, decodeAccountState, encodeAccountState } from '../../src/data.js';
-import { transactionBodyParts, withoutCborCache } from '../../src/message.js';
-import { stateAfterSpend } from '../../src/state.js';
+import { type ValidityRange, transactionBodyParts, upperBoundTime, withoutCborCache } from '../../src/message.js';
+import { findGrant, scopeViolation, stateAfterSpend } from '../../src/state.js';
 import { type Balance, LOVELACE_ASSET_ID, addBalances, quantityOf, subtractBalances, toBalance } from '../../src/value.js';
 
 /** The Plutus V3 cost model of the preprod Conway genesis. */
@@ -113,11 +113,13 @@ const stateNftOf = (address: string): string | undefined => {
 
 /**
  * A provider serving canned UTxOs per address and fixed execution units.
- * Evaluation models the one check of the validator that depends on the
- * fee: a control UTxO spent with the grant redeemer must be recreated
- * with the state after the value the draft lets leave, fee included, and
- * a draft that fails the check is refused the way a network provider
- * refuses a transaction whose scripts fail.
+ * Evaluation models the checks of the validator's agent path that a
+ * built transaction can break: the validity range must end before the
+ * grant expires, what leaves the account must stay within the grant's
+ * scope, every output away from the account must go to a recipient, and
+ * the control UTxO must be recreated with the state after the value the
+ * draft lets leave, fee included. A draft that fails a check is refused
+ * the way a network provider refuses a transaction whose scripts fail.
  */
 export class FakeProvider implements Provider {
   private readonly utxos = new Map<string, UTxO[]>();
@@ -188,7 +190,7 @@ export class FakeProvider implements Provider {
     for (const redeemer of redeemers.filter((candidate) => candidate.purpose === Cometa.RedeemerPurpose.spend)) {
       const input = parts.inputs[redeemer.index];
       const utxo = spent.find((candidate) => candidate.input.txId === input?.txId && candidate.input.index === input.index);
-      const failure = utxo && this.grantSpendFailure(utxo, redeemer.data, spent, parts.outputs);
+      const failure = utxo && this.grantSpendFailure(utxo, redeemer.data, spent, parts.outputs, parts.validityRange);
       if (failure) {
         this.phaseTwoFailures.push(failure);
         throw new Error(failure);
@@ -197,8 +199,14 @@ export class FakeProvider implements Provider {
     return redeemers.map((redeemer) => ({ ...redeemer, executionUnits: FAKE_EXECUTION_UNITS }));
   }
 
-  /** Why a control UTxO spent with the grant redeemer is not recreated as the validator demands, or undefined when it is. */
-  private grantSpendFailure(control: UTxO, redeemerData: PlutusData, spent: UTxO[], outputs: TxOut[]): string | undefined {
+  /** Why a control UTxO spent with the grant redeemer breaks the agent path as the validator checks it, or undefined when it passes. */
+  private grantSpendFailure(
+    control: UTxO,
+    redeemerData: PlutusData,
+    spent: UTxO[],
+    outputs: TxOut[],
+    validityRange: ValidityRange,
+  ): string | undefined {
     const nftAssetId = stateNftOf(control.output.address);
     const redeemer = decodeAccountRedeemer(redeemerData);
     if (nftAssetId === undefined || redeemer.kind !== 'spendWithGrant' || control.output.datum === undefined) {
@@ -206,10 +214,28 @@ export class FakeProvider implements Provider {
     }
     const address = control.output.address;
     const state = decodeAccountState(control.output.datum);
+    const grant = findGrant(state, redeemer.slot);
+    if (!grant) {
+      return `The account has no grant in slot ${redeemer.slot}`;
+    }
+    const ends = upperBoundTime(validityRange);
+    if (ends === undefined || ends > grant.scope.expiresAt) {
+      return `The validity range ends after grant ${grant.slot} expires`;
+    }
     const leaving: Balance = subtractBalances(
       addBalances(...spent.filter((utxo) => utxo.output.address === address).map((utxo) => toBalance(utxo.output.value))),
       addBalances(...outputs.filter((output) => output.address === address).map((output) => toBalance(output.value))),
     );
+    const violation = scopeViolation(grant.scope, leaving);
+    if (violation) {
+      return `Grant ${grant.slot} refuses the spend: ${violation}`;
+    }
+    const stranger = outputs.find(
+      (output) => output.address !== address && grant.scope.recipients.length > 0 && !grant.scope.recipients.includes(output.address),
+    );
+    if (stranger) {
+      return `${stranger.address} is not a recipient of grant ${grant.slot}`;
+    }
     const expected = encodeAccountState(stateAfterSpend(state, redeemer.slot, leaving));
     const recreated = outputs.find((output) => output.address === address && output.value.assets?.[nftAssetId] === 1n);
     if (recreated?.datum === undefined) {

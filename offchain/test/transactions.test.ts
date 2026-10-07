@@ -481,3 +481,57 @@ describe('spendWithGrant', () => {
     expect(stateOf(tx).grants[2]!.scope.cap).toBe(15_000_000n - 2_000_000n - transactionBodyParts(tx).fee);
   });
 });
+
+describe('spendWithGrant unchecked', () => {
+  const funds = () => [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })];
+  const ed25519 = { kind: 'ed25519' as const, keyHash: AGENT_PAYMENT_KEY };
+  const nearlyUsedState = {
+    ...grantedState,
+    grants: grantedState.grants.map((grant) => (grant.slot === 0n ? { ...grant, scope: { ...grant.scope, cap: 6_000_000n } } : grant)),
+  };
+
+  it('builds a spend beyond the remaining cap whose datum carries the cap the validator computes', async () => {
+    const { provider, agent } = scenario(nearlyUsedState, funds());
+    const params = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, slot: 0n, grantee: ed25519, validUntilSlot: VALID_UNTIL_SLOT, script };
+    const outputs = [{ address: recipientAddress, value: { coins: 8_000_000n } }];
+    await expect(spendWithGrant({ ...params, outputs })).rejects.toThrow(/exceeds the remaining cap of 6000000/);
+    const tx = await spendWithGrant({ ...params, outputs, unchecked: true });
+    const leaving = 8_000_000n + transactionBodyParts(tx).fee;
+    expect(outputsAt(tx, recipientAddress).map((output) => output.value)).toEqual([{ coins: 8_000_000n }]);
+    expect(stateOf(tx)).toEqual(stateAfterSpend(nearlyUsedState, 0n, { '': leaving }));
+    expect(stateOf(tx).grants[0]!.scope.cap).toBe(6_000_000n - leaving);
+    expect(stateOf(tx).grants[0]!.scope.cap).toBeLessThan(0n);
+    await expect(provider.evaluateTransaction(tx)).rejects.toThrow(/exceeds the remaining cap of 6000000/);
+  });
+
+  it('builds a spend paying an address outside the recipients', async () => {
+    const { provider, agent } = scenario(grantedState, funds());
+    const stranger = enterpriseAddress(OTHER_DEVICE_KEY);
+    const params = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, slot: 2n, grantee: ed25519, validUntilSlot: VALID_UNTIL_SLOT, script };
+    const outputs = [{ address: stranger, value: { coins: 3_000_000n } }];
+    await expect(spendWithGrant({ ...params, outputs })).rejects.toThrow(/not a recipient of grant 2/);
+    const tx = await spendWithGrant({ ...params, outputs, unchecked: true });
+    expect(outputsAt(tx, stranger).map((output) => output.value)).toEqual([{ coins: 3_000_000n }]);
+    expect(stateOf(tx)).toEqual(stateAfterSpend(grantedState, 2n, { '': 3_000_000n + transactionBodyParts(tx).fee }));
+    await expect(provider.evaluateTransaction(tx)).rejects.toThrow(/not a recipient of grant 2/);
+  });
+
+  it('builds a spend whose validity range ends after the grant expires', async () => {
+    const { provider, agent } = scenario(grantedState, funds());
+    const params = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, slot: 0n, grantee: ed25519, validUntilSlot: 300_000_000n, script };
+    const outputs = [{ address: recipientAddress, value: { coins: 1_000_000n } }];
+    await expect(spendWithGrant({ ...params, outputs })).rejects.toThrow(/expires/);
+    const tx = await spendWithGrant({ ...params, outputs, unchecked: true });
+    expect(inspect(tx).body.ttl).toBe('300000000');
+    expect(slotToPosixTime(300_000_000n)).toBeGreaterThan(grantedState.grants[0]!.scope.expiresAt);
+    await expect(provider.evaluateTransaction(tx)).rejects.toThrow(/ends after grant 0 expires/);
+  });
+
+  it('still needs the grant to exist and the signer to be its grantee', async () => {
+    const { provider, agent } = scenario(grantedState, funds());
+    const params = { wallet: agent, provider, stakeKeyHash: OWNER_STAKE_KEY, validUntilSlot: VALID_UNTIL_SLOT, script, unchecked: true };
+    const outputs = [{ address: recipientAddress, value: { coins: 1_000_000n } }];
+    await expect(spendWithGrant({ ...params, slot: 9n, outputs, grantee: ed25519 })).rejects.toThrow(/no grant in slot 9/);
+    await expect(spendWithGrant({ ...params, slot: 1n, outputs, grantee: ed25519 })).rejects.toThrow(/not the grantee/);
+  });
+});

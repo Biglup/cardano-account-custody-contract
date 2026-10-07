@@ -121,6 +121,16 @@ export interface SpendWithGrantParams extends AccountUtxoParams {
   slotConfig?: SlotConfig;
   /** The execution budget to assume per redeemer kind instead of the defaults. */
   executionUnits?: { control?: ExUnits; fund?: ExUnits };
+  /**
+   * Skips the builder's scope, recipient and expiry checks, for evidence
+   * and testing only. The transaction is built exactly as the validator
+   * will see it: the control output carries the state after the spend as
+   * the validator computes it, every output goes where it was asked to
+   * and the validity range ends at the slot it was asked to, so that the
+   * node refuses the transaction with the validator's own failure. The
+   * grant must still exist, since its state is what the datum rewrites.
+   */
+  unchecked?: boolean;
 }
 
 /** The lovelace a freshly created control UTxO carries unless its state needs more. */
@@ -595,6 +605,11 @@ const leavingBalance = (txCbor: string, account: Account, inputs: UTxO[]): Balan
  * or more inputs raise the real cost, since the validator serialises the
  * transaction for the grantee message, and the execution units option
  * raises the budgets for them.
+ *
+ * The scope, recipient and expiry checks mirror the validator's rules so
+ * that a spend the validator would refuse never reaches the chain; the
+ * unchecked option drops them to build such a spend on purpose, which
+ * shows the validator refusing it.
  */
 export const spendWithGrant = async (params: SpendWithGrantParams): Promise<string> => {
   const account = resolveAccount(params);
@@ -604,10 +619,12 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
     throw new Error(`The account has no grant in slot ${params.slot}`);
   }
   assertGranteeMatches(grant, params.grantee);
-  assertRecipientsAllowed(grant, params.outputs);
   const slotConfig = params.slotConfig ?? Cometa.CARDANO_PREPROD_SLOT_CONFIG;
-  if (slotToPosixTime(params.validUntilSlot, slotConfig) > grant.scope.expiresAt) {
-    throw new Error(`Slot ${params.validUntilSlot} starts after grant ${grant.slot} expires`);
+  if (!params.unchecked) {
+    assertRecipientsAllowed(grant, params.outputs);
+    if (slotToPosixTime(params.validUntilSlot, slotConfig) > grant.scope.expiresAt) {
+      throw new Error(`Slot ${params.validUntilSlot} starts after grant ${grant.slot} expires`);
+    }
   }
   const parameters = await params.provider.getParameters();
   const budgets = {
@@ -625,7 +642,7 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
   const evaluator = fixedBudgetEvaluator(control.input, budgets);
 
   const build = async (leaving: Balance, signature?: string): Promise<{ tx: string; state: AccountState }> => {
-    const violation = scopeViolation(grant.scope, leaving);
+    const violation = params.unchecked ? undefined : scopeViolation(grant.scope, leaving);
     if (violation) {
       throw new Error(`Grant ${grant.slot} refuses the spend: ${violation}`);
     }
