@@ -1,0 +1,30 @@
+{
+  "name": "cardano-account-custody-offchain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Off-chain library for the Cardano account custody contract: datum and redeemer encoders, account address derivation and transaction builders built on cometa.js.",
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@biglup/cometa": "^1.2.0",
+    "@noble/curves": "^1.9.0",
+    "@noble/hashes": "^1.8.0",
+    "dotenv": "^16.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.26.0",
+    "@types/node": "^22.15.0",
+    "eslint": "^9.26.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.32.0",
+    "vitest": "^3.1.0"
+  }
+}
