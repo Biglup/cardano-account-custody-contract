@@ -7,7 +7,6 @@ use cardano/certificate.{DelegateBlockProduction, RegisterAndDelegateCredential}
 use cardano/transaction.{
   DatumHash, InlineDatum, Input, NoDatum, Output, Transaction,
 }
-use cardano_account_custody_contract/grant
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output, input,
   other_account_address, other_device_key, other_stake_script_hash, output,
@@ -15,8 +14,7 @@ use cardano_account_custody_contract/test_helpers.{
   stake_script_hash, state_datum, state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, CreateAccount, Device, Ed25519, Fund, Grant, Scope,
-  Secp256k1, SpendWithGrant,
+  AccountState, Asset, CreateAccount, Device, Fund, Grant, Scope, SpendWithGrant,
 }
 
 fn state() -> AccountState {
@@ -38,7 +36,7 @@ fn rewritten_state() -> AccountState {
   }
   AccountState {
     devices: [device_key, other_device_key],
-    grants: [Grant { slot: 0, grantee: Ed25519(stranger_key), scope }],
+    grants: [Grant { slot: 0, grantee: stranger_key, scope }],
     grant_generation: 1,
   }
 }
@@ -804,12 +802,6 @@ test device_rejects_a_missing_control_output_even_when_the_state_nft_is_burned()
 
 const expiry = 1_800_000_000_000
 
-/// The 33 byte compressed secp256k1 public key of the test grantee. Its
-/// private key is the 32 byte scalar 0x11 repeated, from which the public
-/// key was derived with @noble/curves `secp256k1.getPublicKey(key, true)`.
-const grantee_key =
-  #"034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
-
 fn token_asset() -> Asset {
   Asset {
     policy_id: #"00000000000000000000000000000000000000000000000000000099",
@@ -852,20 +844,10 @@ fn granted_state() -> AccountState {
   AccountState {
     devices: [device_key],
     grants: [
-      Grant { slot: 0, grantee: Ed25519(stranger_key), scope: lovelace_scope() },
-      Grant { slot: 1, grantee: Secp256k1(grantee_key), scope: token_scope() },
+      Grant { slot: 0, grantee: stranger_key, scope: lovelace_scope() },
+      Grant { slot: 1, grantee: stranger_key, scope: token_scope() },
     ],
     grant_generation: 0,
-  }
-}
-
-fn token_granted_state() -> AccountState {
-  AccountState {
-    ..granted_state(),
-    grants: list.concat(
-      granted_state().grants,
-      [Grant { slot: 2, grantee: Ed25519(stranger_key), scope: token_scope() }],
-    ),
   }
 }
 
@@ -913,7 +895,7 @@ fn spend_lovelace(
   spend_within(
     validity_range,
     Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     [granted_control_input(), fund_input()],
     outputs,
@@ -932,58 +914,15 @@ fn lovelace_spend_outputs(lovelace: Int) -> List<Output> {
   ]
 }
 
-fn token_spend_outputs() -> List<Output> {
-  [
-    control_output(with_caps(granted_state(), 1, 40, 0), 2_000_000),
-    change(assets.merge(assets.from_lovelace(8_000_000), token(10))),
-    output(
-      recipient_address(),
-      assets.merge(assets.from_lovelace(2_000_000), token(10)),
-      NoDatum,
-    ),
-  ]
+fn spend_token(outputs: List<Output>) -> Bool {
+  spend_token_from(granted_state(), outputs)
 }
 
-fn token_spend_transaction(outputs: List<Output>) -> transaction.Transaction {
-  test_helpers.transaction(
-    [granted_control_input(), treasury_input()],
-    outputs,
-    assets.zero,
-    [],
-    interval.before(expiry),
-  )
-}
-
-/// The 64 byte r||s secp256k1 ECDSA signature of `grantee_key` over the
-/// grantee message of `token_spend_transaction(token_spend_outputs())`,
-/// which is the blake2b-256 digest
-/// 6dd02289da072e592819dfb12761db2839f8eb3e03c2eb91a332e803f72d0362.
-/// Produced once with @noble/curves `secp256k1.sign(message, key)`, which
-/// signs the given digest as is and yields a low s signature.
-const token_spend_signature =
-  #"458c9beedd7570911e570fe17846a8f95e58bf83fd3a9bbde4f1cb5fcda0e62023a7a11b43447c5b68f2100d33c299c767715d8de53ef6e83a28f9a71e459109"
-
-fn spend_token(outputs: List<Output>, signature: Option<ByteArray>) -> Bool {
-  account.account.spend(
-    state_data(Some(granted_state())),
-    SpendWithGrant { slot: 1, signature },
-    output_reference(0),
-    token_spend_transaction(outputs),
-  )
-}
-
-fn spend_token_as_ed25519(outputs: List<Output>) -> Bool {
-  spend_token_as_ed25519_from(token_granted_state(), outputs)
-}
-
-fn spend_token_as_ed25519_from(
-  state: AccountState,
-  outputs: List<Output>,
-) -> Bool {
+fn spend_token_from(state: AccountState, outputs: List<Output>) -> Bool {
   spend_within(
     interval.before(expiry - 1),
     Some(state),
-    SpendWithGrant { slot: 2, signature: None },
+    SpendWithGrant { slot: 1 },
     0,
     [input(0, control_output(state, 2_000_000)), treasury_input()],
     outputs,
@@ -991,37 +930,34 @@ fn spend_token_as_ed25519_from(
   )
 }
 
-/// The token granted state with slot 2's lovelace per call cap lowered
-/// below its lovelace cap, so that the two lovelace rules can be told
-/// apart.
+/// The granted state with slot 1's lovelace per call cap lowered below its
+/// lovelace cap, so that the two lovelace rules can be told apart.
 fn metered_state() -> AccountState {
   AccountState {
     ..granted_state(),
-    grants: list.concat(
-      granted_state().grants,
-      [
-        Grant {
-          slot: 2,
-          grantee: Ed25519(stranger_key),
-          scope: Scope { ..token_scope(), lovelace_per_call_cap: 1_000_000 },
-        },
-      ],
-    ),
+    grants: [
+      Grant { slot: 0, grantee: stranger_key, scope: lovelace_scope() },
+      Grant {
+        slot: 1,
+        grantee: stranger_key,
+        scope: Scope { ..token_scope(), lovelace_per_call_cap: 1_000_000 },
+      },
+    ],
   }
 }
 
-/// Spends 10 tokens and `lovelace` to the recipient through slot 2 of
-/// `state`, handing back a control output whose slot 2 keeps
+/// Spends 10 tokens and `lovelace` to the recipient through slot 1 of
+/// `state`, handing back a control output whose slot 1 keeps
 /// `lovelace_cap` as its remaining lovelace cap.
 fn spend_token_lovelace_from(
   state: AccountState,
   lovelace: Int,
   lovelace_cap: Int,
 ) -> Bool {
-  spend_token_as_ed25519_from(
+  spend_token_from(
     state,
     [
-      control_output(with_caps(state, 2, 40, lovelace_cap), 2_000_000),
+      control_output(with_caps(state, 1, 40, lovelace_cap), 2_000_000),
       change(
         assets.merge(assets.from_lovelace(10_000_000 - lovelace), token(10)),
       ),
@@ -1034,13 +970,10 @@ fn spend_token_lovelace_from(
   )
 }
 
-fn ed25519_token_spend_outputs(
-  lovelace: Int,
-  destination: Address,
-) -> List<Output> {
+fn token_spend_outputs(lovelace: Int, destination: Address) -> List<Output> {
   [
     control_output(
-      with_caps(token_granted_state(), 2, 40, 2_000_000 - lovelace),
+      with_caps(granted_state(), 1, 40, 2_000_000 - lovelace),
       2_000_000,
     ),
     change(assets.merge(assets.from_lovelace(10_000_000 - lovelace), token(10))),
@@ -1052,23 +985,12 @@ fn ed25519_token_spend_outputs(
   ]
 }
 
-test grantee_message_of_the_fixture_transaction_matches_the_signed_digest() {
-  grant.grantee_message(
-    output_reference(0),
-    token_spend_transaction(token_spend_outputs()),
-  ) == #"6dd02289da072e592819dfb12761db2839f8eb3e03c2eb91a332e803f72d0362"
-}
-
-test spend_with_grant_ed25519_grantee_spends_within_scope() {
+test spend_with_grant_spends_lovelace_within_scope() {
   spend_lovelace(
     interval.before(expiry - 1),
     lovelace_spend_outputs(2_000_000),
     [stranger_key],
   )
-}
-
-test spend_with_grant_secp256k1_grantee_spends_within_scope() {
-  spend_token(token_spend_outputs(), Some(token_spend_signature))
 }
 
 test spend_with_grant_accepts_spending_exactly_the_per_call_cap() {
@@ -1093,7 +1015,7 @@ test spend_with_grant_rejects_spending_above_the_remaining_cap() {
   !spend_within(
     interval.before(expiry - 1),
     Some(nearly_spent),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     [input(0, control_output(nearly_spent, 2_000_000)), fund_input()],
     [
@@ -1105,10 +1027,8 @@ test spend_with_grant_rejects_spending_above_the_remaining_cap() {
   )
 }
 
-test spend_with_grant_ed25519_grantee_spends_a_token_scope() {
-  spend_token_as_ed25519(
-    ed25519_token_spend_outputs(2_000_000, recipient_address()),
-  )
+test spend_with_grant_spends_a_token_scope() {
+  spend_token(token_spend_outputs(2_000_000, recipient_address()))
 }
 
 test spend_with_grant_accepts_lovelace_exactly_at_the_lovelace_per_call_cap() {
@@ -1120,7 +1040,7 @@ test spend_with_grant_rejects_one_lovelace_above_the_lovelace_per_call_cap() {
 }
 
 test spend_with_grant_rejects_lovelace_above_the_remaining_lovelace_cap_on_a_token_grant() {
-  let nearly_spent = with_caps(token_granted_state(), 2, 50, 1_000_000)
+  let nearly_spent = with_caps(granted_state(), 1, 50, 1_000_000)
   !spend_token_lovelace_from(nearly_spent, 1_000_001, -1)
 }
 
@@ -1132,7 +1052,7 @@ test spend_with_grant_rejects_a_foreign_asset_leaving() {
   !spend_within(
     interval.before(expiry - 1),
     Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     [granted_control_input(), stocked],
     [
@@ -1149,8 +1069,8 @@ test spend_with_grant_rejects_a_foreign_asset_leaving() {
 }
 
 test spend_with_grant_rejects_an_output_outside_the_recipients() {
-  !spend_token_as_ed25519(
-    ed25519_token_spend_outputs(
+  !spend_token(
+    token_spend_outputs(
       2_000_000,
       address.from_verification_key(other_device_key),
     ),
@@ -1221,7 +1141,7 @@ fn spend_with_agent_deposit(after: AccountState) -> Bool {
   spend_within(
     interval.before(expiry - 1),
     Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     [granted_control_input(), fund_input(), agent_funds],
     agent_deposit_outputs(after),
@@ -1328,7 +1248,7 @@ test spend_with_grant_rejects_two_control_utxos_of_the_account() {
   !spend_within(
     interval.before(expiry - 1),
     Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     [
       granted_control_input(),
@@ -1348,7 +1268,7 @@ test spend_with_grant_rejects_an_unknown_slot() fail {
   spend_within(
     interval.before(expiry - 1),
     Some(granted_state()),
-    SpendWithGrant { slot: 7, signature: None },
+    SpendWithGrant { slot: 7 },
     0,
     [granted_control_input(), fund_input()],
     lovelace_spend_outputs(2_000_000),
@@ -1356,7 +1276,7 @@ test spend_with_grant_rejects_an_unknown_slot() fail {
   )
 }
 
-test spend_with_grant_rejects_an_ed25519_grantee_without_its_signature() {
+test spend_with_grant_rejects_a_grantee_that_did_not_sign() {
   !spend_lovelace(
     interval.before(expiry - 1),
     lovelace_spend_outputs(2_000_000),
@@ -1364,41 +1284,11 @@ test spend_with_grant_rejects_an_ed25519_grantee_without_its_signature() {
   )
 }
 
-test spend_with_grant_rejects_a_signature_in_the_redeemer_of_an_ed25519_grantee() {
-  !spend_within(
-    interval.before(expiry - 1),
-    Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: Some(token_spend_signature) },
-    0,
-    [granted_control_input(), fund_input()],
-    lovelace_spend_outputs(2_000_000),
-    [stranger_key],
-  )
-}
-
-test spend_with_grant_rejects_a_secp256k1_grantee_without_a_signature() {
-  !spend_token(token_spend_outputs(), None)
-}
-
-test spend_with_grant_rejects_a_secp256k1_signature_over_another_transaction() {
-  let marker: Data = 1
-  let outputs = [
-    control_output(with_caps(granted_state(), 1, 40, 0), 2_000_000),
-    change(assets.merge(assets.from_lovelace(8_000_000), token(10))),
-    output(
-      recipient_address(),
-      assets.merge(assets.from_lovelace(2_000_000), token(10)),
-      InlineDatum(marker),
-    ),
-  ]
-  !spend_token(outputs, Some(token_spend_signature))
-}
-
 test spend_with_grant_rejects_a_fund_input() fail {
   spend_within(
     interval.before(expiry - 1),
     None,
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     1,
     [granted_control_input(), fund_input()],
     lovelace_spend_outputs(2_000_000),
@@ -1423,7 +1313,7 @@ test spend_with_grant_rejects_extra_tokens_on_the_control_output() {
   !spend_within(
     interval.before(expiry - 1),
     Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     [granted_control_input(), treasury_input()],
     [parked, change(assets.from_lovelace(8_000_000)), payout(2_000_000)],
@@ -1473,7 +1363,7 @@ test spend_with_grant_rejects_a_stray_state_nft_among_the_inputs() {
   !spend_within(
     interval.before(expiry - 1),
     Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     [granted_control_input(), fund_input(), stray],
     [

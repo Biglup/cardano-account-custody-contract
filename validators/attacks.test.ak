@@ -18,7 +18,6 @@ use cardano/assets.{Assets}
 use cardano/transaction.{
   DatumHash, InlineDatum, Input, NoDatum, Output, Transaction,
 }
-use cardano_account_custody_contract/grant
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output, input,
   other_account_address, other_device_key, other_stake_script_hash, output,
@@ -26,29 +25,14 @@ use cardano_account_custody_contract/test_helpers.{
   stake_script_hash, state_datum, state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, CreateAccount, Device, Ed25519, Fund, Grant, Operate,
-  Scope, Secp256k1, SpendWithGrant,
+  AccountState, Asset, CreateAccount, Device, Fund, Grant, Operate, Scope,
+  SpendWithGrant,
 }
 
 const expiry = 1_800_000_000_000
 
 /// The key hash of a party that holds no device, owner or grantee key.
 const attacker_key = #"00000000000000000000000000000000000000000000000000000007"
-
-/// The 33 byte compressed secp256k1 public key of the test grantee, derived
-/// from the 32 byte scalar 0x11 repeated.
-const grantee_key =
-  #"034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
-
-/// The signature of `grantee_key` over `token_spend_transaction()`, the
-/// same fixture `account.test.ak` verifies, reused here to try replays.
-const token_spend_signature =
-  #"458c9beedd7570911e570fe17846a8f95e58bf83fd3a9bbde4f1cb5fcda0e62023a7a11b43447c5b68f2100d33c299c767715d8de53ef6e83a28f9a71e459109"
-
-/// The same signature with `s` replaced by `n - s`, the high s form that
-/// verifies under textbook ECDSA but that the secp256k1 builtin refuses.
-const high_s_token_spend_signature =
-  #"458c9beedd7570911e570fe17846a8f95e58bf83fd3a9bbde4f1cb5fcda0e620dc585ee4bcbb83a4970deff2cc3d6637533d7f58ca09a95385a964e5b1f0b038"
 
 fn attacker_address() -> Address {
   address.from_verification_key(attacker_key)
@@ -105,8 +89,8 @@ fn granted_state() -> AccountState {
   AccountState {
     devices: [device_key],
     grants: [
-      Grant { slot: 0, grantee: Ed25519(stranger_key), scope: lovelace_scope() },
-      Grant { slot: 1, grantee: Secp256k1(grantee_key), scope: token_scope() },
+      Grant { slot: 0, grantee: stranger_key, scope: lovelace_scope() },
+      Grant { slot: 1, grantee: stranger_key, scope: token_scope() },
     ],
     grant_generation: 0,
   }
@@ -116,11 +100,7 @@ fn restricted_state() -> AccountState {
   AccountState {
     ..state(),
     grants: [
-      Grant {
-        slot: 0,
-        grantee: Ed25519(stranger_key),
-        scope: restricted_scope(),
-      },
+      Grant { slot: 0, grantee: stranger_key, scope: restricted_scope() },
     ],
   }
 }
@@ -276,7 +256,7 @@ fn lovelace_grant_outputs(state: AccountState, lovelace: Int) -> List<Output> {
 fn spend_lovelace_grant(state: AccountState, outputs: List<Output>) -> Bool {
   spend(
     Some(state),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     lovelace_grant_transaction(state, outputs),
   )
@@ -286,52 +266,6 @@ fn treasury_input() -> Input {
   input(
     1,
     fund_output(assets.merge(assets.from_lovelace(10_000_000), token(20))),
-  )
-}
-
-/// The outputs of the fixture secp256k1 spend: 10 tokens and 2 ADA go to
-/// the recipient and slot 1's caps drop accordingly.
-fn token_spend_outputs() -> List<Output> {
-  [
-    control_output(with_caps(granted_state(), 1, 40, 0), 2_000_000),
-    fund_output(assets.merge(assets.from_lovelace(8_000_000), token(10))),
-    output(
-      recipient_address(),
-      assets.merge(assets.from_lovelace(2_000_000), token(10)),
-      NoDatum,
-    ),
-  ]
-}
-
-/// The exact transaction `token_spend_signature` was produced for.
-fn token_spend_transaction() -> Transaction {
-  transaction(
-    [input(0, control_output(granted_state(), 2_000_000)), treasury_input()],
-    token_spend_outputs(),
-    assets.zero,
-    [],
-    interval.before(expiry),
-  )
-}
-
-fn spend_token_with_signature(
-  index: Int,
-  tx: Transaction,
-  signature: ByteArray,
-) -> Bool {
-  spend(
-    Some(granted_state()),
-    SpendWithGrant { slot: 1, signature: Some(signature) },
-    index,
-    tx,
-  )
-}
-
-test the_fixture_signature_still_authorises_its_own_transaction() {
-  spend_token_with_signature(
-    0,
-    token_spend_transaction(),
-    token_spend_signature,
   )
 }
 
@@ -361,7 +295,7 @@ test attack_double_satisfaction_one_recipient_output_for_two_accounts() {
     [stranger_key],
     interval.before(expiry - 1),
   )
-  let redeemer = SpendWithGrant { slot: 0, signature: None }
+  let redeemer = SpendWithGrant { slot: 0 }
   and {
     !spend(Some(restricted_state()), redeemer, 0, tx),
     !spend(Some(other), redeemer, 2, tx),
@@ -427,7 +361,7 @@ test attack_missing_utxo_authentication_forged_control_without_the_nft_grant() f
     grants: [
       Grant {
         slot: 0,
-        grantee: Ed25519(attacker_key),
+        grantee: attacker_key,
         scope: Scope { ..lovelace_scope(), per_call_cap: 10_000_000 },
       },
     ],
@@ -456,7 +390,7 @@ test attack_missing_utxo_authentication_forged_control_without_the_nft_grant() f
     [attacker_key],
     interval.before(expiry - 1),
   )
-  spend(Some(forged), SpendWithGrant { slot: 0, signature: None }, 1, tx)
+  spend(Some(forged), SpendWithGrant { slot: 0 }, 1, tx)
 }
 
 /// The control UTxO is only referenced, not spent, so no handler ever
@@ -525,7 +459,7 @@ test attack_missing_utxo_authentication_burn_with_the_nft_at_a_key_address() {
 test attack_datum_hijacking_grant_spend_issues_itself_a_grant() {
   let self_issued = Grant {
     slot: 5,
-    grantee: Ed25519(stranger_key),
+    grantee: stranger_key,
     scope: Scope {
       ..lovelace_scope(),
       per_call_cap: 100_000_000,
@@ -673,12 +607,7 @@ test attack_token_forgery_second_nft_minted_during_a_grant_spend() {
   }
   and {
     !mint(CreateAccount, tx),
-    !spend(
-      Some(granted_state()),
-      SpendWithGrant { slot: 0, signature: None },
-      0,
-      tx,
-    ),
+    !spend(Some(granted_state()), SpendWithGrant { slot: 0 }, 0, tx),
   }
 }
 
@@ -829,7 +758,7 @@ test attack_other_redeemer_grant_on_a_deposit_with_a_forged_state() {
     grants: [
       Grant {
         slot: 0,
-        grantee: Ed25519(attacker_key),
+        grantee: attacker_key,
         scope: Scope { ..lovelace_scope(), per_call_cap: 10_000_000 },
       },
     ],
@@ -854,7 +783,7 @@ test attack_other_redeemer_grant_on_a_deposit_with_a_forged_state() {
     [attacker_key],
     interval.before(expiry - 1),
   )
-  !spend(Some(forged), SpendWithGrant { slot: 0, signature: None }, 1, tx)
+  !spend(Some(forged), SpendWithGrant { slot: 0 }, 1, tx)
 }
 
 fn burn_with_the_control_spent_by_grant_transaction() -> Transaction {
@@ -880,7 +809,7 @@ test attack_other_redeemer_burn_with_the_control_spent_by_grant() {
 test attack_other_redeemer_grant_spend_with_the_state_nft_burned() fail {
   spend(
     Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     burn_with_the_control_spent_by_grant_transaction(),
   )
@@ -917,12 +846,7 @@ test attack_missed_input_validation_fee_paid_by_the_account_beyond_the_cap() {
     ),
     fee: 1_000_000,
   }
-  !spend(
-    Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(granted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 /// The grantee pays the per call cap from the deposit and also drains
@@ -944,9 +868,7 @@ test attack_missed_input_validation_token_grant_leaks_a_sibling_asset_name() {
   let sibling = assets.from_asset(token_asset().policy_id, "other", 5)
   let with_sibling = AccountState {
     ..granted_state(),
-    grants: [
-      Grant { slot: 2, grantee: Ed25519(stranger_key), scope: token_scope() },
-    ],
+    grants: [Grant { slot: 2, grantee: stranger_key, scope: token_scope() }],
   }
   let tx = transaction(
     [
@@ -969,7 +891,7 @@ test attack_missed_input_validation_token_grant_leaks_a_sibling_asset_name() {
     [stranger_key],
     interval.before(expiry - 1),
   )
-  !spend(Some(with_sibling), SpendWithGrant { slot: 2, signature: None }, 0, tx)
+  !spend(Some(with_sibling), SpendWithGrant { slot: 2 }, 0, tx)
 }
 
 /// A token grant allows 2 ADA of lovelace over its lifetime but only 1 ADA
@@ -982,7 +904,7 @@ test attack_missed_input_validation_token_grant_burns_its_lovelace_budget_in_one
     grants: [
       Grant {
         slot: 2,
-        grantee: Ed25519(stranger_key),
+        grantee: stranger_key,
         scope: Scope { ..token_scope(), lovelace_per_call_cap: 1_000_000 },
       },
     ],
@@ -1002,7 +924,7 @@ test attack_missed_input_validation_token_grant_burns_its_lovelace_budget_in_one
     [stranger_key],
     interval.before(expiry - 1),
   )
-  !spend(Some(metered), SpendWithGrant { slot: 2, signature: None }, 0, tx)
+  !spend(Some(metered), SpendWithGrant { slot: 2 }, 0, tx)
 }
 
 /// The grantee pays part of a spend within the per call cap to the bare
@@ -1023,12 +945,7 @@ test attack_missed_input_validation_change_to_the_bare_script_address() {
       payout(1_000_000),
     ],
   )
-  !spend(
-    Some(restricted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(restricted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 /// The owner path is asked to store a grant with a negative cap, a grant
@@ -1036,11 +953,7 @@ test attack_missed_input_validation_change_to_the_bare_script_address() {
 /// lovelace per call cap, and two grants in one slot. Every one of them
 /// fails well formedness.
 test attack_missed_input_validation_ill_formed_grants_on_a_device_rewrite() {
-  let grant = Grant {
-    slot: 0,
-    grantee: Ed25519(stranger_key),
-    scope: lovelace_scope(),
-  }
+  let grant = Grant { slot: 0, grantee: stranger_key, scope: lovelace_scope() }
   let rewrites = [
     [Grant { ..grant, scope: Scope { ..lovelace_scope(), cap: -1 } }],
     [Grant { ..grant, scope: Scope { ..lovelace_scope(), expires_at: 0 } }],
@@ -1078,12 +991,7 @@ test attack_time_handling_no_upper_bound() {
     ),
     validity_range: interval.everything,
   }
-  !spend(
-    Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(granted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 /// The lower bound lies past the expiry and the upper bound is open: an
@@ -1096,12 +1004,7 @@ test attack_time_handling_lower_bound_past_expiry_with_no_upper_bound() {
     ),
     validity_range: interval.after(expiry + 1),
   }
-  !spend(
-    Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(granted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 /// An exclusive upper bound one past the expiry covers the same instants
@@ -1115,12 +1018,7 @@ test attack_time_handling_exclusive_upper_bound_one_past_expiry() {
     ),
     validity_range: interval.entirely_before(expiry + 1),
   }
-  !spend(
-    Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(granted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 /// A degenerate range whose upper bound is negative infinity is not a
@@ -1143,12 +1041,7 @@ test attack_time_handling_negative_infinity_upper_bound() {
     ),
     validity_range: degenerate,
   }
-  !spend(
-    Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(granted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 fn key(n: Int) -> ByteArray {
@@ -1166,9 +1059,7 @@ fn recipients(count: Int) -> List<Address> {
 
 fn grants(count: Int, scope: Scope) -> List<Grant> {
   list.range(0, count - 1)
-    |> list.map(
-        fn(slot) { Grant { slot, grantee: Ed25519(key(50 + slot)), scope } },
-      )
+    |> list.map(fn(slot) { Grant { slot, grantee: key(50 + slot), scope } })
 }
 
 fn rewrite_as(next: AccountState) -> Bool {
@@ -1292,12 +1183,7 @@ test attack_locked_value_grant_spend_sends_the_balance_to_the_bare_script_addres
       ),
     ],
   )
-  !spend(
-    Some(restricted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(restricted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 test attack_locked_value_device_rewrite_removes_every_device() {
@@ -1334,101 +1220,6 @@ test attack_evaluation_order_fund_passes_only_together_with_the_control_spend() 
   spend(None, Fund, 1, tx) && !spend(Some(state()), Device, 0, tx)
 }
 
-/// The fixture signature is presented for the control UTxO the account
-/// has after the signed spend. The message binds the spent output
-/// reference, so the signature no longer verifies.
-test attack_signature_replay_same_signature_on_a_later_control_utxo() {
-  let tx = Transaction {
-    ..token_spend_transaction(),
-    inputs: [
-      input(2, control_output(granted_state(), 2_000_000)),
-      treasury_input(),
-    ],
-  }
-  !spend_token_with_signature(2, tx, token_spend_signature)
-}
-
-/// Another account grants the same secp256k1 key and its control UTxO
-/// happens to sit at the same output index. The signed outputs name this
-/// account's control output, so the signature does not carry over.
-test attack_signature_replay_same_signature_for_another_accounts_grant() {
-  let other = AccountState { ..granted_state(), devices: [other_device_key] }
-  let tx = transaction(
-    [
-      input(0, other_control_output(other, 2_000_000)),
-      input(
-        1,
-        other_fund_output(
-          assets.merge(assets.from_lovelace(10_000_000), token(20)),
-        ),
-      ),
-    ],
-    [
-      other_control_output(with_caps(other, 1, 40, 0), 2_000_000),
-      other_fund_output(
-        assets.merge(assets.from_lovelace(8_000_000), token(10)),
-      ),
-      output(
-        recipient_address(),
-        assets.merge(assets.from_lovelace(2_000_000), token(10)),
-        NoDatum,
-      ),
-    ],
-    assets.zero,
-    [],
-    interval.before(expiry),
-  )
-  !spend(
-    Some(other),
-    SpendWithGrant { slot: 1, signature: Some(token_spend_signature) },
-    0,
-    tx,
-  )
-}
-
-test attack_signature_replay_same_signature_with_an_extra_input() {
-  let tx = Transaction {
-    ..token_spend_transaction(),
-    inputs: list.concat(
-      token_spend_transaction().inputs,
-      [input(2, output(attacker_address(), assets.from_lovelace(5), NoDatum))],
-    ),
-  }
-  !spend_token_with_signature(0, tx, token_spend_signature)
-}
-
-test attack_signature_replay_same_signature_with_a_different_fee() {
-  let tx = Transaction { ..token_spend_transaction(), fee: 1 }
-  !spend_token_with_signature(0, tx, token_spend_signature)
-}
-
-test attack_signature_replay_same_signature_with_a_different_validity_range() {
-  let tx = Transaction {
-    ..token_spend_transaction(),
-    validity_range: interval.before(expiry - 1),
-  }
-  !spend_token_with_signature(0, tx, token_spend_signature)
-}
-
-test attack_signature_replay_same_signature_with_a_mint_added() {
-  let tx = Transaction {
-    ..token_spend_transaction(),
-    mint: assets.from_asset(token_asset().policy_id, "minted", 1),
-  }
-  !spend_token_with_signature(0, tx, token_spend_signature)
-}
-
-/// The high s form of the signature is mathematically valid under ECDSA
-/// but the builtin, like libsecp256k1, accepts low s signatures only, so
-/// a signature cannot be malleated into a second valid form.
-test attack_signature_replay_high_s_form_of_the_signature() {
-  !spend_token_with_signature(
-    0,
-    token_spend_transaction(),
-    high_s_token_spend_signature,
-  )
-}
-
 /// An Ed25519 key granted by one account signs a spend from another
 /// account's control UTxO under the same slot number. The grant is read
 /// from the spent state, where that slot names a different grantee.
@@ -1436,9 +1227,7 @@ test attack_signature_replay_ed25519_grantee_of_another_account() {
   let other = AccountState {
     ..state(),
     devices: [other_device_key],
-    grants: [
-      Grant { slot: 0, grantee: Ed25519(attacker_key), scope: lovelace_scope() },
-    ],
+    grants: [Grant { slot: 0, grantee: attacker_key, scope: lovelace_scope() }],
   }
   let tx = transaction(
     [
@@ -1454,7 +1243,7 @@ test attack_signature_replay_ed25519_grantee_of_another_account() {
     [stranger_key],
     interval.before(expiry - 1),
   )
-  !spend(Some(other), SpendWithGrant { slot: 0, signature: None }, 0, tx)
+  !spend(Some(other), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 fn dust() -> Assets {
@@ -1492,12 +1281,7 @@ test attack_dust_attack_grant_spend_keeps_one_unit_of_dust() {
     [stranger_key],
     interval.before(expiry - 1),
   )
-  !spend(
-    Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(granted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 /// The grant spend pushes the dust onto the control output instead.
@@ -1517,12 +1301,7 @@ test attack_dust_attack_dust_pushed_onto_the_control_output() {
     [stranger_key],
     interval.before(expiry - 1),
   )
-  !spend(
-    Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
-    0,
-    tx,
-  )
+  !spend(Some(granted_state()), SpendWithGrant { slot: 0 }, 0, tx)
 }
 
 /// The grantee recreates the control UTxO with a reference script
@@ -1540,24 +1319,24 @@ test attack_resource_exhaustion_reference_script_on_the_control_output() {
 }
 
 /// The largest state the validator admits: eight devices and sixteen
-/// grants, each with eight recipients. The last slot is granted to the
-/// Ed25519 test grantee and the one before it to the secp256k1 test
-/// grantee, so both agent paths can be exercised over it.
+/// grants, each with eight recipients. The last two slots are granted to
+/// the test grantee, one over a token scope and one over a lovelace scope,
+/// so both kinds of agent spend can be exercised over it.
 fn largest_state() -> AccountState {
   let scope = Scope {
     ..lovelace_scope(),
     recipients: list.concat(recipients(7), [recipient_address()]),
   }
   let filler = grants(14, scope)
-  let secp = Grant {
+  let token_grant = Grant {
     slot: 14,
-    grantee: Secp256k1(grantee_key),
+    grantee: stranger_key,
     scope: Scope { ..token_scope(), recipients: scope.recipients },
   }
-  let ed25519 = Grant { slot: 15, grantee: Ed25519(stranger_key), scope }
+  let lovelace_grant = Grant { slot: 15, grantee: stranger_key, scope }
   AccountState {
     devices: keys(8),
-    grants: list.concat(filler, [secp, ed25519]),
+    grants: list.concat(filler, [token_grant, lovelace_grant]),
     grant_generation: 1,
   }
 }
@@ -1593,8 +1372,8 @@ test budget_baseline_largest_state_grant_transaction() {
   list.length(largest_state_grant_transaction().inputs) == 9
 }
 
-test budget_baseline_largest_state_secp256k1_transaction() {
-  list.length(largest_state_secp256k1_transaction().inputs) == 2
+test budget_baseline_largest_state_token_grant_transaction() {
+  list.length(largest_state_token_grant_transaction().inputs) == 2
 }
 
 test budget_baseline_forty_deposit_transaction() {
@@ -1615,10 +1394,10 @@ test budget_largest_state_datum_stays_within_the_transaction_size_limit() {
   bytearray.length(cbor.serialise(data)) < 16_384
 }
 
-test budget_largest_state_grant_spend_ed25519() {
+test budget_largest_state_grant_spend_lovelace_scope() {
   spend(
     Some(largest_state()),
-    SpendWithGrant { slot: 15, signature: None },
+    SpendWithGrant { slot: 15 },
     0,
     largest_state_grant_transaction(),
   )
@@ -1655,7 +1434,7 @@ test budget_largest_state_account_creation() {
   mint(CreateAccount, largest_state_creation_transaction())
 }
 
-fn largest_state_secp256k1_transaction() -> Transaction {
+fn largest_state_token_grant_transaction() -> Transaction {
   transaction(
     [input(0, control_output(largest_state(), 2_000_000)), treasury_input()],
     [
@@ -1668,34 +1447,17 @@ fn largest_state_secp256k1_transaction() -> Transaction {
       ),
     ],
     assets.zero,
-    [],
+    [stranger_key],
     interval.before(expiry),
   )
 }
 
-/// The signature of `grantee_key` over the grantee message of
-/// `largest_state_secp256k1_transaction()`, the blake2b-256 digest
-/// 9f4ad0cb41dd92e55885799d7ad9afc24bbbf8f7d684e8560d60fb207323e207, produced with @noble/curves
-/// `secp256k1.sign(message, key)`.
-const largest_state_secp256k1_signature =
-  #"fc864214371f324258ee40ee4435980ad53f96932f8bf65e5ab96afeed30697b24f1f8ca13a1b22be0a6f798f4f7f20e922975c8260d2e37b1cf551963de8065"
-
-test budget_largest_state_grantee_message_matches_the_signed_digest() {
-  grant.grantee_message(
-    output_reference(0),
-    largest_state_secp256k1_transaction(),
-  ) == #"9f4ad0cb41dd92e55885799d7ad9afc24bbbf8f7d684e8560d60fb207323e207"
-}
-
-test budget_largest_state_grant_spend_secp256k1() {
+test budget_largest_state_grant_spend_token_scope() {
   spend(
     Some(largest_state()),
-    SpendWithGrant {
-      slot: 14,
-      signature: Some(largest_state_secp256k1_signature),
-    },
+    SpendWithGrant { slot: 14 },
     0,
-    largest_state_secp256k1_transaction(),
+    largest_state_token_grant_transaction(),
   )
 }
 
@@ -1719,7 +1481,7 @@ fn forty_deposit_transaction() -> Transaction {
 test budget_grant_spend_over_forty_deposits() {
   spend(
     Some(granted_state()),
-    SpendWithGrant { slot: 0, signature: None },
+    SpendWithGrant { slot: 0 },
     0,
     forty_deposit_transaction(),
   )

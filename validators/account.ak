@@ -55,23 +55,20 @@ use cardano_account_custody_contract/types.{
 /// state NFT is recreated in a single control output carrying only
 /// lovelace, the NFT and a well formed state.
 /// `SpendWithGrant` is the agent path: the grant in the named slot must
-/// exist, its grantee must authorise the transaction, either as a required
-/// signer for an Ed25519 grantee or through a secp256k1 signature over the
-/// transaction for a Secp256k1 grantee, and the transaction must stay
-/// within the grant's scope: it ends before the grant expires, the value
-/// leaving the account address stays within the per call cap, the
-/// remaining cap, the lovelace per call cap and the remaining lovelace
-/// cap, nothing of any other asset leaves, every output away from the
-/// account goes to an allowed
-/// recipient, every output paid back to the account other than the control
-/// output is a plain deposit with no datum, so the balance can never be
-/// parked under a datum hash nobody can spend, and the single control
-/// output carries the same state with only that grant's remaining caps
-/// reduced by what left and no reference script, since every transaction
-/// spending a UTxO pays for the reference script it holds and a grantee
-/// could otherwise raise the cost of the owner's next spend. Only one
-/// control UTxO of the account may be spent, so the accounting runs over
-/// one state.
+/// exist, its grantee must sign the transaction as a required signer, and
+/// the transaction must stay within the grant's scope: it ends before the
+/// grant expires, the value leaving the account address stays within the
+/// per call cap, the remaining cap, the lovelace per call cap and the
+/// remaining lovelace cap, nothing of any other asset leaves, every output
+/// away from the account goes to an allowed recipient, every output paid
+/// back to the account other than the control output is a plain deposit
+/// with no datum, so the balance can never be parked under a datum hash
+/// nobody can spend, and the single control output carries the same state
+/// with only that grant's remaining caps reduced by what left and no
+/// reference script, since every transaction spending a UTxO pays for the
+/// reference script it holds and a grantee could otherwise raise the cost
+/// of the owner's next spend. Only one control UTxO of the account may be
+/// spent, so the accounting runs over one state.
 ///
 /// The validator maintains one invariant about its tokens: a state NFT
 /// named N only ever sits at the account address of N, in exactly one
@@ -150,7 +147,7 @@ validator account {
           recreates_control_output(self.outputs, script_hash, stake_script_hash),
         }
       }
-      SpendWithGrant { slot, signature } -> {
+      SpendWithGrant { slot } -> {
         expect Some(data) = datum
         expect state: AccountState = data
         expect Some(grant) = find_grant(state, slot)
@@ -163,12 +160,7 @@ validator account {
         )
         and {
           holds_nft,
-          is_authorised_by_grantee(
-            grant.grantee,
-            signature,
-            output_reference,
-            self,
-          ),
+          is_authorised_by_grantee(grant.grantee, self.extra_signatories),
           ends_before_expiry(self.validity_range, grant.scope.expires_at),
           stays_within_scope(grant.scope, leaving),
           pays_only_recipients(self.outputs, address, grant.scope.recipients),

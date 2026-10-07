@@ -3,9 +3,7 @@ use aiken/primitive/bytearray
 use cardano/address
 use cardano/assets.{ada_asset_name, ada_policy_id}
 use cardano_account_custody_contract/state.{find_grant, is_well_formed}
-use cardano_account_custody_contract/types.{
-  AccountState, Asset, Ed25519, Grant, Scope,
-}
+use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
 fn key(n: Int) -> ByteArray {
   bytearray.push(#"", n)
@@ -41,7 +39,7 @@ fn valid_scope() -> Scope {
 }
 
 fn valid_grant(slot: Int) -> Grant {
-  Grant { slot, grantee: Ed25519(key(50)), scope: valid_scope() }
+  Grant { slot, grantee: key(50), scope: valid_scope() }
 }
 
 fn valid_state() -> AccountState {

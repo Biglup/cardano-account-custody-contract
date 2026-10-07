@@ -1,73 +1,22 @@
-use aiken/builtin
-use aiken/cbor
 use aiken/collection/list
-use aiken/crypto.{ScriptHash}
+use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use aiken/interval.{Finite}
 use aiken/math
 use cardano/address.{Address}
 use cardano/assets.{Assets}
-use cardano/transaction.{
-  InlineDatum, Input, NoDatum, Output, OutputReference, Transaction,
-  ValidityRange,
-}
+use cardano/transaction.{InlineDatum, Input, NoDatum, Output, ValidityRange}
 use cardano_account_custody_contract/account
 use cardano_account_custody_contract/state
-use cardano_account_custody_contract/types.{
-  AccountState, Asset, Ed25519, Grant, Grantee, Scope, Secp256k1,
-}
+use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
-/// The domain separation prefix of the message a Secp256k1 grantee signs,
-/// so that a signature over a custody transaction can never be mistaken
-/// for a signature over anything else.
-pub const message_domain: ByteArray = "cardano_account_custody:grant:v1"
-
-/// The message a Secp256k1 grantee signs to authorise a transaction: the
-/// blake2b-256 digest of the CBOR serialisation of the tuple made of the
-/// domain prefix, the output reference of the control UTxO being spent,
-/// the output references of every input, the outputs, the fee, the
-/// validity range and the mint, in that order. The tuple binds the
-/// signature to the whole transaction, and the control UTxO's output
-/// reference binds it to a single use, since that reference is consumed.
-pub fn grantee_message(
-  control_reference: OutputReference,
-  self: Transaction,
-) -> ByteArray {
-  let spent = list.map(self.inputs, fn(input) { input.output_reference })
-  let payload: Data = (
-    message_domain,
-    control_reference,
-    spent,
-    self.outputs,
-    self.fee,
-    self.validity_range,
-    self.mint,
-  )
-  crypto.blake2b_256(cbor.serialise(payload))
-}
-
-/// Whether the grantee authorised the transaction. An Ed25519 grantee
-/// signs the transaction itself and appears among its required signers,
-/// so the redeemer carries no signature. A Secp256k1 grantee cannot sign
-/// a Cardano transaction, so the redeemer carries its 64 byte r||s ECDSA
-/// signature over `grantee_message`, checked with the secp256k1 builtin.
-/// A key or signature of the wrong length makes the builtin error rather
-/// than return False, which fails the transaction all the same.
+/// Whether the grantee authorised the transaction: the grantee is the hash
+/// of an Ed25519 verification key, so it signs the transaction itself and
+/// must appear among its required signers.
 pub fn is_authorised_by_grantee(
-  grantee: Grantee,
-  signature: Option<ByteArray>,
-  control_reference: OutputReference,
-  self: Transaction,
+  grantee: VerificationKeyHash,
+  extra_signatories: List<VerificationKeyHash>,
 ) -> Bool {
-  when (grantee, signature) is {
-    (Ed25519(key_hash), None) -> list.has(self.extra_signatories, key_hash)
-    (Secp256k1(key), Some(signature)) ->
-      builtin.verify_ecdsa_secp256k1_signature(
-        key,
-        grantee_message(control_reference, self),
-        signature,
-      )
-    _ -> False
-  }
+  list.has(extra_signatories, grantee)
 }
 
 /// Whether the transaction can only be applied before the grant expires:

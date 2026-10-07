@@ -1,23 +1,19 @@
-use aiken/cbor
-use aiken/crypto
 use aiken/interval
 use cardano/address
 use cardano/assets.{Assets}
 use cardano/transaction.{DatumHash, InlineDatum, NoDatum}
 use cardano_account_custody_contract/grant.{
   carries_no_reference_script, carries_state, deposits_carry_no_datum,
-  ends_before_expiry, grantee_message, is_authorised_by_grantee, leaving_value,
-  message_domain, pays_only_recipients, quantity_of_asset,
-  spends_one_control_utxo, state_after_spend, stays_within_scope,
+  ends_before_expiry, is_authorised_by_grantee, leaving_value,
+  pays_only_recipients, quantity_of_asset, spends_one_control_utxo,
+  state_after_spend, stays_within_scope,
 }
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output, input,
-  other_account_address, other_stake_script_hash, output, output_reference,
-  recipient_address, script_hash, stake_script_hash, state_datum, stranger_key,
+  other_account_address, other_stake_script_hash, output, recipient_address,
+  script_hash, stake_script_hash, state_datum, stranger_key,
 }
-use cardano_account_custody_contract/types.{
-  AccountState, Asset, Ed25519, Grant, Scope, Secp256k1,
-}
+use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
 fn lovelace_asset() -> Asset {
   Asset { policy_id: assets.ada_policy_id, asset_name: assets.ada_asset_name }
@@ -65,8 +61,8 @@ fn state() -> AccountState {
   AccountState {
     devices: [device_key],
     grants: [
-      Grant { slot: 0, grantee: Ed25519(stranger_key), scope: lovelace_scope() },
-      Grant { slot: 1, grantee: Ed25519(stranger_key), scope: token_scope() },
+      Grant { slot: 0, grantee: stranger_key, scope: lovelace_scope() },
+      Grant { slot: 1, grantee: stranger_key, scope: token_scope() },
     ],
     grant_generation: 0,
   }
@@ -76,90 +72,12 @@ fn leaving(lovelace: Int, tokens: Int) -> Assets {
   assets.merge(assets.from_lovelace(lovelace), token(tokens))
 }
 
-fn transaction_signed_by(
-  signatories: List<ByteArray>,
-) -> transaction.Transaction {
-  test_helpers.transaction(
-    [input(0, control_output(state(), 2_000_000))],
-    [control_output(state(), 2_000_000)],
-    assets.zero,
-    signatories,
-    interval.before(1_000),
-  )
+test is_authorised_by_grantee_accepts_a_required_signer() {
+  is_authorised_by_grantee(stranger_key, [device_key, stranger_key])
 }
 
-test grantee_message_hashes_the_domain_prefixed_tuple() {
-  let tx = transaction_signed_by([])
-  let payload: Data = (
-    message_domain,
-    output_reference(0),
-    [output_reference(0)],
-    tx.outputs,
-    0,
-    interval.before(1_000),
-    assets.zero,
-  )
-  grantee_message(output_reference(0), tx) == crypto.blake2b_256(
-    cbor.serialise(payload),
-  )
-}
-
-test grantee_message_changes_with_the_control_reference() {
-  let tx = transaction_signed_by([])
-  grantee_message(output_reference(0), tx) != grantee_message(
-    output_reference(1),
-    tx,
-  )
-}
-
-test grantee_message_changes_with_the_outputs() {
-  let tx = transaction_signed_by([])
-  let changed = transaction.Transaction {
-    ..tx,
-    outputs: [control_output(state(), 3_000_000)],
-  }
-  grantee_message(output_reference(0), tx) != grantee_message(
-    output_reference(0),
-    changed,
-  )
-}
-
-test is_authorised_by_grantee_accepts_an_ed25519_required_signer() {
-  is_authorised_by_grantee(
-    Ed25519(stranger_key),
-    None,
-    output_reference(0),
-    transaction_signed_by([device_key, stranger_key]),
-  )
-}
-
-test is_authorised_by_grantee_rejects_an_ed25519_grantee_that_did_not_sign() {
-  !is_authorised_by_grantee(
-    Ed25519(stranger_key),
-    None,
-    output_reference(0),
-    transaction_signed_by([device_key]),
-  )
-}
-
-test is_authorised_by_grantee_rejects_a_redeemer_signature_for_an_ed25519_grantee() {
-  !is_authorised_by_grantee(
-    Ed25519(stranger_key),
-    Some(#""),
-    output_reference(0),
-    transaction_signed_by([stranger_key]),
-  )
-}
-
-test is_authorised_by_grantee_rejects_a_secp256k1_grantee_without_a_signature() {
-  !is_authorised_by_grantee(
-    Secp256k1(
-      #"034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-    ),
-    None,
-    output_reference(0),
-    transaction_signed_by([stranger_key]),
-  )
+test is_authorised_by_grantee_rejects_a_grantee_that_did_not_sign() {
+  !is_authorised_by_grantee(stranger_key, [device_key])
 }
 
 test ends_before_expiry_accepts_an_upper_bound_before_the_expiry() {
@@ -399,10 +317,10 @@ test state_after_spend_reduces_only_the_used_grants_caps() {
   let expected = AccountState {
     ..state(),
     grants: [
-      Grant { slot: 0, grantee: Ed25519(stranger_key), scope: lovelace_scope() },
+      Grant { slot: 0, grantee: stranger_key, scope: lovelace_scope() },
       Grant {
         slot: 1,
-        grantee: Ed25519(stranger_key),
+        grantee: stranger_key,
         scope: Scope { ..token_scope(), cap: 43, lovelace_cap: 1_500_000 },
       },
     ],
@@ -417,10 +335,10 @@ test state_after_spend_keeps_the_lovelace_cap_of_a_lovelace_grant() {
     grants: [
       Grant {
         slot: 0,
-        grantee: Ed25519(stranger_key),
+        grantee: stranger_key,
         scope: Scope { ..lovelace_scope(), cap: 4_000_000 },
       },
-      Grant { slot: 1, grantee: Ed25519(stranger_key), scope: token_scope() },
+      Grant { slot: 1, grantee: stranger_key, scope: token_scope() },
     ],
   }
   after == expected
@@ -439,10 +357,10 @@ test state_after_spend_ignores_a_lovelace_deposit_beside_a_token_withdrawal() {
   let expected = AccountState {
     ..state(),
     grants: [
-      Grant { slot: 0, grantee: Ed25519(stranger_key), scope: lovelace_scope() },
+      Grant { slot: 0, grantee: stranger_key, scope: lovelace_scope() },
       Grant {
         slot: 1,
-        grantee: Ed25519(stranger_key),
+        grantee: stranger_key,
         scope: Scope { ..token_scope(), cap: 43, lovelace_cap: 2_000_000 },
       },
     ],

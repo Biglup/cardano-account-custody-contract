@@ -1,15 +1,6 @@
-use aiken/crypto.{VerificationKey, VerificationKeyHash}
+use aiken/crypto.{VerificationKeyHash}
 use cardano/address.{Address}
 use cardano/assets.{AssetName, PolicyId}
-
-/// A key that can authorise a grant, either Cardano's own Ed25519 keys or
-/// a Secp256k1 key: a 33 byte compressed secp256k1 public key, verified on
-/// chain with the secp256k1 ECDSA builtin, as used by custodial signing
-/// services.
-pub type Grantee {
-  Ed25519(VerificationKeyHash)
-  Secp256k1(VerificationKey)
-}
 
 /// An asset class: a policy id paired with an asset name. Lovelace is
 /// represented by the empty policy id and the empty asset name, mirroring
@@ -56,10 +47,12 @@ pub type Scope {
 }
 
 /// A single revocable permission held by a grantee, identified by its slot
-/// in `AccountState.grants`.
+/// in `AccountState.grants`. The grantee is the hash of an Ed25519
+/// verification key and authorises a spend by signing the transaction as
+/// one of its required signers.
 pub type Grant {
   slot: Int,
-  grantee: Grantee,
+  grantee: VerificationKeyHash,
   scope: Scope,
 }
 
@@ -75,19 +68,13 @@ pub type AccountState {
 ///
 /// `Device` is the owner path: any device key may rewrite the state freely,
 /// as long as the result stays well formed. `SpendWithGrant` is the agent
-/// path: the named grant's remaining caps bound what the transaction may
+/// path: the grantee of the named grant signs the transaction as a required
+/// signer, and the grant's remaining caps bound what the transaction may
 /// take. `Fund` is for a plain deposit UTxO at the account address, which
 /// only requires that the account's own state NFT is spent alongside it.
 pub type AccountRedeemer {
   Device
-  SpendWithGrant {
-    slot: Int,
-    /// The 64 byte r||s secp256k1 ECDSA signature over the transaction,
-    /// required when the grant's grantee is `Secp256k1`. `None` when the
-    /// grantee is `Ed25519`, which authorises through `extra_signatories`
-    /// instead.
-    signature: Option<ByteArray>,
-  }
+  SpendWithGrant { slot: Int }
   Fund
 }
 
