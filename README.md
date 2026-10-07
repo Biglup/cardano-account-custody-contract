@@ -617,9 +617,7 @@ validators for the properties this project needs. The findings:
 Building on Bullet would have meant forking it and rewriting its intention
 validator for grants, with the rest of its surface still to audit. Writing
 the contract from scratch gave a smaller surface with the exact grant
-semantics in the validator, checked by 306 Aiken tests, 107 off-chain
-tests and the twenty preprod flows in
-[docs/preprod-evidence.md](docs/preprod-evidence.md).
+semantics in the validator.
 
 ## Limitations
 
