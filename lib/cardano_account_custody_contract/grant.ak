@@ -1,7 +1,7 @@
 use aiken/builtin
 use aiken/cbor
 use aiken/collection/list
-use aiken/crypto.{ScriptHash, VerificationKeyHash}
+use aiken/crypto.{ScriptHash}
 use aiken/interval.{Finite}
 use aiken/math
 use cardano/address.{Address}
@@ -174,14 +174,14 @@ pub fn deposits_carry_no_datum(
   outputs: List<Output>,
   account_address: Address,
   script_hash: ScriptHash,
-  stake_key_hash: VerificationKeyHash,
+  stake_script_hash: ScriptHash,
 ) -> Bool {
   list.all(
     outputs,
     fn(output) {
       or {
         output.address != account_address,
-        account.holds_state_nft(output.value, script_hash, stake_key_hash),
+        account.holds_state_nft(output.value, script_hash, stake_script_hash),
         output.datum == NoDatum,
       }
     },
@@ -193,12 +193,12 @@ pub fn deposits_carry_no_datum(
 pub fn spends_one_control_utxo(
   inputs: List<Input>,
   script_hash: ScriptHash,
-  stake_key_hash: VerificationKeyHash,
+  stake_script_hash: ScriptHash,
 ) -> Bool {
   list.count(
     inputs,
     fn(input) {
-      account.is_control_output(input.output, script_hash, stake_key_hash)
+      account.is_control_output(input.output, script_hash, stake_script_hash)
     },
   ) == 1
 }

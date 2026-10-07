@@ -1,15 +1,18 @@
 use account
 use aiken/collection/list
 use aiken/interval.{Interval}
-use cardano/address.{Address}
+use cardano/address.{Address, Script}
 use cardano/assets.{Assets}
-use cardano/transaction.{DatumHash, InlineDatum, Input, NoDatum, Output}
+use cardano/certificate.{DelegateBlockProduction, RegisterAndDelegateCredential}
+use cardano/transaction.{
+  DatumHash, InlineDatum, Input, NoDatum, Output, Transaction,
+}
 use cardano_account_custody_contract/grant
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output, input,
-  other_account_address, other_device_key, other_stake_key_hash, output,
-  output_reference, recipient_address, script_hash, stake_key_hash, state_datum,
-  state_nft, stranger_key,
+  other_account_address, other_device_key, other_stake_script_hash, output,
+  output_reference, publishing, recipient_address, registration, script_hash,
+  stake_script_hash, state_datum, state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, CreateAccount, DeleteAccount, Device, Ed25519, Fund,
@@ -60,7 +63,7 @@ fn payout(lovelace: Int) -> Output {
 }
 
 fn burn() -> Assets {
-  assets.from_asset(script_hash, stake_key_hash, -1)
+  assets.from_asset(script_hash, stake_script_hash, -1)
 }
 
 fn mint(
@@ -78,6 +81,35 @@ fn mint(
     interval.everything,
   )
   account.account.mint(redeemer, script_hash, tx)
+}
+
+/// A transaction creating the account under test with the given outputs
+/// and mint, its registration published through the stake script.
+fn creation(
+  outputs: List<Output>,
+  minted: Assets,
+  signatories: List<ByteArray>,
+) -> Transaction {
+  test_helpers.transaction(
+    [],
+    outputs,
+    minted,
+    signatories,
+    interval.everything,
+  )
+    |> publishing(registration(stake_script_hash))
+}
+
+fn create(
+  outputs: List<Output>,
+  minted: Assets,
+  signatories: List<ByteArray>,
+) -> Bool {
+  account.account.mint(
+    CreateAccount,
+    script_hash,
+    creation(outputs, minted, signatories),
+  )
 }
 
 fn spend_with_datum(
@@ -154,210 +186,200 @@ fn spend_within(
 }
 
 test create_account_mints_the_state_nft_into_a_control_output() {
-  mint(
-    CreateAccount,
-    [],
+  create(
     [control_output(state(), 2_000_000)],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-  )
-}
-
-test create_account_accepts_other_outputs_beside_the_control_output() {
-  mint(
-    CreateAccount,
-    [],
-    [payout(1), control_output(state(), 2_000_000), payout(2)],
-    state_nft(stake_key_hash),
-    [stake_key_hash, stranger_key],
-  )
-}
-
-test create_account_rejects_a_missing_stake_key_signature() {
-  !mint(
-    CreateAccount,
-    [],
-    [control_output(state(), 2_000_000)],
-    state_nft(stake_key_hash),
+    state_nft(stake_script_hash),
     [device_key],
   )
 }
 
-test create_account_rejects_a_quantity_of_two() {
+test create_account_accepts_other_outputs_beside_the_control_output() {
+  create(
+    [payout(1), control_output(state(), 2_000_000), payout(2)],
+    state_nft(stake_script_hash),
+    [device_key, stranger_key],
+  )
+}
+
+test create_account_accepts_a_registration_with_a_delegation() {
+  let delegating = RegisterAndDelegateCredential {
+    credential: Script(stake_script_hash),
+    delegate: DelegateBlockProduction { stake_pool: stranger_key },
+    deposit: 2_000_000,
+  }
+  let tx = test_helpers.transaction(
+    [],
+    [control_output(state(), 2_000_000)],
+    state_nft(stake_script_hash),
+    [device_key],
+    interval.everything,
+  )
+    |> publishing(delegating)
+  account.account.mint(CreateAccount, script_hash, tx)
+}
+
+test create_account_rejects_a_missing_registration() {
   !mint(
     CreateAccount,
     [],
     [control_output(state(), 2_000_000)],
-    assets.from_asset(script_hash, stake_key_hash, 2),
-    [stake_key_hash],
+    state_nft(stake_script_hash),
+    [device_key],
+  )
+}
+
+test create_account_rejects_a_registration_of_another_credential() {
+  let tx = test_helpers.transaction(
+    [],
+    [control_output(state(), 2_000_000)],
+    state_nft(stake_script_hash),
+    [device_key],
+    interval.everything,
+  )
+    |> publishing(registration(other_stake_script_hash))
+  !account.account.mint(CreateAccount, script_hash, tx)
+}
+
+test create_account_rejects_a_registration_the_stake_script_did_not_run_on() {
+  let tx = Transaction {
+    ..creation(
+      [control_output(state(), 2_000_000)],
+      state_nft(stake_script_hash),
+      [device_key],
+    ),
+    redeemers: [],
+  }
+  !account.account.mint(CreateAccount, script_hash, tx)
+}
+
+test create_account_rejects_a_quantity_of_two() {
+  !create(
+    [control_output(state(), 2_000_000)],
+    assets.from_asset(script_hash, stake_script_hash, 2),
+    [device_key],
   )
 }
 
 test create_account_rejects_two_asset_names_under_the_policy() fail {
-  mint(
-    CreateAccount,
-    [],
+  create(
     [control_output(state(), 2_000_000)],
-    assets.merge(state_nft(stake_key_hash), state_nft(other_stake_key_hash)),
-    [stake_key_hash, other_stake_key_hash],
+    assets.merge(
+      state_nft(stake_script_hash),
+      state_nft(other_stake_script_hash),
+    ),
+    [device_key],
   )
 }
 
 test create_account_rejects_a_burn_beside_the_mint() fail {
-  mint(
-    CreateAccount,
-    [],
+  create(
     [control_output(state(), 2_000_000)],
     assets.merge(
-      state_nft(stake_key_hash),
-      assets.from_asset(script_hash, other_stake_key_hash, -1),
+      state_nft(stake_script_hash),
+      assets.from_asset(script_hash, other_stake_script_hash, -1),
     ),
-    [stake_key_hash],
+    [device_key],
   )
 }
 
 test create_account_rejects_an_empty_mint_under_the_policy() fail {
-  mint(
-    CreateAccount,
-    [],
-    [control_output(state(), 2_000_000)],
-    assets.zero,
-    [stake_key_hash],
-  )
+  create([control_output(state(), 2_000_000)], assets.zero, [device_key])
 }
 
 test create_account_rejects_a_burn() {
-  !mint(CreateAccount, [control_input()], [], burn(), [stake_key_hash])
+  !mint(CreateAccount, [control_input()], [], burn(), [device_key])
 }
 
 test create_account_rejects_a_missing_control_output() fail {
-  mint(
-    CreateAccount,
-    [],
-    [payout(1)],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-  )
+  create([payout(1)], state_nft(stake_script_hash), [device_key])
 }
 
 test create_account_rejects_two_control_outputs() fail {
-  mint(
-    CreateAccount,
-    [],
+  create(
     [control_output(state(), 2_000_000), control_output(state(), 2_000_000)],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
+    state_nft(stake_script_hash),
+    [device_key],
   )
 }
 
 test create_account_rejects_a_control_output_at_another_stake_credential() fail {
   let misplaced = output(
     other_account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     state_datum(state()),
   )
-  mint(
-    CreateAccount,
-    [],
-    [misplaced],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-  )
+  create([misplaced], state_nft(stake_script_hash), [device_key])
 }
 
 test create_account_rejects_a_control_output_without_a_stake_credential() fail {
   let misplaced = output(
     address.from_script(script_hash),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     state_datum(state()),
   )
-  mint(
-    CreateAccount,
-    [],
-    [misplaced],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-  )
+  create([misplaced], state_nft(stake_script_hash), [device_key])
 }
 
 test create_account_rejects_a_malformed_state_datum() fail {
   let data: Data = 42
   let malformed = output(
     account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     InlineDatum(data),
   )
-  mint(
-    CreateAccount,
-    [],
-    [malformed],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-  )
+  create([malformed], state_nft(stake_script_hash), [device_key])
 }
 
 test create_account_rejects_a_state_datum_given_by_hash() fail {
   let hashed = output(
     account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     DatumHash(stranger_key),
   )
-  mint(CreateAccount, [], [hashed], state_nft(stake_key_hash), [stake_key_hash])
+  create([hashed], state_nft(stake_script_hash), [device_key])
 }
 
 test create_account_rejects_an_ill_formed_state() {
   let no_devices = AccountState { ..state(), devices: [] }
-  !mint(
-    CreateAccount,
-    [],
+  !create(
     [control_output(no_devices, 2_000_000)],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
+    state_nft(stake_script_hash),
+    [device_key],
   )
 }
 
 test create_account_rejects_extra_tokens_on_the_control_output() {
   let parked = output(
     account_address(),
-    assets.merge(control_value(stake_key_hash, 2_000_000), other_token()),
+    assets.merge(control_value(stake_script_hash, 2_000_000), other_token()),
     state_datum(state()),
   )
-  !mint(
-    CreateAccount,
-    [],
-    [parked],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-  )
+  !create([parked], state_nft(stake_script_hash), [device_key])
 }
 
 test create_account_rejects_a_state_nft_sent_outside_the_account() {
   let stray = output(
     recipient_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     NoDatum,
   )
-  !mint(
-    CreateAccount,
-    [],
+  !create(
     [control_output(state(), 2_000_000), stray],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
+    state_nft(stake_script_hash),
+    [device_key],
   )
 }
 
 test create_account_rejects_a_state_nft_sent_to_another_accounts_address() {
   let exported = output(
     other_account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     NoDatum,
   )
-  !mint(
-    CreateAccount,
-    [],
+  !create(
     [control_output(state(), 2_000_000), exported],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
+    state_nft(stake_script_hash),
+    [device_key],
   )
 }
 
@@ -386,7 +408,7 @@ test delete_account_rejects_a_control_input_at_another_stake_credential() {
     0,
     output(
       other_account_address(),
-      control_value(stake_key_hash, 2_000_000),
+      control_value(stake_script_hash, 2_000_000),
       state_datum(state()),
     ),
   )
@@ -398,7 +420,7 @@ test delete_account_rejects_a_burn_of_two() {
     DeleteAccount,
     [control_input()],
     [],
-    assets.from_asset(script_hash, stake_key_hash, -2),
+    assets.from_asset(script_hash, stake_script_hash, -2),
     [device_key],
   )
 }
@@ -408,7 +430,7 @@ test delete_account_rejects_a_mint() {
     DeleteAccount,
     [control_input()],
     [control_output(state(), 2_000_000)],
-    state_nft(stake_key_hash),
+    state_nft(stake_script_hash),
     [device_key],
   )
 }
@@ -420,7 +442,7 @@ test delete_account_rejects_a_burn_beside_another_name() fail {
     [],
     assets.merge(
       burn(),
-      assets.from_asset(script_hash, other_stake_key_hash, -1),
+      assets.from_asset(script_hash, other_stake_script_hash, -1),
     ),
     [device_key],
   )
@@ -476,7 +498,7 @@ test fund_rejects_the_control_utxo_of_another_account() {
     0,
     output(
       other_account_address(),
-      control_value(other_stake_key_hash, 2_000_000),
+      control_value(other_stake_script_hash, 2_000_000),
       state_datum(state()),
     ),
   )
@@ -496,7 +518,7 @@ test fund_rejects_a_foreign_state_nft_at_the_account_address() {
     0,
     output(
       account_address(),
-      control_value(other_stake_key_hash, 2_000_000),
+      control_value(other_stake_script_hash, 2_000_000),
       state_datum(state()),
     ),
   )
@@ -523,7 +545,7 @@ test fund_rejects_the_control_utxo_itself() {
   )
 }
 
-test spend_rejects_an_input_without_a_stake_key() fail {
+test spend_rejects_an_input_without_a_stake_credential() fail {
   let stray = input(
     1,
     output(address.from_script(script_hash), assets.from_lovelace(5), NoDatum),
@@ -599,7 +621,7 @@ test device_rejects_a_signature_from_a_key_that_is_not_a_device() {
     [control_input()],
     [control_output(state(), 2_000_000)],
     assets.zero,
-    [stranger_key, stake_key_hash],
+    [stranger_key],
   )
 }
 
@@ -620,7 +642,7 @@ test device_rejects_a_malformed_state_datum() fail {
   let data: Data = 42
   let malformed = output(
     account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     InlineDatum(data),
   )
   spend(
@@ -637,7 +659,7 @@ test device_rejects_a_malformed_state_datum() fail {
 test device_rejects_extra_tokens_on_the_control_output() {
   let parked = output(
     account_address(),
-    assets.merge(control_value(stake_key_hash, 2_000_000), other_token()),
+    assets.merge(control_value(stake_script_hash, 2_000_000), other_token()),
     state_datum(state()),
   )
   !spend(
@@ -667,7 +689,7 @@ test device_rejects_a_control_input_whose_datum_is_not_an_account_state() fail {
 test device_rejects_a_state_nft_sent_outside_the_account() {
   let stray = output(
     recipient_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     NoDatum,
   )
   !spend(
@@ -684,7 +706,7 @@ test device_rejects_a_state_nft_sent_outside_the_account() {
 test device_accepts_another_accounts_control_output_beside_its_own() {
   let other = output(
     other_account_address(),
-    control_value(other_stake_key_hash, 2_000_000),
+    control_value(other_stake_script_hash, 2_000_000),
     state_datum(state()),
   )
   spend(
@@ -701,7 +723,7 @@ test device_accepts_another_accounts_control_output_beside_its_own() {
 test device_rejects_a_state_nft_sent_to_an_enterprise_script_address() {
   let stray = output(
     address.from_script(script_hash),
-    control_value(other_stake_key_hash, 2_000_000),
+    control_value(other_stake_script_hash, 2_000_000),
     NoDatum,
   )
   !spend(
@@ -719,20 +741,20 @@ test device_rejects_forging_another_accounts_control_output_from_a_stray_nft() {
   let other_state = AccountState { ..state(), devices: [stranger_key] }
   let other_control = output(
     other_account_address(),
-    control_value(other_stake_key_hash, 2_000_000),
+    control_value(other_stake_script_hash, 2_000_000),
     state_datum(other_state),
   )
   let stray = input(
     1,
     output(
       other_account_address(),
-      control_value(stake_key_hash, 2_000_000),
+      control_value(stake_script_hash, 2_000_000),
       NoDatum,
     ),
   )
   let forged = output(
     account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     state_datum(other_state),
   )
   !spend(
@@ -749,7 +771,7 @@ test device_rejects_forging_another_accounts_control_output_from_a_stray_nft() {
 test device_rejects_a_control_output_at_another_stake_credential() {
   let misplaced = output(
     other_account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     state_datum(state()),
   )
   !spend(
@@ -831,7 +853,7 @@ test device_rejects_a_delete_without_a_device_signature() {
     [control_input()],
     [payout(2_000_000)],
     burn(),
-    [stake_key_hash],
+    [stranger_key],
   )
 }
 
@@ -842,7 +864,7 @@ test device_rejects_a_burn_of_two_without_a_control_output() fail {
     0,
     [control_input()],
     [payout(2_000_000)],
-    assets.from_asset(script_hash, stake_key_hash, -2),
+    assets.from_asset(script_hash, stake_script_hash, -2),
     [device_key],
   )
 }
@@ -1000,11 +1022,11 @@ fn token_spend_transaction(outputs: List<Output>) -> transaction.Transaction {
 /// The 64 byte r||s secp256k1 ECDSA signature of `grantee_key` over the
 /// grantee message of `token_spend_transaction(token_spend_outputs())`,
 /// which is the blake2b-256 digest
-/// 72c8e421c9df7618914257c72d2770c87dff708c74d44cf906e52cb15493a9f2.
+/// f712bbf54a26a49693ef5795de521955a7a2c20888fc810d632948d010c40cba.
 /// Produced once with @noble/curves `secp256k1.sign(message, key)`, which
 /// signs the given digest as is and yields a low s signature.
 const token_spend_signature =
-  #"8ed140d804d03766e38ecc5459647f19447616d17eced4c9c89e2a63949c4c652ddd60209604f585f38a5374a61400cbb9a1bc07889b97ef18970f5f3e83eb32"
+  #"ea839a59b491a0f7560c2e0b3cf456b1618a21a414a69f3d184ee7fcbd9b961e23319a525e1f62746494c8cc0d12c51ced68ea2436e9394ade20648a1c0c06a7"
 
 fn spend_token(outputs: List<Output>, signature: Option<ByteArray>) -> Bool {
   account.account.spend(
@@ -1052,7 +1074,7 @@ test grantee_message_of_the_fixture_transaction_matches_the_signed_digest() {
   grant.grantee_message(
     output_reference(0),
     token_spend_transaction(token_spend_outputs()),
-  ) == #"72c8e421c9df7618914257c72d2770c87dff708c74d44cf906e52cb15493a9f2"
+  ) == #"f712bbf54a26a49693ef5795de521955a7a2c20888fc810d632948d010c40cba"
 }
 
 test spend_with_grant_ed25519_grantee_spends_within_scope() {
@@ -1406,7 +1428,7 @@ test spend_with_grant_rejects_a_missing_control_output() fail {
 test spend_with_grant_rejects_extra_tokens_on_the_control_output() {
   let parked = output(
     account_address(),
-    assets.merge(control_value(stake_key_hash, 2_000_000), token(20)),
+    assets.merge(control_value(stake_script_hash, 2_000_000), token(20)),
     state_datum(with_caps(granted_state(), 0, 3_000_000, 0)),
   )
   !spend_within(
@@ -1435,7 +1457,7 @@ test spend_with_grant_rejects_a_reference_script_on_the_control_output() {
 test spend_with_grant_rejects_a_state_nft_sent_outside_the_account() {
   let stray = output(
     recipient_address(),
-    control_value(other_stake_key_hash, 1_000_000),
+    control_value(other_stake_script_hash, 1_000_000),
     NoDatum,
   )
   !spend_lovelace(
@@ -1455,7 +1477,7 @@ test spend_with_grant_rejects_a_stray_state_nft_among_the_inputs() {
     2,
     output(
       recipient_address(),
-      control_value(other_stake_key_hash, 1_000_000),
+      control_value(other_stake_script_hash, 1_000_000),
       NoDatum,
     ),
   )
@@ -1471,7 +1493,7 @@ test spend_with_grant_rejects_a_stray_state_nft_among_the_inputs() {
       payout(2_000_000),
       output(
         other_account_address(),
-        control_value(other_stake_key_hash, 1_000_000),
+        control_value(other_stake_script_hash, 1_000_000),
         NoDatum,
       ),
     ],

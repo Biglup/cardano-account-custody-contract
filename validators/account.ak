@@ -1,6 +1,6 @@
 use aiken/collection/dict
 use aiken/collection/list
-use aiken/crypto.{ScriptHash, VerificationKeyHash}
+use aiken/crypto.{ScriptHash}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{Output, OutputReference, Transaction}
 use cardano_account_custody_contract/account as custody
@@ -21,9 +21,21 @@ use cardano_account_custody_contract/types.{
 /// every account address, so the mint and spend handlers share one
 /// identity and can trust each other's checks within a transaction.
 ///
+/// An account's stake credential is the hash of its own account stake
+/// script, the parameterised `account_stake` validator, and that hash
+/// names the account's state NFT. The ledger registers a stake credential
+/// at most once: a second registration of a registered credential is
+/// refused outright, and only the stake script, under its own rules, can
+/// deregister it. Account creation is tied to that registration, so an
+/// account can be created exactly once for as long as its stake credential
+/// stays registered, and no key can mint a parallel control UTxO behind
+/// the devices' backs.
+///
 /// The mint handler creates and retires accounts. `CreateAccount` mints
-/// exactly one state NFT named after the user's stake key hash, which the
-/// user must sign for, and requires that it lands in a single control
+/// exactly one state NFT named after the user's stake credential and
+/// requires that the transaction runs the account stake script on a
+/// certificate registering that credential, which is how the owner
+/// authorises the creation, and that the NFT lands in a single control
 /// output at the user's account address holding only lovelace, the NFT and
 /// a well formed inline `AccountState`. `DeleteAccount` burns exactly one
 /// state NFT and requires that the control UTxO holding it is spent in the
@@ -31,7 +43,7 @@ use cardano_account_custody_contract/types.{
 /// spend handler runs on it and demands a device signature.
 ///
 /// The spend handler guards every UTxO at an account address, with the
-/// account identified by the stake key hash of the UTxO's own address.
+/// account identified by the stake credential of the UTxO's own address.
 /// `Fund` spends a plain deposit and only requires that the account's own
 /// control UTxO is spent alongside, so the control UTxO's checks run once
 /// over the whole transaction; a deposit may carry any inline datum or
@@ -72,15 +84,9 @@ use cardano_account_custody_contract/types.{
 /// state NFT through a spend of the UTxO holding it, and that UTxO sits at
 /// the account address of its name, the invariant holds across every
 /// transaction.
-///
-/// Creation rests on one trust assumption: the holder of a stake key can
-/// always mint a new control UTxO for their own account, because the mint
-/// handler cannot prove that the account's NFT does not already exist. A
-/// second mint would put the account under two control UTxOs, so off-chain
-/// code must check for an existing state NFT before creating an account.
 validator account {
   mint(redeemer: MintRedeemer, policy_id: PolicyId, self: Transaction) {
-    expect [Pair(stake_key_hash, quantity)] = assets.tokens(
+    expect [Pair(stake_script_hash, quantity)] = assets.tokens(
       self.mint,
       policy_id,
     )
@@ -90,16 +96,16 @@ validator account {
         expect Some(control) = custody.find_control_output(
           self.outputs,
           policy_id,
-          stake_key_hash,
+          stake_script_hash,
         )
         and {
-          list.has(self.extra_signatories, stake_key_hash),
-          custody.is_valid_control_output(control, policy_id, stake_key_hash),
+          custody.registers_stake_credential(self.redeemers, stake_script_hash),
+          custody.is_valid_control_output(control, policy_id, stake_script_hash),
           custody.state_nfts_sit_at_their_own_addresses(self.outputs, policy_id),
         }
       }
       (DeleteAccount, -1) ->
-        custody.has_control_input(self.inputs, policy_id, stake_key_hash)
+        custody.has_control_input(self.inputs, policy_id, stake_script_hash)
       _ -> False
     }
   }
@@ -112,16 +118,16 @@ validator account {
   ) {
     let own = custody.own_input(self.inputs, output_reference)
     let script_hash = custody.script_hash_of(own.output.address)
-    let stake_key_hash = custody.stake_key_hash_of(own.output.address)
+    let stake_script_hash = custody.stake_script_hash_of(own.output.address)
     let holds_nft = custody.holds_state_nft(
       own.output.value,
       script_hash,
-      stake_key_hash,
+      stake_script_hash,
     )
     when redeemer is {
       Fund -> and {
           !holds_nft,
-          custody.has_control_input(self.inputs, script_hash, stake_key_hash),
+          custody.has_control_input(self.inputs, script_hash, stake_script_hash),
         }
       Device -> {
         expect Some(data) = datum
@@ -141,8 +147,12 @@ validator account {
             script_hash,
           ),
           or {
-            custody.burns_state_nft(self.mint, script_hash, stake_key_hash),
-            recreates_control_output(self.outputs, script_hash, stake_key_hash),
+            custody.burns_state_nft(self.mint, script_hash, stake_script_hash),
+            recreates_control_output(
+              self.outputs,
+              script_hash,
+              stake_script_hash,
+            ),
           },
         }
       }
@@ -155,7 +165,7 @@ validator account {
         expect Some(control) = custody.find_control_output(
           self.outputs,
           script_hash,
-          stake_key_hash,
+          stake_script_hash,
         )
         and {
           holds_nft,
@@ -172,9 +182,9 @@ validator account {
             self.outputs,
             address,
             script_hash,
-            stake_key_hash,
+            stake_script_hash,
           ),
-          spends_one_control_utxo(self.inputs, script_hash, stake_key_hash),
+          spends_one_control_utxo(self.inputs, script_hash, stake_script_hash),
           custody.state_nfts_sit_at_their_own_addresses(
             list.map(self.inputs, fn(input) { input.output }),
             script_hash,
@@ -186,7 +196,7 @@ validator account {
           custody.holds_only_lovelace_and_state_nft(
             control.value,
             script_hash,
-            stake_key_hash,
+            stake_script_hash,
           ),
           carries_state(control, state_after_spend(state, slot, leaving)),
           carries_no_reference_script(control),
@@ -206,12 +216,12 @@ validator account {
 fn recreates_control_output(
   outputs: List<Output>,
   script_hash: ScriptHash,
-  stake_key_hash: VerificationKeyHash,
+  stake_script_hash: ScriptHash,
 ) -> Bool {
   expect Some(control) = custody.find_control_output(
     outputs,
     script_hash,
-    stake_key_hash,
+    stake_script_hash,
   )
-  custody.is_valid_control_output(control, script_hash, stake_key_hash)
+  custody.is_valid_control_output(control, script_hash, stake_script_hash)
 }

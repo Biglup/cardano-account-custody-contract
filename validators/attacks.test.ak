@@ -4,17 +4,16 @@
 //// asserts that the validator refuses it: with `!` when the handler returns
 //// False and as a `fail` test when it aborts on an `expect`. The `budget_`
 //// tests build the largest well formed state and the heaviest spends over
-//// it so that `aiken check` reports their execution units, and the one
-//// `trust_assumption_` test records the behaviour the validator cannot
-//// prevent.
+//// it so that `aiken check` reports their execution units.
 
 use account
+use account_stake
 use aiken/builtin
 use aiken/cbor
 use aiken/collection/list
 use aiken/interval.{Interval, IntervalBound, NegativeInfinity}
 use aiken/primitive/bytearray
-use cardano/address.{Address}
+use cardano/address.{Address, Script}
 use cardano/assets.{Assets}
 use cardano/transaction.{
   DatumHash, InlineDatum, Input, NoDatum, Output, Transaction,
@@ -22,18 +21,18 @@ use cardano/transaction.{
 use cardano_account_custody_contract/grant
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output, input,
-  other_account_address, other_device_key, other_stake_key_hash, output,
-  output_reference, recipient_address, script_hash, stake_key_hash, state_datum,
-  state_nft, stranger_key,
+  other_account_address, other_device_key, other_stake_script_hash, output,
+  output_reference, publishing, recipient_address, registration, script_hash,
+  stake_script_hash, state_datum, state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, CreateAccount, DeleteAccount, Device, Ed25519, Fund,
-  Grant, Scope, Secp256k1, SpendWithGrant,
+  Grant, Operate, Scope, Secp256k1, SpendWithGrant,
 }
 
 const expiry = 1_800_000_000_000
 
-/// The key hash of a party that holds no device, stake or grantee key.
+/// The key hash of a party that holds no device, owner or grantee key.
 const attacker_key = #"00000000000000000000000000000000000000000000000000000007"
 
 /// The 33 byte compressed secp256k1 public key of the test grantee, derived
@@ -44,12 +43,12 @@ const grantee_key =
 /// The signature of `grantee_key` over `token_spend_transaction()`, the
 /// same fixture `account.test.ak` verifies, reused here to try replays.
 const token_spend_signature =
-  #"8ed140d804d03766e38ecc5459647f19447616d17eced4c9c89e2a63949c4c652ddd60209604f585f38a5374a61400cbb9a1bc07889b97ef18970f5f3e83eb32"
+  #"ea839a59b491a0f7560c2e0b3cf456b1618a21a414a69f3d184ee7fcbd9b961e23319a525e1f62746494c8cc0d12c51ced68ea2436e9394ade20648a1c0c06a7"
 
 /// The same signature with `s` replaced by `n - s`, the high s form that
 /// verifies under textbook ECDSA but that the secp256k1 builtin refuses.
 const high_s_token_spend_signature =
-  #"8ed140d804d03766e38ecc5459647f19447616d17eced4c9c89e2a63949c4c65d2229fdf69fb0a7a0c75ac8b59ebff33010d20df26ad084ca73b4f2d91b2560f"
+  #"ea839a59b491a0f7560c2e0b3cf456b1618a21a414a69f3d184ee7fcbd9b961edcce65ada1e09d8b9b6b3733f2ed3ae1cd45f2c2785f66f0e1b1fa02b42a3a9a"
 
 fn attacker_address() -> Address {
   address.from_verification_key(attacker_key)
@@ -148,7 +147,7 @@ fn with_caps(
 fn other_control_output(state: AccountState, lovelace: Int) -> Output {
   output(
     other_account_address(),
-    control_value(other_stake_key_hash, lovelace),
+    control_value(other_stake_script_hash, lovelace),
     state_datum(state),
   )
 }
@@ -166,7 +165,7 @@ fn change(lovelace: Int) -> Output {
 }
 
 fn burn() -> Assets {
-  assets.from_asset(script_hash, stake_key_hash, -1)
+  assets.from_asset(script_hash, stake_script_hash, -1)
 }
 
 fn state_data(state: Option<AccountState>) -> Option<Data> {
@@ -205,6 +204,43 @@ fn spend(
 
 fn mint(redeemer: types.MintRedeemer, tx: Transaction) -> Bool {
   account.account.mint(redeemer, script_hash, tx)
+}
+
+/// A transaction creating the account under test with the given outputs,
+/// its registration published through the stake script.
+fn creation(outputs: List<Output>, signatories: List<ByteArray>) -> Transaction {
+  transaction(
+    [],
+    outputs,
+    state_nft(stake_script_hash),
+    signatories,
+    interval.everything,
+  )
+    |> publishing(registration(stake_script_hash))
+}
+
+/// Whether the stake script of the account under test, owned by
+/// `device_key`, accepts publishing the registration of its credential.
+fn register(tx: Transaction) -> Bool {
+  account_stake.account_stake.publish(
+    device_key,
+    script_hash,
+    Operate,
+    registration(stake_script_hash),
+    tx,
+  )
+}
+
+/// Whether the stake script of the account under test accepts a
+/// withdrawal from its reward account.
+fn withdraw(tx: Transaction) -> Bool {
+  account_stake.account_stake.withdraw(
+    device_key,
+    script_hash,
+    Operate,
+    Script(stake_script_hash),
+    tx,
+  )
 }
 
 /// A transaction in which the Ed25519 grantee of slot 0 spends lovelace
@@ -332,7 +368,7 @@ test attack_double_satisfaction_one_recipient_output_for_two_accounts() {
 
 /// A deposit of another account is spent as if this account's control
 /// UTxO authorised it. `Fund` looks for a control UTxO of the deposit's
-/// own stake key, which the transaction does not spend.
+/// own stake credential, which the transaction does not spend.
 test attack_double_satisfaction_fund_of_another_account_rides_on_this_control() {
   let tx = transaction(
     [
@@ -437,13 +473,13 @@ test attack_missing_utxo_authentication_fund_with_the_control_as_a_reference_inp
   !spend(None, Fund, 1, tx)
 }
 
-/// A token of another policy named after the stake key hash sits at the
+/// A token of another policy named after the stake credential sits at the
 /// account address and poses as the control UTxO. The state NFT is
 /// identified by the account script's own policy id.
 test attack_missing_utxo_authentication_lookalike_nft_from_another_policy() {
   let lookalike = assets.merge(
     assets.from_lovelace(2_000_000),
-    assets.from_asset(token_asset().policy_id, stake_key_hash, 1),
+    assets.from_asset(token_asset().policy_id, stake_script_hash, 1),
   )
   let tx = transaction(
     [
@@ -470,7 +506,7 @@ test attack_missing_utxo_authentication_delete_with_the_nft_at_a_key_address() {
     [
       input(
         0,
-        output(attacker_address(), control_value(stake_key_hash, 2), NoDatum),
+        output(attacker_address(), control_value(stake_script_hash, 2), NoDatum),
       ),
     ],
     [],
@@ -529,7 +565,7 @@ test attack_datum_hijacking_grant_spend_raises_its_own_cap() {
 test attack_datum_hijacking_grant_spend_relocates_the_state_to_another_account_address() fail {
   let relocated = output(
     other_account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     state_datum(with_caps(granted_state(), 0, 3_000_000, 0)),
   )
   spend_lovelace_grant(
@@ -543,7 +579,7 @@ test attack_datum_hijacking_grant_spend_relocates_the_state_to_another_account_a
 test attack_datum_hijacking_grant_spend_control_datum_given_by_hash() {
   let hashed = output(
     account_address(),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     DatumHash(attacker_key),
   )
   !spend_lovelace_grant(
@@ -569,7 +605,7 @@ test attack_datum_hijacking_padded_state_datum_on_a_device_rewrite() fail {
     [
       output(
         account_address(),
-        control_value(stake_key_hash, 2_000_000),
+        control_value(stake_script_hash, 2_000_000),
         InlineDatum(padded),
       ),
     ],
@@ -580,44 +616,46 @@ test attack_datum_hijacking_padded_state_datum_on_a_device_rewrite() fail {
   spend(Some(state()), Device, 0, tx)
 }
 
-/// A state NFT named after the victim's stake key is minted with only the
-/// attacker's signature.
-test attack_token_forgery_victims_name_with_the_attackers_signature() {
-  let tx = transaction(
-    [],
+/// An account at the victim's address, under the attacker's device, is
+/// created with only the attacker's signature. The mint handler accepts
+/// the registration it sees, since checking it is the stake script's job,
+/// and the stake script refuses to publish a registration the owner did
+/// not sign.
+test attack_token_forgery_victims_address_with_the_attackers_signature() {
+  let tx = creation(
     [control_output(AccountState { ..state(), devices: [attacker_key] }, 2)],
-    state_nft(stake_key_hash),
     [attacker_key],
-    interval.everything,
   )
-  !mint(CreateAccount, tx)
+  mint(CreateAccount, tx) && !register(tx)
 }
 
-/// A state NFT named after the attacker's own stake key is minted into an
-/// output at the victim's account address. The control output must sit at
-/// the account address of the name, so none is found and the handler
-/// aborts.
+/// A state NFT named after the attacker's own stake credential is minted
+/// into an output at the victim's account address. The control output
+/// must sit at the account address of the name, so none is found and the
+/// handler aborts.
 test attack_token_forgery_attackers_name_into_the_victims_address() fail {
   let misplaced = output(
     account_address(),
-    control_value(other_stake_key_hash, 2_000_000),
+    control_value(other_stake_script_hash, 2_000_000),
     state_datum(AccountState { ..state(), devices: [attacker_key] }),
   )
   let tx = transaction(
     [],
     [misplaced],
-    state_nft(other_stake_key_hash),
-    [other_stake_key_hash],
+    state_nft(other_stake_script_hash),
+    [attacker_key],
     interval.everything,
   )
+    |> publishing(registration(other_stake_script_hash))
   mint(CreateAccount, tx)
 }
 
 /// A second state NFT of the account is minted in the middle of a grant
 /// spend and the only control output carries the grantee's own state. The
-/// mint handler demands the stake key's signature, which the grantee does
-/// not have, and the spend handler finds the state changed beyond the
-/// used grant's caps.
+/// mint handler demands a registration of the stake credential, which the
+/// transaction does not carry and which the ledger would refuse for a
+/// credential already registered, and the spend handler finds the state
+/// changed beyond the used grant's caps.
 test attack_token_forgery_second_nft_minted_during_a_grant_spend() {
   let hijacked = AccountState { ..granted_state(), devices: [stranger_key] }
   let tx = Transaction {
@@ -629,7 +667,7 @@ test attack_token_forgery_second_nft_minted_during_a_grant_spend() {
         payout(2_000_000),
       ],
     ),
-    mint: state_nft(stake_key_hash),
+    mint: state_nft(stake_script_hash),
   }
   and {
     !mint(CreateAccount, tx),
@@ -642,37 +680,35 @@ test attack_token_forgery_second_nft_minted_during_a_grant_spend() {
   }
 }
 
-/// The control output is minted at an address whose stake part is a script
-/// credential carrying the stake key hash's bytes. The account address
-/// pairs the script with a verification key credential only.
-test attack_token_forgery_create_account_with_a_script_stake_credential() fail {
+/// The control output is minted at an address whose stake part is a
+/// verification key credential carrying the stake script hash's bytes.
+/// The account address pairs the script with a script stake credential
+/// only.
+test attack_token_forgery_create_account_with_a_key_stake_credential() fail {
   let address = address.from_script(script_hash)
-    |> address.with_delegation_script(stake_key_hash)
-  let tx = transaction(
-    [],
+    |> address.with_delegation_key(stake_script_hash)
+  let tx = creation(
     [
       output(
         address,
-        control_value(stake_key_hash, 2_000_000),
+        control_value(stake_script_hash, 2_000_000),
         state_datum(state()),
       ),
     ],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-    interval.everything,
+    [device_key],
   )
   mint(CreateAccount, tx)
 }
 
-/// The owner parks a token of another policy named after the stake key
-/// hash on the control output. The control output may hold nothing but
-/// lovelace and the state NFT, whichever the token's name.
-test attack_token_forgery_lookalike_token_named_after_the_stake_key_on_the_control() {
+/// The owner parks a token of another policy named after the stake
+/// credential on the control output. The control output may hold nothing
+/// but lovelace and the state NFT, whichever the token's name.
+test attack_token_forgery_lookalike_token_named_after_the_stake_credential_on_the_control() {
   let parked = output(
     account_address(),
     assets.merge(
-      control_value(stake_key_hash, 2_000_000),
-      assets.from_asset(token_asset().policy_id, stake_key_hash, 1),
+      control_value(stake_script_hash, 2_000_000),
+      assets.from_asset(token_asset().policy_id, stake_script_hash, 1),
     ),
     state_datum(state()),
   )
@@ -686,11 +722,12 @@ test attack_token_forgery_lookalike_token_named_after_the_stake_key_on_the_contr
   !spend(Some(state()), Device, 0, tx)
 }
 
-/// The mint handler cannot see that a state NFT of the stake key already
-/// exists, so the stake key holder can always mint a second control UTxO
-/// under devices of their choosing. The validator accepts this; off-chain
-/// code must check for an existing state NFT before creating an account.
-test trust_assumption_stake_key_holder_mints_a_parallel_control_utxo() {
+/// The owner key, or anyone, mints a second control UTxO for an existing
+/// account under devices of their choosing. The ledger registers a stake
+/// credential once, so the transaction cannot carry a registration of the
+/// account's credential while the account exists, and without one the
+/// mint handler refuses the second creation.
+test attack_token_forgery_parallel_control_utxo_without_a_registration() {
   let parallel = AccountState { ..state(), devices: [attacker_key] }
   let tx = transaction(
     [
@@ -700,11 +737,47 @@ test trust_assumption_stake_key_holder_mints_a_parallel_control_utxo() {
       ),
     ],
     [control_output(parallel, 2_000_000)],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
+    state_nft(stake_script_hash),
+    [device_key, attacker_key],
     interval.everything,
   )
-  mint(CreateAccount, tx)
+  !mint(CreateAccount, tx)
+}
+
+/// The same, with the registration listed among the certificates in the
+/// legacy format that needs no witness, so the stake script never runs
+/// on it. The mint handler looks for the stake script's redeemer, not for
+/// the certificate.
+test attack_token_forgery_parallel_control_utxo_with_an_unwitnessed_registration() {
+  let parallel = AccountState { ..state(), devices: [attacker_key] }
+  let tx = Transaction {
+    ..creation([control_output(parallel, 2_000_000)], [attacker_key]),
+    redeemers: [],
+  }
+  !mint(CreateAccount, tx)
+}
+
+/// The grantee of slot 0 withdraws the account's rewards with its own
+/// signature, referencing the control UTxO. Rewards and delegation answer
+/// to the devices only.
+test attack_other_redeemer_withdraw_rewards_with_a_grantee_signature() {
+  let tx = Transaction {
+    ..transaction(
+      [
+        input(
+          5,
+          output(attacker_address(), assets.from_lovelace(3_000_000), NoDatum),
+        ),
+      ],
+      [payout(3_000_000)],
+      assets.zero,
+      [stranger_key],
+      interval.everything,
+    ),
+    reference_inputs: [input(0, control_output(granted_state(), 2_000_000))],
+    withdrawals: [Pair(Script(stake_script_hash), 1_000_000)],
+  }
+  !withdraw(tx)
 }
 
 /// The control UTxO is spent with `Fund`, the redeemer that carries no
@@ -821,14 +894,15 @@ test attack_other_redeemer_mint_redeemers_swapped() {
     [input(0, control_output(state(), 2_000_000))],
     [payout(2_000_000)],
     burn(),
-    [device_key, stake_key_hash],
+    [device_key],
     interval.everything,
   )
+    |> publishing(registration(stake_script_hash))
   let minting = transaction(
     [input(0, control_output(state(), 2_000_000))],
     [control_output(state(), 2_000_000)],
-    state_nft(stake_key_hash),
-    [device_key, stake_key_hash],
+    state_nft(stake_script_hash),
+    [device_key],
     interval.everything,
   )
   !mint(CreateAccount, burning) && !mint(DeleteAccount, minting)
@@ -1088,17 +1162,14 @@ test attack_unbounded_datum_nine_recipients_on_a_device_rewrite() {
 }
 
 test attack_unbounded_datum_seventeen_grants_at_creation() {
-  let tx = transaction(
-    [],
+  let tx = creation(
     [
       control_output(
         AccountState { ..state(), grants: grants(17, lovelace_scope()) },
         2_000_000,
       ),
     ],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-    interval.everything,
+    [device_key],
   )
   !mint(CreateAccount, tx)
 }
@@ -1108,15 +1179,12 @@ test attack_unbounded_datum_seventeen_grants_at_creation() {
 test attack_unbounded_value_token_bundle_on_the_control_at_creation() {
   let bundle = list.foldl(
     keys(20),
-    control_value(stake_key_hash, 2_000_000),
+    control_value(stake_script_hash, 2_000_000),
     fn(policy, value) { assets.add(value, policy, "dust", 1) },
   )
-  let tx = transaction(
-    [],
+  let tx = creation(
     [output(account_address(), bundle, state_datum(state()))],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-    interval.everything,
+    [device_key],
   )
   !mint(CreateAccount, tx)
 }
@@ -1203,12 +1271,9 @@ test attack_locked_value_device_rewrite_removes_every_device() {
 }
 
 test attack_locked_value_account_created_without_devices() {
-  let tx = transaction(
-    [],
+  let tx = creation(
     [control_output(AccountState { ..state(), devices: [] }, 2_000_000)],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-    interval.everything,
+    [device_key],
   )
   !mint(CreateAccount, tx)
 }
@@ -1408,7 +1473,7 @@ test attack_dust_attack_dust_pushed_onto_the_control_output() {
     [
       output(
         account_address(),
-        assets.merge(control_value(stake_key_hash, 2_000_000), dust()),
+        assets.merge(control_value(stake_script_hash, 2_000_000), dust()),
         state_datum(with_caps(granted_state(), 0, 3_000_000, 0)),
       ),
       change(8_000_000),
@@ -1549,13 +1614,7 @@ test budget_largest_state_device_rewrite() {
 }
 
 fn largest_state_creation_transaction() -> Transaction {
-  transaction(
-    [],
-    [control_output(largest_state(), 2_000_000)],
-    state_nft(stake_key_hash),
-    [stake_key_hash],
-    interval.everything,
-  )
+  creation([control_output(largest_state(), 2_000_000)], [device_key])
 }
 
 test budget_largest_state_account_creation() {
@@ -1582,16 +1641,16 @@ fn largest_state_secp256k1_transaction() -> Transaction {
 
 /// The signature of `grantee_key` over the grantee message of
 /// `largest_state_secp256k1_transaction()`, the blake2b-256 digest
-/// f42ddd675c906c1ad2b53350b338a61d801764a3dad8946ac016648c5c3d1a3d, produced with @noble/curves
+/// a70a83bc078817eefd2e7c4909aef817fa9b296620b778deb0504ed0d23e6cdd, produced with @noble/curves
 /// `secp256k1.sign(message, key)`.
 const largest_state_secp256k1_signature =
-  #"ceb7b12344a83bda4d046fa1f006f8a7527c060fdf49f95e88d0768e9d7c2db46a1f912e3fb560d5e350294a660cb9e579c9e1d0eee470fd54194e9e64ba2333"
+  #"442503f3a367e26c6a593aa0dbf613414b313fe7df2f48ac6ea4dc432241d71a08daee95a22286fdc6d08be95a2b2c9b2c8c1d89d61abc00ad2b001333967d79"
 
 test budget_largest_state_grantee_message_matches_the_signed_digest() {
   grant.grantee_message(
     output_reference(0),
     largest_state_secp256k1_transaction(),
-  ) == #"f42ddd675c906c1ad2b53350b338a61d801764a3dad8946ac016648c5c3d1a3d"
+  ) == #"a70a83bc078817eefd2e7c4909aef817fa9b296620b778deb0504ed0d23e6cdd"
 }
 
 test budget_largest_state_grant_spend_secp256k1() {

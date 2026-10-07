@@ -12,8 +12,8 @@ use cardano_account_custody_contract/grant.{
 }
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output, input,
-  other_account_address, other_stake_key_hash, output, output_reference,
-  recipient_address, script_hash, stake_key_hash, state_datum, stranger_key,
+  other_account_address, other_stake_script_hash, output, output_reference,
+  recipient_address, script_hash, stake_script_hash, state_datum, stranger_key,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, Ed25519, Grant, Scope, Secp256k1,
@@ -310,7 +310,7 @@ test deposits_carry_no_datum_accepts_the_control_and_plain_deposits() {
     ],
     account_address(),
     script_hash,
-    stake_key_hash,
+    stake_script_hash,
   )
 }
 
@@ -322,7 +322,7 @@ test deposits_carry_no_datum_rejects_a_deposit_under_a_datum_hash() {
     ],
     account_address(),
     script_hash,
-    stake_key_hash,
+    stake_script_hash,
   )
 }
 
@@ -332,7 +332,7 @@ test deposits_carry_no_datum_rejects_a_deposit_under_an_inline_datum() {
     [output(account_address(), assets.from_lovelace(1), InlineDatum(data))],
     account_address(),
     script_hash,
-    stake_key_hash,
+    stake_script_hash,
   )
 }
 
@@ -343,7 +343,7 @@ test spends_one_control_utxo_accepts_a_single_control_input() {
       input(1, fund_output(assets.from_lovelace(1))),
     ],
     script_hash,
-    stake_key_hash,
+    stake_script_hash,
   )
 }
 
@@ -354,7 +354,7 @@ test spends_one_control_utxo_rejects_two_control_inputs() {
       input(1, control_output(state(), 2_000_000)),
     ],
     script_hash,
-    stake_key_hash,
+    stake_script_hash,
   )
 }
 
@@ -362,7 +362,7 @@ test spends_one_control_utxo_rejects_no_control_input() {
   !spends_one_control_utxo(
     [input(1, fund_output(assets.from_lovelace(1)))],
     script_hash,
-    stake_key_hash,
+    stake_script_hash,
   )
 }
 
@@ -373,13 +373,13 @@ test spends_one_control_utxo_ignores_another_accounts_control_input() {
         0,
         output(
           other_account_address(),
-          control_value(other_stake_key_hash, 1),
+          control_value(other_stake_script_hash, 1),
           state_datum(state()),
         ),
       ),
     ],
     script_hash,
-    stake_key_hash,
+    stake_script_hash,
   )
 }
 
@@ -451,7 +451,7 @@ test carries_state_rejects_a_different_state() {
 test carries_state_rejects_a_datum_given_by_hash() {
   let hashed = output(
     account_address(),
-    control_value(stake_key_hash, 1),
+    control_value(stake_script_hash, 1),
     DatumHash(stranger_key),
   )
   !carries_state(hashed, state())

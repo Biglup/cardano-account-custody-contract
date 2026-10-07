@@ -87,3 +87,12 @@ pub type MintRedeemer {
   CreateAccount
   DeleteAccount
 }
+
+/// The redeemer for the account stake validator's withdraw and publish
+/// handlers. Both handlers learn what they are authorising from the script
+/// context itself, the credential a withdrawal draws from or the
+/// certificate being published, so the redeemer carries no choice and
+/// `Operate` is its only value.
+pub type StakeRedeemer {
+  Operate
+}
