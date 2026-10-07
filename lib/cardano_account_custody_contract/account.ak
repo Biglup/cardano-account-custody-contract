@@ -72,15 +72,6 @@ pub fn holds_only_lovelace_and_state_nft(
   assets.has_nft_strict(value, script_hash, stake_script_hash)
 }
 
-/// Whether a transaction's mint burns exactly one state NFT of the account.
-pub fn burns_state_nft(
-  mint: Assets,
-  script_hash: ScriptHash,
-  stake_script_hash: ScriptHash,
-) -> Bool {
-  assets.quantity_of(mint, script_hash, stake_script_hash) == -1
-}
-
 /// Whether an output is the account's control UTxO: it sits at the account
 /// address and holds the state NFT.
 pub fn is_control_output(
@@ -134,7 +125,7 @@ pub fn has_control_input(
 /// handled in one transaction, since each control output sits at its own
 /// address. Account creation checks a transaction's outputs this way and
 /// a device spend checks both its inputs and its outputs, so a state NFT
-/// can only ever sit at its own account address or be burned.
+/// can only ever sit at its own account address.
 pub fn state_nfts_sit_at_their_own_addresses(
   outputs: List<Output>,
   script_hash: ScriptHash,

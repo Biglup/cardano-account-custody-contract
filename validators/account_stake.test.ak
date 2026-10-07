@@ -182,8 +182,8 @@ test publish_rejects_a_delegation_over_another_accounts_control() fail {
   publish(delegation(), publication(delegation(), [other], [device_key]))
 }
 
-test publish_accepts_a_deregistration_signed_by_a_device_over_the_control() {
-  publish(
+test publish_rejects_a_deregistration_signed_by_a_device_over_the_control() {
+  !publish(
     deregistration(),
     publication(deregistration(), [control_input()], [device_key]),
   )
@@ -194,6 +194,10 @@ test publish_rejects_a_deregistration_without_a_device_signature() {
     deregistration(),
     publication(deregistration(), [control_input()], [stranger_key]),
   )
+}
+
+test publish_rejects_a_deregistration_signed_by_the_owner_without_the_control() {
+  !publish(deregistration(), publication(deregistration(), [], [device_key]))
 }
 
 test publish_rejects_a_delegate_representative_registration() {

@@ -43,6 +43,7 @@ fn token_scope() -> Scope {
     asset: token_asset(),
     per_call_cap: 10,
     cap: 50,
+    lovelace_per_call_cap: 1_000_000,
     lovelace_cap: 2_000_000,
     expires_at: 1_000,
     recipients: [],
@@ -55,6 +56,7 @@ fn lovelace_scope() -> Scope {
     asset: lovelace_asset(),
     per_call_cap: 3_000_000,
     cap: 5_000_000,
+    lovelace_per_call_cap: 0,
     lovelace_cap: 0,
   }
 }
@@ -217,7 +219,7 @@ test quantity_of_asset_reads_lovelace_and_tokens() {
 }
 
 test stays_within_scope_accepts_the_per_call_cap_exactly() {
-  stays_within_scope(token_scope(), leaving(2_000_000, 10))
+  stays_within_scope(token_scope(), leaving(1_000_000, 10))
 }
 
 test stays_within_scope_rejects_one_above_the_per_call_cap() {
@@ -229,11 +231,20 @@ test stays_within_scope_rejects_more_than_the_remaining_cap() {
   !stays_within_scope(nearly_spent, leaving(0, 6))
 }
 
-test stays_within_scope_rejects_lovelace_above_the_lovelace_cap() {
-  !stays_within_scope(token_scope(), leaving(2_000_001, 0))
+test stays_within_scope_accepts_the_lovelace_per_call_cap_exactly() {
+  stays_within_scope(token_scope(), leaving(1_000_000, 0))
 }
 
-test stays_within_scope_ignores_the_lovelace_cap_for_a_lovelace_scope() {
+test stays_within_scope_rejects_one_above_the_lovelace_per_call_cap() {
+  !stays_within_scope(token_scope(), leaving(1_000_001, 0))
+}
+
+test stays_within_scope_rejects_lovelace_above_the_remaining_lovelace_cap() {
+  let nearly_spent = Scope { ..token_scope(), lovelace_cap: 500_000 }
+  !stays_within_scope(nearly_spent, leaving(500_001, 0))
+}
+
+test stays_within_scope_ignores_the_lovelace_caps_for_a_lovelace_scope() {
   stays_within_scope(lovelace_scope(), assets.from_lovelace(3_000_000))
 }
 

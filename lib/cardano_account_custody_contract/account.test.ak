@@ -6,11 +6,11 @@ use cardano/certificate.{
 }
 use cardano/transaction.{DatumHash, Mint, NoDatum}
 use cardano_account_custody_contract/account.{
-  account_address, burns_state_nft, find_control_input, find_control_output,
-  has_control_input, holds_only_lovelace_and_state_nft, holds_state_nft,
-  is_authorised_by_a_device, is_control_output, is_valid_control_output,
-  own_input, registers_credential, registers_stake_credential, script_hash_of,
-  stake_script_hash_of, state_datum, state_nfts_sit_at_their_own_addresses,
+  account_address, find_control_input, find_control_output, has_control_input,
+  holds_only_lovelace_and_state_nft, holds_state_nft, is_authorised_by_a_device,
+  is_control_output, is_valid_control_output, own_input, registers_credential,
+  registers_stake_credential, script_hash_of, stake_script_hash_of, state_datum,
+  state_nfts_sit_at_their_own_addresses,
 }
 use cardano_account_custody_contract/test_helpers.{
   control_output, control_value, device_key, fund_output, input,
@@ -153,22 +153,6 @@ test holds_only_lovelace_and_state_nft_rejects_lovelace_alone() {
     script_hash,
     stake_script_hash,
   )
-}
-
-test burns_state_nft_accepts_a_burn_of_one() {
-  burns_state_nft(
-    assets.from_asset(script_hash, stake_script_hash, -1),
-    script_hash,
-    stake_script_hash,
-  )
-}
-
-test burns_state_nft_rejects_a_mint() {
-  !burns_state_nft(state_nft(stake_script_hash), script_hash, stake_script_hash)
-}
-
-test burns_state_nft_rejects_an_empty_mint() {
-  !burns_state_nft(assets.zero, script_hash, stake_script_hash)
 }
 
 test is_control_output_accepts_the_control_utxo() {

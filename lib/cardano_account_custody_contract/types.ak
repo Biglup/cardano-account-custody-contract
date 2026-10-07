@@ -20,8 +20,13 @@ pub type Asset {
 }
 
 /// The bounds of a grant: which asset it covers, how much of it may leave
-/// the account per call and in total, how much lovelace may leave with it,
-/// when it stops being usable, and which destinations it allows.
+/// the account per call and in total, how much lovelace may leave with it
+/// per call and in total, when it stops being usable, and which
+/// destinations it allows.
+///
+/// The fields are serialised as Plutus Data in the order they are declared:
+/// asset, per_call_cap, cap, lovelace_per_call_cap, lovelace_cap,
+/// expires_at, recipients.
 pub type Scope {
   /// The asset class this scope's caps apply to.
   asset: Asset,
@@ -31,10 +36,15 @@ pub type Scope {
   /// The most of `asset` that may leave the account over the grant's
   /// lifetime, reduced by what has already left.
   cap: Int,
-  /// The most lovelace that may leave the account alongside `asset`,
-  /// reduced by what has already left. Applies only when `asset` is not
-  /// lovelace; must be zero when `asset` is lovelace, since the asset cap
-  /// already covers lovelace in that case.
+  /// The most lovelace that may leave the account alongside `asset` in a
+  /// single transaction. Applies only when `asset` is not lovelace; must
+  /// be zero when `asset` is lovelace, since the asset caps already cover
+  /// lovelace in that case.
+  lovelace_per_call_cap: Int,
+  /// The most lovelace that may leave the account alongside `asset` over
+  /// the grant's lifetime, reduced by what has already left. Applies only
+  /// when `asset` is not lovelace; must be zero when `asset` is lovelace,
+  /// since the asset caps already cover lovelace in that case.
   lovelace_cap: Int,
   /// The POSIX time, in milliseconds, after which the grant can no longer
   /// be used. Must be greater than zero; there is no value that means the
@@ -81,11 +91,11 @@ pub type AccountRedeemer {
   Fund
 }
 
-/// The redeemer for the account validator's mint handler, which creates or
-/// retires the account's state NFT.
+/// The redeemer for the account validator's mint handler, which creates
+/// the account's state NFT. The NFT is never burned, so creation is the
+/// handler's only purpose and `CreateAccount` its only value.
 pub type MintRedeemer {
   CreateAccount
-  DeleteAccount
 }
 
 /// The redeemer for the account stake validator's withdraw and publish

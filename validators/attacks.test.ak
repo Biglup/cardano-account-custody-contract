@@ -26,8 +26,8 @@ use cardano_account_custody_contract/test_helpers.{
   stake_script_hash, state_datum, state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, CreateAccount, DeleteAccount, Device, Ed25519, Fund,
-  Grant, Operate, Scope, Secp256k1, SpendWithGrant,
+  AccountState, Asset, CreateAccount, Device, Ed25519, Fund, Grant, Operate,
+  Scope, Secp256k1, SpendWithGrant,
 }
 
 const expiry = 1_800_000_000_000
@@ -43,12 +43,12 @@ const grantee_key =
 /// The signature of `grantee_key` over `token_spend_transaction()`, the
 /// same fixture `account.test.ak` verifies, reused here to try replays.
 const token_spend_signature =
-  #"ea839a59b491a0f7560c2e0b3cf456b1618a21a414a69f3d184ee7fcbd9b961e23319a525e1f62746494c8cc0d12c51ced68ea2436e9394ade20648a1c0c06a7"
+  #"458c9beedd7570911e570fe17846a8f95e58bf83fd3a9bbde4f1cb5fcda0e62023a7a11b43447c5b68f2100d33c299c767715d8de53ef6e83a28f9a71e459109"
 
 /// The same signature with `s` replaced by `n - s`, the high s form that
 /// verifies under textbook ECDSA but that the secp256k1 builtin refuses.
 const high_s_token_spend_signature =
-  #"ea839a59b491a0f7560c2e0b3cf456b1618a21a414a69f3d184ee7fcbd9b961edcce65ada1e09d8b9b6b3733f2ed3ae1cd45f2c2785f66f0e1b1fa02b42a3a9a"
+  #"458c9beedd7570911e570fe17846a8f95e58bf83fd3a9bbde4f1cb5fcda0e620dc585ee4bcbb83a4970deff2cc3d6637533d7f58ca09a95385a964e5b1f0b038"
 
 fn attacker_address() -> Address {
   address.from_verification_key(attacker_key)
@@ -74,6 +74,7 @@ fn lovelace_scope() -> Scope {
     asset: lovelace_asset(),
     per_call_cap: 3_000_000,
     cap: 5_000_000,
+    lovelace_per_call_cap: 0,
     lovelace_cap: 0,
     expires_at: expiry,
     recipients: [],
@@ -85,6 +86,7 @@ fn token_scope() -> Scope {
     asset: token_asset(),
     per_call_cap: 10,
     cap: 50,
+    lovelace_per_call_cap: 2_000_000,
     lovelace_cap: 2_000_000,
     expires_at: expiry,
     recipients: [recipient_address()],
@@ -497,11 +499,11 @@ test attack_missing_utxo_authentication_lookalike_nft_from_another_policy() {
   !spend(None, Fund, 1, tx)
 }
 
-/// `DeleteAccount` is asked to burn a state NFT whose only input sits at a
-/// key address. The validator's invariant keeps the NFT away from such an
-/// address in the first place, and the mint handler demands the control
-/// input at the account address regardless.
-test attack_missing_utxo_authentication_delete_with_the_nft_at_a_key_address() {
+/// The mint handler is asked to burn a state NFT whose only input sits at
+/// a key address. The validator's invariant keeps the NFT away from such
+/// an address in the first place, and the mint handler refuses every burn
+/// regardless.
+test attack_missing_utxo_authentication_burn_with_the_nft_at_a_key_address() {
   let tx = transaction(
     [
       input(
@@ -514,7 +516,7 @@ test attack_missing_utxo_authentication_delete_with_the_nft_at_a_key_address() {
     [attacker_key],
     interval.everything,
   )
-  !mint(DeleteAccount, tx)
+  !mint(CreateAccount, tx)
 }
 
 /// The grantee recreates the control UTxO with an extra grant for
@@ -855,7 +857,7 @@ test attack_other_redeemer_grant_on_a_deposit_with_a_forged_state() {
   !spend(Some(forged), SpendWithGrant { slot: 0, signature: None }, 1, tx)
 }
 
-fn delete_account_with_the_control_spent_by_grant_transaction() -> Transaction {
+fn burn_with_the_control_spent_by_grant_transaction() -> Transaction {
   transaction(
     [input(0, control_output(granted_state(), 2_000_000))],
     [payout(2_000_000)],
@@ -865,31 +867,30 @@ fn delete_account_with_the_control_spent_by_grant_transaction() -> Transaction {
   )
 }
 
-/// The grantee tries to delete the account: the mint handler accepts,
-/// since it only asks that the control UTxO be spent.
-test attack_other_redeemer_delete_account_with_the_control_spent_by_grant_mint_accepts() {
-  mint(
-    DeleteAccount,
-    delete_account_with_the_control_spent_by_grant_transaction(),
-  )
+/// The grantee tries to retire the account by burning its state NFT: the
+/// mint handler refuses every burn, since no redeemer retires an account.
+test attack_other_redeemer_burn_with_the_control_spent_by_grant() {
+  !mint(CreateAccount, burn_with_the_control_spent_by_grant_transaction())
 }
 
 /// The control UTxO's own handler, on the agent path, aborts for lack of
 /// a control output; even with one, the remaining cap and carries_state
 /// checks would refuse it too, so the missing output is not the only
 /// refusal.
-test attack_other_redeemer_delete_account_with_the_control_spent_by_grant() fail {
+test attack_other_redeemer_grant_spend_with_the_state_nft_burned() fail {
   spend(
     Some(granted_state()),
     SpendWithGrant { slot: 0, signature: None },
     0,
-    delete_account_with_the_control_spent_by_grant_transaction(),
+    burn_with_the_control_spent_by_grant_transaction(),
   )
 }
 
-/// The mint redeemers are swapped: `CreateAccount` on a burn and
-/// `DeleteAccount` on a mint.
-test attack_other_redeemer_mint_redeemers_swapped() {
+/// `CreateAccount` is used on a burn with everything a creation needs
+/// beside it: the control UTxO spent, a device signing and the
+/// registration published. The only mint redeemer accepts nothing but a
+/// mint of one.
+test attack_other_redeemer_create_account_on_a_burn() {
   let burning = transaction(
     [input(0, control_output(state(), 2_000_000))],
     [payout(2_000_000)],
@@ -898,14 +899,7 @@ test attack_other_redeemer_mint_redeemers_swapped() {
     interval.everything,
   )
     |> publishing(registration(stake_script_hash))
-  let minting = transaction(
-    [input(0, control_output(state(), 2_000_000))],
-    [control_output(state(), 2_000_000)],
-    state_nft(stake_script_hash),
-    [device_key],
-    interval.everything,
-  )
-  !mint(CreateAccount, burning) && !mint(DeleteAccount, minting)
+  !mint(CreateAccount, burning)
 }
 
 /// The grantee pays exactly the per call cap to the recipient and lets
@@ -978,6 +972,39 @@ test attack_missed_input_validation_token_grant_leaks_a_sibling_asset_name() {
   !spend(Some(with_sibling), SpendWithGrant { slot: 2, signature: None }, 0, tx)
 }
 
+/// A token grant allows 2 ADA of lovelace over its lifetime but only 1 ADA
+/// per call. The grantee moves 10 tokens with the whole 2 ADA in one
+/// transaction, within the remaining lovelace cap but above the lovelace
+/// per call cap.
+test attack_missed_input_validation_token_grant_burns_its_lovelace_budget_in_one_call() {
+  let metered = AccountState {
+    ..granted_state(),
+    grants: [
+      Grant {
+        slot: 2,
+        grantee: Ed25519(stranger_key),
+        scope: Scope { ..token_scope(), lovelace_per_call_cap: 1_000_000 },
+      },
+    ],
+  }
+  let tx = transaction(
+    [input(0, control_output(metered, 2_000_000)), treasury_input()],
+    [
+      control_output(with_caps(metered, 2, 40, 0), 2_000_000),
+      fund_output(assets.merge(assets.from_lovelace(8_000_000), token(10))),
+      output(
+        recipient_address(),
+        assets.merge(assets.from_lovelace(2_000_000), token(10)),
+        NoDatum,
+      ),
+    ],
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+  !spend(Some(metered), SpendWithGrant { slot: 2, signature: None }, 0, tx)
+}
+
 /// The grantee pays part of a spend within the per call cap to the bare
 /// script address, without the stake part. That address is not the
 /// account, so the lovelace counts as leaving and the destination must be
@@ -1005,8 +1032,9 @@ test attack_missed_input_validation_change_to_the_bare_script_address() {
 }
 
 /// The owner path is asked to store a grant with a negative cap, a grant
-/// with no expiry, a lovelace grant with a separate lovelace cap, and two
-/// grants in one slot. Every one of them fails well formedness.
+/// with no expiry, a lovelace grant with a separate lovelace cap or
+/// lovelace per call cap, and two grants in one slot. Every one of them
+/// fails well formedness.
 test attack_missed_input_validation_ill_formed_grants_on_a_device_rewrite() {
   let grant = Grant {
     slot: 0,
@@ -1017,6 +1045,12 @@ test attack_missed_input_validation_ill_formed_grants_on_a_device_rewrite() {
     [Grant { ..grant, scope: Scope { ..lovelace_scope(), cap: -1 } }],
     [Grant { ..grant, scope: Scope { ..lovelace_scope(), expires_at: 0 } }],
     [Grant { ..grant, scope: Scope { ..lovelace_scope(), lovelace_cap: 1 } }],
+    [
+      Grant {
+        ..grant,
+        scope: Scope { ..lovelace_scope(), lovelace_per_call_cap: 1 },
+      },
+    ],
     [grant, Grant { ..grant, scope: token_scope() }],
   ]
   list.all(
@@ -1641,16 +1675,16 @@ fn largest_state_secp256k1_transaction() -> Transaction {
 
 /// The signature of `grantee_key` over the grantee message of
 /// `largest_state_secp256k1_transaction()`, the blake2b-256 digest
-/// a70a83bc078817eefd2e7c4909aef817fa9b296620b778deb0504ed0d23e6cdd, produced with @noble/curves
+/// 9f4ad0cb41dd92e55885799d7ad9afc24bbbf8f7d684e8560d60fb207323e207, produced with @noble/curves
 /// `secp256k1.sign(message, key)`.
 const largest_state_secp256k1_signature =
-  #"442503f3a367e26c6a593aa0dbf613414b313fe7df2f48ac6ea4dc432241d71a08daee95a22286fdc6d08be95a2b2c9b2c8c1d89d61abc00ad2b001333967d79"
+  #"fc864214371f324258ee40ee4435980ad53f96932f8bf65e5ab96afeed30697b24f1f8ca13a1b22be0a6f798f4f7f20e922975c8260d2e37b1cf551963de8065"
 
 test budget_largest_state_grantee_message_matches_the_signed_digest() {
   grant.grantee_message(
     output_reference(0),
     largest_state_secp256k1_transaction(),
-  ) == #"a70a83bc078817eefd2e7c4909aef817fa9b296620b778deb0504ed0d23e6cdd"
+  ) == #"9f4ad0cb41dd92e55885799d7ad9afc24bbbf8f7d684e8560d60fb207323e207"
 }
 
 test budget_largest_state_grant_spend_secp256k1() {

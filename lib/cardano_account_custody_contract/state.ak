@@ -18,18 +18,23 @@ pub fn is_lovelace(asset: Asset) -> Bool {
 
 /// Whether a scope obeys the account's bounds: non-negative caps, a
 /// strictly positive expiry timestamp, a bounded recipient list, and no
-/// separate lovelace cap when the scope's own asset is lovelace.
+/// separate lovelace caps when the scope's own asset is lovelace.
 pub fn is_scope_well_formed(scope: Scope) -> Bool {
-  let caps_ok = scope.per_call_cap >= 0 && scope.cap >= 0 && scope.lovelace_cap >= 0
+  let caps_ok = and {
+    scope.per_call_cap >= 0,
+    scope.cap >= 0,
+    scope.lovelace_per_call_cap >= 0,
+    scope.lovelace_cap >= 0,
+  }
   let expiry_ok = scope.expires_at > 0
   let recipients_ok = list.length(scope.recipients) <= max_recipients
-  let lovelace_cap_ok = if is_lovelace(scope.asset) {
-    scope.lovelace_cap == 0
+  let lovelace_caps_ok = if is_lovelace(scope.asset) {
+    scope.lovelace_per_call_cap == 0 && scope.lovelace_cap == 0
   } else {
     True
   }
 
-  caps_ok && expiry_ok && recipients_ok && lovelace_cap_ok
+  caps_ok && expiry_ok && recipients_ok && lovelace_caps_ok
 }
 
 /// Whether a grant's own scope is well formed. Uniqueness of slots across

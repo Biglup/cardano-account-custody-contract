@@ -3,7 +3,7 @@ use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use cardano/address.{Credential, Script}
 use cardano/certificate.{
   Certificate, DelegateCredential, RegisterAndDelegateCredential,
-  RegisterCredential, UnregisterCredential,
+  RegisterCredential,
 }
 use cardano/transaction.{Transaction}
 use cardano_account_custody_contract/account as custody
@@ -21,18 +21,20 @@ use cardano_account_custody_contract/types.{StakeRedeemer}
 /// certificate registering it, alone or together with a delegation, is the
 /// act that creates the account, before any control UTxO exists, so it
 /// requires the owner's signature; the account validator in turn accepts
-/// `CreateAccount` only alongside such a certificate. Every other
-/// certificate naming the credential, a deregistration or a delegation
-/// change, requires a device of the account: the account's control UTxO
-/// must be spent or referenced by the transaction and one of the devices
-/// in its state must sign. Certificates of any other kind, such as those
-/// registering a delegate representative under the credential, are
-/// refused.
+/// `CreateAccount` only alongside such a certificate. A delegation change
+/// requires a device of the account: the account's control UTxO must be
+/// spent or referenced by the transaction and one of the devices in its
+/// state must sign. A deregistration is refused outright, with or without
+/// a device: the credential stays registered for the life of the account,
+/// which keeps the account permanent, since a second registration, and
+/// with it a second control UTxO, is only possible after a deregistration.
+/// Certificates of any other kind, such as those registering a delegate
+/// representative under the credential, are refused.
 ///
 /// The withdraw handler runs on every withdrawal from the credential's
 /// reward account, of any amount including zero, and applies the same
-/// device rule, so rewards stay reachable through any device for as long
-/// as the account exists.
+/// device rule, so rewards stay reachable through any device for the life
+/// of the account.
 validator account_stake(owner: VerificationKeyHash, account_hash: ScriptHash) {
   withdraw(_redeemer: StakeRedeemer, credential: Credential, self: Transaction) {
     expect Script(stake_script_hash) = credential
@@ -45,8 +47,6 @@ validator account_stake(owner: VerificationKeyHash, account_hash: ScriptHash) {
         list.has(self.extra_signatories, owner)
       RegisterAndDelegateCredential { credential: Script(_), .. } ->
         list.has(self.extra_signatories, owner)
-      UnregisterCredential { credential: Script(stake_script_hash), .. } ->
-        is_authorised_by_a_device(self, account_hash, stake_script_hash)
       DelegateCredential { credential: Script(stake_script_hash), .. } ->
         is_authorised_by_a_device(self, account_hash, stake_script_hash)
       _ -> False

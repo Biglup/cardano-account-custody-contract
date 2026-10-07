@@ -15,8 +15,8 @@ use cardano_account_custody_contract/test_helpers.{
   stake_script_hash, state_datum, state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, CreateAccount, DeleteAccount, Device, Ed25519, Fund,
-  Grant, Scope, Secp256k1, SpendWithGrant,
+  AccountState, Asset, CreateAccount, Device, Ed25519, Fund, Grant, Scope,
+  Secp256k1, SpendWithGrant,
 }
 
 fn state() -> AccountState {
@@ -31,6 +31,7 @@ fn rewritten_state() -> AccountState {
     },
     per_call_cap: 1_000_000,
     cap: 5_000_000,
+    lovelace_per_call_cap: 0,
     lovelace_cap: 0,
     expires_at: 1_800_000_000_000,
     recipients: [recipient_address()],
@@ -383,67 +384,23 @@ test create_account_rejects_a_state_nft_sent_to_another_accounts_address() {
   )
 }
 
-test delete_account_burns_the_state_nft_spent_from_the_control_utxo() {
-  mint(
-    DeleteAccount,
-    [control_input()],
-    [payout(2_000_000)],
-    burn(),
-    [device_key],
-  )
+/// `CreateAccount` is the mint handler's only redeemer, so this refuses a
+/// burn under every redeemer, even when the control UTxO holding the NFT
+/// is spent, a device signs and the registration is published.
+test mint_rejects_a_burn_of_the_state_nft_from_the_control_utxo() {
+  let tx = Transaction {
+    ..creation([payout(2_000_000)], burn(), [device_key]),
+    inputs: [control_input()],
+  }
+  !account.account.mint(CreateAccount, script_hash, tx)
 }
 
-test delete_account_rejects_a_burn_without_the_control_input() {
+test mint_rejects_a_burn_of_two() {
   !mint(
-    DeleteAccount,
-    [fund_input()],
-    [payout(2_000_000)],
-    burn(),
-    [device_key],
-  )
-}
-
-test delete_account_rejects_a_control_input_at_another_stake_credential() {
-  let misplaced = input(
-    0,
-    output(
-      other_account_address(),
-      control_value(stake_script_hash, 2_000_000),
-      state_datum(state()),
-    ),
-  )
-  !mint(DeleteAccount, [misplaced], [payout(2_000_000)], burn(), [device_key])
-}
-
-test delete_account_rejects_a_burn_of_two() {
-  !mint(
-    DeleteAccount,
+    CreateAccount,
     [control_input()],
     [],
     assets.from_asset(script_hash, stake_script_hash, -2),
-    [device_key],
-  )
-}
-
-test delete_account_rejects_a_mint() {
-  !mint(
-    DeleteAccount,
-    [control_input()],
-    [control_output(state(), 2_000_000)],
-    state_nft(stake_script_hash),
-    [device_key],
-  )
-}
-
-test delete_account_rejects_a_burn_beside_another_name() fail {
-  mint(
-    DeleteAccount,
-    [control_input()],
-    [],
-    assets.merge(
-      burn(),
-      assets.from_asset(script_hash, other_stake_script_hash, -1),
-    ),
     [device_key],
   )
 }
@@ -833,7 +790,7 @@ test device_rejects_an_input_without_the_state_nft() {
   )
 }
 
-test device_deletes_the_account_when_the_state_nft_is_burned() {
+test device_rejects_a_missing_control_output_even_when_the_state_nft_is_burned() fail {
   spend(
     Some(state()),
     Device,
@@ -841,30 +798,6 @@ test device_deletes_the_account_when_the_state_nft_is_burned() {
     [control_input(), fund_input()],
     [payout(12_000_000)],
     burn(),
-    [device_key],
-  )
-}
-
-test device_rejects_a_delete_without_a_device_signature() {
-  !spend(
-    Some(state()),
-    Device,
-    0,
-    [control_input()],
-    [payout(2_000_000)],
-    burn(),
-    [stranger_key],
-  )
-}
-
-test device_rejects_a_burn_of_two_without_a_control_output() fail {
-  spend(
-    Some(state()),
-    Device,
-    0,
-    [control_input()],
-    [payout(2_000_000)],
-    assets.from_asset(script_hash, stake_script_hash, -2),
     [device_key],
   )
 }
@@ -896,6 +829,7 @@ fn lovelace_scope() -> Scope {
     },
     per_call_cap: 3_000_000,
     cap: 5_000_000,
+    lovelace_per_call_cap: 0,
     lovelace_cap: 0,
     expires_at: expiry,
     recipients: [],
@@ -907,6 +841,7 @@ fn token_scope() -> Scope {
     asset: token_asset(),
     per_call_cap: 10,
     cap: 50,
+    lovelace_per_call_cap: 2_000_000,
     lovelace_cap: 2_000_000,
     expires_at: expiry,
     recipients: [recipient_address()],
@@ -1022,11 +957,11 @@ fn token_spend_transaction(outputs: List<Output>) -> transaction.Transaction {
 /// The 64 byte r||s secp256k1 ECDSA signature of `grantee_key` over the
 /// grantee message of `token_spend_transaction(token_spend_outputs())`,
 /// which is the blake2b-256 digest
-/// f712bbf54a26a49693ef5795de521955a7a2c20888fc810d632948d010c40cba.
+/// 6dd02289da072e592819dfb12761db2839f8eb3e03c2eb91a332e803f72d0362.
 /// Produced once with @noble/curves `secp256k1.sign(message, key)`, which
 /// signs the given digest as is and yields a low s signature.
 const token_spend_signature =
-  #"ea839a59b491a0f7560c2e0b3cf456b1618a21a414a69f3d184ee7fcbd9b961e23319a525e1f62746494c8cc0d12c51ced68ea2436e9394ade20648a1c0c06a7"
+  #"458c9beedd7570911e570fe17846a8f95e58bf83fd3a9bbde4f1cb5fcda0e62023a7a11b43447c5b68f2100d33c299c767715d8de53ef6e83a28f9a71e459109"
 
 fn spend_token(outputs: List<Output>, signature: Option<ByteArray>) -> Bool {
   account.account.spend(
@@ -1038,17 +973,64 @@ fn spend_token(outputs: List<Output>, signature: Option<ByteArray>) -> Bool {
 }
 
 fn spend_token_as_ed25519(outputs: List<Output>) -> Bool {
+  spend_token_as_ed25519_from(token_granted_state(), outputs)
+}
+
+fn spend_token_as_ed25519_from(
+  state: AccountState,
+  outputs: List<Output>,
+) -> Bool {
   spend_within(
     interval.before(expiry - 1),
-    Some(token_granted_state()),
+    Some(state),
     SpendWithGrant { slot: 2, signature: None },
     0,
-    [
-      input(0, control_output(token_granted_state(), 2_000_000)),
-      treasury_input(),
-    ],
+    [input(0, control_output(state, 2_000_000)), treasury_input()],
     outputs,
     [stranger_key],
+  )
+}
+
+/// The token granted state with slot 2's lovelace per call cap lowered
+/// below its lovelace cap, so that the two lovelace rules can be told
+/// apart.
+fn metered_state() -> AccountState {
+  AccountState {
+    ..granted_state(),
+    grants: list.concat(
+      granted_state().grants,
+      [
+        Grant {
+          slot: 2,
+          grantee: Ed25519(stranger_key),
+          scope: Scope { ..token_scope(), lovelace_per_call_cap: 1_000_000 },
+        },
+      ],
+    ),
+  }
+}
+
+/// Spends 10 tokens and `lovelace` to the recipient through slot 2 of
+/// `state`, handing back a control output whose slot 2 keeps
+/// `lovelace_cap` as its remaining lovelace cap.
+fn spend_token_lovelace_from(
+  state: AccountState,
+  lovelace: Int,
+  lovelace_cap: Int,
+) -> Bool {
+  spend_token_as_ed25519_from(
+    state,
+    [
+      control_output(with_caps(state, 2, 40, lovelace_cap), 2_000_000),
+      change(
+        assets.merge(assets.from_lovelace(10_000_000 - lovelace), token(10)),
+      ),
+      output(
+        recipient_address(),
+        assets.merge(assets.from_lovelace(lovelace), token(10)),
+        NoDatum,
+      ),
+    ],
   )
 }
 
@@ -1074,7 +1056,7 @@ test grantee_message_of_the_fixture_transaction_matches_the_signed_digest() {
   grant.grantee_message(
     output_reference(0),
     token_spend_transaction(token_spend_outputs()),
-  ) == #"f712bbf54a26a49693ef5795de521955a7a2c20888fc810d632948d010c40cba"
+  ) == #"6dd02289da072e592819dfb12761db2839f8eb3e03c2eb91a332e803f72d0362"
 }
 
 test spend_with_grant_ed25519_grantee_spends_within_scope() {
@@ -1129,10 +1111,17 @@ test spend_with_grant_ed25519_grantee_spends_a_token_scope() {
   )
 }
 
-test spend_with_grant_rejects_lovelace_above_the_lovelace_cap_on_a_token_grant() {
-  !spend_token_as_ed25519(
-    ed25519_token_spend_outputs(2_000_001, recipient_address()),
-  )
+test spend_with_grant_accepts_lovelace_exactly_at_the_lovelace_per_call_cap() {
+  spend_token_lovelace_from(metered_state(), 1_000_000, 1_000_000)
+}
+
+test spend_with_grant_rejects_one_lovelace_above_the_lovelace_per_call_cap() {
+  !spend_token_lovelace_from(metered_state(), 1_000_001, 999_999)
+}
+
+test spend_with_grant_rejects_lovelace_above_the_remaining_lovelace_cap_on_a_token_grant() {
+  let nearly_spent = with_caps(token_granted_state(), 2, 50, 1_000_000)
+  !spend_token_lovelace_from(nearly_spent, 1_000_001, -1)
 }
 
 test spend_with_grant_rejects_a_foreign_asset_leaving() {

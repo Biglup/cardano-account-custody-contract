@@ -124,14 +124,22 @@ pub fn quantity_of_asset(value: Assets, asset: Asset) -> Int {
 
 /// Whether a value leaving the account stays within a scope: no more of
 /// the scoped asset than the per call cap and the remaining cap, no more
-/// lovelace than the remaining lovelace cap when the scoped asset is not
-/// lovelace itself, and nothing at all of any other asset class.
+/// lovelace than the lovelace per call cap and the remaining lovelace cap
+/// when the scoped asset is not lovelace itself, and nothing at all of any
+/// other asset class.
 pub fn stays_within_scope(scope: Scope, leaving: Assets) -> Bool {
   let asset_leaving = quantity_of_asset(leaving, scope.asset)
+  let lovelace_leaving = assets.lovelace_of(leaving)
   and {
     asset_leaving <= scope.per_call_cap,
     asset_leaving <= scope.cap,
-    state.is_lovelace(scope.asset) || assets.lovelace_of(leaving) <= scope.lovelace_cap,
+    or {
+      state.is_lovelace(scope.asset),
+      and {
+        lovelace_leaving <= scope.lovelace_per_call_cap,
+        lovelace_leaving <= scope.lovelace_cap,
+      },
+    },
     nothing_else_leaves(leaving, scope.asset),
   }
 }
@@ -233,6 +241,7 @@ pub fn state_after_spend(
 /// A scope with its remaining caps reduced by a leaving value: each cap
 /// loses the net outflow of its asset, clamped at zero, so a deposit made
 /// alongside the spend never raises a cap above what the owner granted.
+/// The per call caps bound single transactions and never change.
 fn scope_after_spend(scope: Scope, leaving: Assets) -> Scope {
   let lovelace_cap = if state.is_lovelace(scope.asset) {
     scope.lovelace_cap

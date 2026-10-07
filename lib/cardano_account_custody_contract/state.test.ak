@@ -33,6 +33,7 @@ fn valid_scope() -> Scope {
     asset: other_asset(),
     per_call_cap: 100,
     cap: 1_000,
+    lovelace_per_call_cap: 250,
     lovelace_cap: 500,
     expires_at: 2_000_000_000_000,
     recipients: [],
@@ -100,6 +101,7 @@ test is_well_formed_accepts_zero_caps_for_a_non_lovelace_asset() {
     ..valid_scope(),
     per_call_cap: 0,
     cap: 0,
+    lovelace_per_call_cap: 0,
     lovelace_cap: 0,
   }
   let grant = Grant { ..valid_grant(0), scope }
@@ -116,6 +118,13 @@ test is_well_formed_rejects_a_negative_per_call_cap() {
 
 test is_well_formed_rejects_a_negative_cap() {
   let scope = Scope { ..valid_scope(), cap: -1 }
+  let grant = Grant { ..valid_grant(0), scope }
+  let state = AccountState { ..valid_state(), grants: [grant] }
+  !is_well_formed(state)
+}
+
+test is_well_formed_rejects_a_negative_lovelace_per_call_cap() {
+  let scope = Scope { ..valid_scope(), lovelace_per_call_cap: -1 }
   let grant = Grant { ..valid_grant(0), scope }
   let state = AccountState { ..valid_state(), grants: [grant] }
   !is_well_formed(state)
@@ -156,15 +165,37 @@ test is_well_formed_rejects_nine_recipients() {
   !is_well_formed(state)
 }
 
-test is_well_formed_rejects_lovelace_with_a_non_zero_lovelace_cap() {
-  let scope = Scope { ..valid_scope(), asset: lovelace(), lovelace_cap: 1 }
+test is_well_formed_rejects_lovelace_with_a_non_zero_lovelace_per_call_cap() {
+  let scope = Scope {
+    ..valid_scope(),
+    asset: lovelace(),
+    lovelace_per_call_cap: 1,
+    lovelace_cap: 0,
+  }
   let grant = Grant { ..valid_grant(0), scope }
   let state = AccountState { ..valid_state(), grants: [grant] }
   !is_well_formed(state)
 }
 
-test is_well_formed_accepts_lovelace_with_a_zero_lovelace_cap() {
-  let scope = Scope { ..valid_scope(), asset: lovelace(), lovelace_cap: 0 }
+test is_well_formed_rejects_lovelace_with_a_non_zero_lovelace_cap() {
+  let scope = Scope {
+    ..valid_scope(),
+    asset: lovelace(),
+    lovelace_per_call_cap: 0,
+    lovelace_cap: 1,
+  }
+  let grant = Grant { ..valid_grant(0), scope }
+  let state = AccountState { ..valid_state(), grants: [grant] }
+  !is_well_formed(state)
+}
+
+test is_well_formed_accepts_lovelace_with_zero_lovelace_caps() {
+  let scope = Scope {
+    ..valid_scope(),
+    asset: lovelace(),
+    lovelace_per_call_cap: 0,
+    lovelace_cap: 0,
+  }
   let grant = Grant { ..valid_grant(0), scope }
   let state = AccountState { ..valid_state(), grants: [grant] }
   is_well_formed(state)

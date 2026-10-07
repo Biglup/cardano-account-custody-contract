@@ -12,8 +12,8 @@ use cardano_account_custody_contract/grant.{
 }
 use cardano_account_custody_contract/state.{find_grant}
 use cardano_account_custody_contract/types.{
-  AccountRedeemer, AccountState, CreateAccount, DeleteAccount, Device, Fund,
-  MintRedeemer, SpendWithGrant,
+  AccountRedeemer, AccountState, CreateAccount, Device, Fund, MintRedeemer,
+  SpendWithGrant,
 }
 
 /// The account's multi-purpose validator. Its script hash is both the
@@ -25,22 +25,24 @@ use cardano_account_custody_contract/types.{
 /// script, the parameterised `account_stake` validator, and that hash
 /// names the account's state NFT. The ledger registers a stake credential
 /// at most once: a second registration of a registered credential is
-/// refused outright, and only the stake script, under its own rules, can
-/// deregister it. Account creation is tied to that registration, so an
-/// account can be created exactly once for as long as its stake credential
-/// stays registered, and no key can mint a parallel control UTxO behind
-/// the devices' backs.
+/// refused outright, and the stake script refuses every deregistration, so
+/// the credential stays registered for the life of the account. Account
+/// creation is tied to that registration, so an account is created exactly
+/// once, and no key can mint a parallel control UTxO behind the devices'
+/// backs.
 ///
-/// The mint handler creates and retires accounts. `CreateAccount` mints
-/// exactly one state NFT named after the user's stake credential and
-/// requires that the transaction runs the account stake script on a
-/// certificate registering that credential, which is how the owner
-/// authorises the creation, and that the NFT lands in a single control
-/// output at the user's account address holding only lovelace, the NFT and
-/// a well formed inline `AccountState`. `DeleteAccount` burns exactly one
-/// state NFT and requires that the control UTxO holding it is spent in the
-/// same transaction; since that UTxO sits at the account address, the
-/// spend handler runs on it and demands a device signature.
+/// An account is permanent. The mint handler only creates accounts:
+/// `CreateAccount` mints exactly one state NFT named after the user's
+/// stake credential and requires that the transaction runs the account
+/// stake script on a certificate registering that credential, which is how
+/// the owner authorises the creation, and that the NFT lands in a single
+/// control output at the user's account address holding only lovelace, the
+/// NFT and a well formed inline `AccountState`. No redeemer burns a state
+/// NFT, and every spend of the control UTxO recreates it, so from creation
+/// on exactly one control UTxO of the account exists at all times. That
+/// invariant is what keeps every fund UTxO spendable: a deposit can only
+/// leave alongside the control UTxO, and the control UTxO is always there
+/// to spend.
 ///
 /// The spend handler guards every UTxO at an account address, with the
 /// account identified by the stake credential of the UTxO's own address.
@@ -50,16 +52,17 @@ use cardano_account_custody_contract/types.{
 /// none, since the datum is never read on this path. `Device` is the owner
 /// path: the control UTxO's datum must decode as an `AccountState`, and
 /// with a device signature the UTxO may be spent freely, as long as the
-/// state NFT is either burned or recreated in a single control output
-/// carrying only lovelace, the NFT and a well formed state.
+/// state NFT is recreated in a single control output carrying only
+/// lovelace, the NFT and a well formed state.
 /// `SpendWithGrant` is the agent path: the grant in the named slot must
 /// exist, its grantee must authorise the transaction, either as a required
 /// signer for an Ed25519 grantee or through a secp256k1 signature over the
 /// transaction for a Secp256k1 grantee, and the transaction must stay
 /// within the grant's scope: it ends before the grant expires, the value
 /// leaving the account address stays within the per call cap, the
-/// remaining cap and the remaining lovelace cap, nothing of any other asset
-/// leaves, every output away from the account goes to an allowed
+/// remaining cap, the lovelace per call cap and the remaining lovelace
+/// cap, nothing of any other asset leaves, every output away from the
+/// account goes to an allowed
 /// recipient, every output paid back to the account other than the control
 /// output is a plain deposit with no datum, so the balance can never be
 /// parked under a datum hash nobody can spend, and the single control
@@ -72,12 +75,12 @@ use cardano_account_custody_contract/types.{
 ///
 /// The validator maintains one invariant about its tokens: a state NFT
 /// named N only ever sits at the account address of N, in exactly one
-/// control UTxO, or is burned. Account creation and every device spend
-/// check every output of the transaction for it, so a token of the account
-/// policy can never reach a key address, an enterprise script address or
-/// the address of another account, not even at the owner's request, and
-/// the account whose NFT is spent always demands a single control output
-/// at its own address. A device spend checks the spent UTxOs the same way,
+/// control UTxO. Account creation and every device spend check every
+/// output of the transaction for it, so a token of the account policy can
+/// never reach a key address, an enterprise script address or the address
+/// of another account, not even at the owner's request, and the account
+/// whose NFT is spent always demands a single control output at its own
+/// address. A device spend checks the spent UTxOs the same way,
 /// so an account never takes part in a transaction that spends a token of
 /// the policy sitting away from its own address, and such a token could
 /// never be turned back into a control UTxO. Since the ledger only moves a
@@ -104,8 +107,6 @@ validator account {
           custody.state_nfts_sit_at_their_own_addresses(self.outputs, policy_id),
         }
       }
-      (DeleteAccount, -1) ->
-        custody.has_control_input(self.inputs, policy_id, stake_script_hash)
       _ -> False
     }
   }
@@ -146,14 +147,7 @@ validator account {
             self.outputs,
             script_hash,
           ),
-          or {
-            custody.burns_state_nft(self.mint, script_hash, stake_script_hash),
-            recreates_control_output(
-              self.outputs,
-              script_hash,
-              stake_script_hash,
-            ),
-          },
+          recreates_control_output(self.outputs, script_hash, stake_script_hash),
         }
       }
       SpendWithGrant { slot, signature } -> {
