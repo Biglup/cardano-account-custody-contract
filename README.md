@@ -490,14 +490,27 @@ surface.
   `revokeAllGrants`, `withdrawRewards`, `delegateStake` and
   `spendWithGrant`, with the datum and redeemer encoders in `data.ts` and
   the state helpers in `state.ts`. There is no delete.
-- Sponsor. Every builder accepts an optional `sponsor` wallet that pays
-  the fee, the collateral, the growth of the control output and, at
-  creation, the control UTxO and the registration deposit, and receives
-  the change, so the device wallet only signs. Without a sponsor an owner
-  operation is paid from the account's own fund UTxOs, with the fee
-  reserved at the most a transaction can cost and the surplus returned to
-  the account as change. Creation without a sponsor is paid by the device
-  wallet, since there is no account to pay from yet.
+- Sponsor. Every builder but `spendWithGrant` accepts an optional
+  `sponsor` wallet that pays the fee, the collateral, the growth of the
+  control output and, at creation, the control UTxO and the registration
+  deposit, and receives the change, so the device wallet only signs.
+  Without a sponsor an owner operation is paid from the account's own
+  fund UTxOs, with the fee reserved at the most a transaction can cost
+  and the surplus returned to the account as change. Creation without a
+  sponsor is paid by the device wallet, since there is no account to pay
+  from yet. A grant spend is always paid from the account and refuses a
+  `sponsor`; the collateral wallet below is its one option.
+- Collateral wallet. The builders of operations on an existing account,
+  owner operations, stake operations and grant spends, also accept an
+  optional `collateral` wallet in place of a sponsor: the account pays
+  the outputs, the fee and the control output's growth from its own fund
+  UTxOs, the collateral and its return come from that wallet, and the
+  transaction spends none of its UTxOs, so the device or agent wallet
+  only signs. Use `sponsor` when another wallet is to pay for the
+  transaction, as at creation, and `collateral` when the account can pay
+  for itself and only the collateral has to come from elsewhere, as it
+  does for a wallet that holds no ADA of its own; the two cannot be given
+  together, and the grant path takes `collateral` only.
 - Stake operations. `withdrawRewards` and `delegateStake` are device
   spends: they spend the control UTxO with `Device`, recreate it with the
   same state, and add the withdrawal or the certificate with the `Operate`
@@ -505,10 +518,11 @@ surface.
   defaults to the provider's reward balance, which may be zero.
 - Fixed budgets. A grant spend never runs the validator to measure its
   cost, because the recreated state depends on the fee and the fee depends
-  on the execution units. `fixedBudgetEvaluator` assigns 4 million memory
-  units and 2 billion steps to the control UTxO's spend and 500 thousand
-  memory units and 200 million steps to each fund UTxO, overridable through
-  `executionUnits`. Overpaying the actual cost this way costs a few hundred
+  on the execution units. `fixedBudgetEvaluator` assigns 7 million memory
+  units and 3.5 billion steps to the control UTxO's spend, which covers
+  the largest state the security review measures with margin, and 500
+  thousand memory units and 200 million steps to each fund UTxO,
+  overridable through `executionUnits`. Overpaying the actual cost this way costs a few hundred
   thousand lovelace of fee per grant spend. Since the account pays its own
   fee, the fee counts against the grant's caps alongside the payout: a
   lovelace grant is charged on `per_call_cap` and `cap`, a token grant on
@@ -516,7 +530,7 @@ surface.
   per call cap with the fee included, and the transaction is rebuilt until
   the state it carries matches the value that actually leaves.
 - The fund UTxO ceiling. The fixed fund budget bounds how many fund UTxOs
-  one grant spend can sweep: at the defaults, about 20 before the
+  one grant spend can sweep: at the defaults, about 14 before the
   transaction's 14 million memory unit ceiling is reached. An account that
   expects agent spends should be kept to a handful of fund UTxOs between
   owner steps; `spendWithDevice` can consolidate them. On the agent path
@@ -641,7 +655,7 @@ semantics in the validator.
   and when creation fails with an already registered credential move on to
   the next owner key.
 - A grant spend assumes a fixed execution budget instead of measuring the
-  real one, so the defaults sweep at most about 20 fund UTxOs per spend and
+  real one, so the defaults sweep at most about 14 fund UTxOs per spend and
   overpay the fee by a few hundred thousand lovelace, charged against the
   grant's caps, which must be sized with that margin; see
   [Off-chain library](#off-chain-library).
@@ -676,8 +690,8 @@ to another transaction builder must be able to:
 - Size the control output's lovelace to the minimum UTxO value as the
   datum grows.
 - Return change to the account address with no datum.
-- Spend only account UTxOs on the grant path, with the agent's wallet used
-  for collateral alone.
+- Spend only account UTxOs on the grant path, with the agent's wallet, or
+  a collateral wallet standing in for it, used for collateral alone.
 - Read the inputs, outputs and fee of a built transaction back, to rebuild
   a grant spend until its state matches what leaves.
 

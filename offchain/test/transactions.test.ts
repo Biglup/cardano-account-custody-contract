@@ -67,7 +67,9 @@ interface InspectedTx {
     ttl?: string;
     mint?: { script_hash: string; assets: Record<string, string> }[];
     required_signers?: string[];
-    collateral?: unknown[];
+    collateral?: { transaction_id: string; index: number }[];
+    collateral_return?: { address: string; amount: { coin: string } };
+    total_collateral?: string;
     certs?: { tag: string; credential: { tag: string; value: string }; coin?: string; pool_keyhash?: string }[];
     withdrawals?: { key: string; value: string }[];
     reference_inputs?: { transaction_id: string; index: number }[];
@@ -512,6 +514,95 @@ describe('stake operations', () => {
   });
 });
 
+describe('collateral wallet', () => {
+  const funds = () => [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })];
+  const grant = { slot: 3n, grantee: AGENT_PAYMENT_KEY, scope: lovelaceScope([recipientAddress]) };
+  const payout = { address: recipientAddress, value: { coins: 3_000_000n } };
+
+  /** Every builder that takes a collateral wallet, with the state it starts from, the wallet that signs and the lovelace it pays away. */
+  const builders: { name: string; state: typeof grantedState; signer: 'owner' | 'agent'; paid: bigint; build: (params: ReturnType<typeof paramsOf>) => Promise<string> }[] = [
+    { name: 'spendWithDevice', state: initialState, signer: 'owner', paid: 3_000_000n, build: (params) => spendWithDevice({ ...params, outputs: [payout] }) },
+    { name: 'rewriteState', state: grantedState, signer: 'owner', paid: 0n, build: (params) => rewriteState({ ...params, newState: { ...grantedState, grantGeneration: 7n } }) },
+    { name: 'addDevice', state: initialState, signer: 'owner', paid: 0n, build: (params) => addDevice({ ...params, device: OTHER_DEVICE_KEY }) },
+    { name: 'removeDevice', state: stateWithDevice(initialState, OTHER_DEVICE_KEY), signer: 'owner', paid: 0n, build: (params) => removeDevice({ ...params, device: OTHER_DEVICE_KEY }) },
+    { name: 'issueGrant', state: initialState, signer: 'owner', paid: 0n, build: (params) => issueGrant({ ...params, grant }) },
+    { name: 'revokeGrant', state: grantedState, signer: 'owner', paid: 0n, build: (params) => revokeGrant({ ...params, slot: 0n }) },
+    { name: 'revokeAllGrants', state: grantedState, signer: 'owner', paid: 0n, build: (params) => revokeAllGrants(params) },
+    { name: 'withdrawRewards', state: initialState, signer: 'owner', paid: 0n, build: (params) => withdrawRewards({ ...params, amount: 0n }) },
+    { name: 'delegateStake', state: initialState, signer: 'owner', paid: 0n, build: (params) => delegateStake({ ...params, poolId: POOL_ID }) },
+    {
+      name: 'spendWithGrant',
+      state: grantedState,
+      signer: 'agent',
+      paid: 3_000_000n,
+      build: (params) => spendWithGrant({ ...params, slot: 0n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT }),
+    },
+  ];
+
+  /** The parameters of a builder over a fresh scenario: the signing wallet, the sponsor wallet as the collateral wallet and the account by its owner. */
+  const paramsOf = (state: typeof grantedState, signer: 'owner' | 'agent') => {
+    const scene = scenario(state, funds());
+    return { wallet: scene[signer], collateral: scene.sponsor, provider: scene.provider, owner: OWNER_PAYMENT_KEY, script, scene };
+  };
+
+  it.each(builders)('$name spends no UTxO of the collateral wallet, declares its collateral and return, and pays the fee from the account', async ({ state, signer, paid, build }) => {
+    const params = paramsOf(state, signer);
+    const { sponsor, owner, agent } = params.scene;
+    const tx = await build(params);
+    const inspected = inspect(tx);
+    expect(inspected.body.inputs.map((input) => input.transaction_id)).not.toContain(SPONSOR_UTXO_TX);
+    expect(inspected.body.inputs.map((input) => input.transaction_id)).not.toContain(OWNER_UTXO_TX);
+    expect(inspected.body.inputs.map((input) => input.transaction_id)).not.toContain(AGENT_UTXO_TX);
+    expect(inspected.body.inputs.map((input) => input.transaction_id)).toContain('22'.repeat(32));
+    expect(inspected.body.collateral).toEqual([{ transaction_id: SPONSOR_UTXO_TX, index: 0 }]);
+    expect(inspected.body.collateral_return?.address).toBe(sponsor.address.toString());
+    expect(BigInt(inspected.body.collateral_return?.amount.coin ?? 0) + BigInt(inspected.body.total_collateral ?? 0)).toBe(60_000_000n);
+    for (const wallet of [sponsor, owner, agent]) {
+      expect(outputsAt(tx, wallet.address.toString())).toHaveLength(0);
+    }
+    const fee = transactionBodyParts(tx).fee;
+    const growth = controlOutputOf(tx).value.coins - CONTROL_LOVELACE;
+    const spent = transactionBodyParts(tx).inputs.filter((input) => input.txId === '22'.repeat(32)).length;
+    const funded = spent === 1 ? 10_000_000n : 14_000_000n;
+    expect(accountChangeOf(tx)).toEqual([{ coins: funded - paid - growth - fee }]);
+    expect(inspected.body.required_signers).toEqual([signer === 'owner' ? OWNER_PAYMENT_KEY : AGENT_PAYMENT_KEY]);
+  });
+
+  it('refuses a sponsor and a collateral wallet together on the device path', async () => {
+    const { provider, owner, sponsor } = scenario(grantedState, funds());
+    const params = { wallet: owner, provider, owner: OWNER_PAYMENT_KEY, script, sponsor, collateral: sponsor };
+    await expect(spendWithDevice({ ...params, outputs: [payout] })).rejects.toThrow(/not both/);
+  });
+
+  it('refuses a sponsor on the grant path, which takes a collateral wallet only', async () => {
+    const { provider, sponsor, agent } = scenario(grantedState, funds());
+    const params = { wallet: agent, provider, owner: OWNER_PAYMENT_KEY, script, slot: 0n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT };
+    await expect(spendWithGrant({ ...params, sponsor })).rejects.toThrow(/takes a collateral wallet only/);
+    await expect(spendWithGrant({ ...params, sponsor, collateral: sponsor })).rejects.toThrow(/takes a collateral wallet only/);
+  });
+
+  it('fails when the account cannot cover the spend instead of reaching into the collateral wallet', async () => {
+    const { provider, owner, agent, sponsor } = scenario(grantedState, funds());
+    const beyondTheFunds = { address: recipientAddress, value: { coins: 20_000_000n } };
+    await expect(spendWithDevice({ wallet: owner, collateral: sponsor, provider, owner: OWNER_PAYMENT_KEY, outputs: [beyondTheFunds], script })).rejects.toThrow(
+      /not hold enough funds/,
+    );
+    await expect(
+      spendWithGrant({ wallet: agent, collateral: sponsor, provider, owner: OWNER_PAYMENT_KEY, slot: 0n, outputs: [beyondTheFunds], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, unchecked: true, script }),
+    ).rejects.toThrow(/not hold enough funds/);
+  });
+
+  it('leaves the collateral to the signing wallet without one', async () => {
+    const { provider, owner, agent } = scenario(grantedState, funds());
+    const ownerTx = await spendWithDevice({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, outputs: [payout], script });
+    expect(inspect(ownerTx).body.collateral).toEqual([{ transaction_id: OWNER_UTXO_TX, index: 0 }]);
+    expect(inspect(ownerTx).body.collateral_return?.address).toBe(owner.address.toString());
+    const agentTx = await spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, slot: 0n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script });
+    expect(inspect(agentTx).body.collateral).toEqual([{ transaction_id: AGENT_UTXO_TX, index: 0 }]);
+    expect(inspect(agentTx).body.collateral_return?.address).toBe(agent.address.toString());
+  });
+});
+
 describe('spendWithGrant', () => {
   const funds = () => [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n, assets: { [TOKEN_ASSET_ID]: 20n } })];
 
@@ -587,7 +678,7 @@ describe('spendWithGrant', () => {
 
   it('lets a grantee spend tokens within the lovelace caps', async () => {
     const { provider, agent } = scenario(grantedState, funds());
-    const payout = { address: recipientAddress, value: { coins: 1_500_000n, assets: { [TOKEN_ASSET_ID]: 7n } } };
+    const payout = { address: recipientAddress, value: { coins: 1_000_000n, assets: { [TOKEN_ASSET_ID]: 7n } } };
     const tx = await spendWithGrant({
       wallet: agent,
       provider,
@@ -602,9 +693,9 @@ describe('spendWithGrant', () => {
     expect(redeemerOf(tx, { txId: '11'.repeat(32), index: 0 })).toBe('d87a9f01ff');
     expect(inspect(tx).body.required_signers).toEqual([AGENT_PAYMENT_KEY]);
     expect(redeemerOf(tx, { txId: '22'.repeat(32), index: 1 })).toBe(FUND_REDEEMER);
-    const leaving = { [TOKEN_ASSET_ID]: 7n, '': 1_500_000n + parts.fee };
+    const leaving = { [TOKEN_ASSET_ID]: 7n, '': 1_000_000n + parts.fee };
     expect(stateOf(tx)).toEqual(stateAfterSpend(grantedState, 1n, leaving));
-    expect(stateOf(tx).grants[1]!.scope.lovelaceCap).toBe(3_000_000n - 1_500_000n - parts.fee);
+    expect(stateOf(tx).grants[1]!.scope.lovelaceCap).toBe(3_000_000n - 1_000_000n - parts.fee);
     const inputsBalance = toBalance({ coins: CONTROL_LOVELACE + 4_000_000n, assets: { [nftAssetId]: 1n, [TOKEN_ASSET_ID]: 20n } });
     const returned = outputsAt(tx, address).map((output) => toBalance(output.value));
     expect(returned.reduce((total, balance) => total + (balance[TOKEN_ASSET_ID] ?? 0n), 0n)).toBe(inputsBalance[TOKEN_ASSET_ID]! - 7n);

@@ -98,6 +98,21 @@ export type AccountUtxoParams = AccountParams & {
   /** The provider that lists the UTxOs at the account address. */
   provider: Provider;
   /**
+   * A wallet that provides the collateral and nothing else: the account
+   * pays the outputs, the fee and the lovelace the control output needs
+   * beyond what it held from its own fund UTxOs, the collateral and its
+   * return come from this wallet, and the transaction spends none of its
+   * UTxOs. Use it when a wallet other than the signing one stands behind
+   * the collateral, such as a sponsor service that will not pay the fee
+   * of an operation the account can pay for itself. On the device path
+   * `sponsor` is the alternative, for a wallet that is to pay the fee
+   * too, and the two cannot be given together; on the grant path the
+   * account always pays, so `collateral` is the only option and a
+   * `sponsor` is refused. Without either, the device wallet provides the
+   * collateral, and on the agent path the agent wallet does.
+   */
+  collateral?: Wallet;
+  /**
    * The least lovelace a fund output returned to the account may hold.
    * When omitted it is the minimum UTxO value of that output, which is
    * higher when the output carries tokens than when it carries lovelace
@@ -150,10 +165,14 @@ export const DEFAULT_CONTROL_LOVELACE = 2_000_000n;
 
 /**
  * The default execution budget of the control UTxO's spend on the agent
- * path, which leaves room for larger states and more inputs than a small
- * grant spend needs.
+ * path. It covers the heaviest grant spend the contract allows, the
+ * lovelace scope over the largest well formed state and nine inputs,
+ * which the security review measures at about 5.8 million memory units
+ * net of its fixture and 2.2 billion steps in all, with a margin for the
+ * script context decoding that measurement leaves out and for a few more
+ * inputs.
  */
-export const DEFAULT_CONTROL_EXECUTION_UNITS: ExUnits = { memory: 4_000_000, steps: 2_000_000_000 };
+export const DEFAULT_CONTROL_EXECUTION_UNITS: ExUnits = { memory: 7_000_000, steps: 3_500_000_000 };
 
 /**
  * The default execution budget of a fund UTxO's spend, which measures at
@@ -397,6 +416,37 @@ export const createAccount = async (params: CreateAccountParams): Promise<string
   return builder.addSigner(account.owner).addScript(account.script).addScript(account.stakeScript).build();
 };
 
+/** Throws when both a sponsor and a collateral wallet are given, since each asks for a different payer. */
+const assertOnePayer = (params: AccountUtxoParams): void => {
+  if (params.sponsor && params.collateral) {
+    throw new Error('A device operation takes a sponsor or a collateral wallet, not both');
+  }
+};
+
+/** Throws when a grant spend is given a sponsor, since the account pays for it and only the collateral can come from elsewhere. */
+const assertNoSponsor = (params: AccountUtxoParams): void => {
+  if (params.sponsor) {
+    throw new Error('A grant spend takes a collateral wallet only, since the account pays for it; it refuses a sponsor');
+  }
+};
+
+/**
+ * The builder of an operation the account pays for: the collateral
+ * wallet's when one is given, with nothing of that wallet left to spend,
+ * so that the collateral and its return are its only part in the
+ * transaction; otherwise the signing wallet's, which provides the
+ * collateral as well. Either way the account's own UTxOs, added
+ * explicitly, are all the transaction spends, and the change returns to
+ * the account.
+ */
+const accountPaidBuilder = async (params: AccountUtxoParams, account: Account): Promise<TransactionBuilder> => {
+  const builder = await (params.collateral ?? params.wallet).createTransactionBuilder();
+  if (params.collateral) {
+    builder.setUtxos([]);
+  }
+  return builder.setCoinSelector(accountOnlyCoinSelector).setChangeAddress(account.address);
+};
+
 /** Builds a plain transfer to the account address, which anyone can make. */
 export const deposit = async (params: AccountParams & { value: Value }): Promise<string> => {
   const account = resolveAccount(params);
@@ -427,10 +477,11 @@ const maximumFee = (parameters: ProtocolParameters): bigint =>
  * reserved at the most a transaction can cost so that the change settles
  * whatever the real fee turns out to be; the device wallet, which must
  * hold one of the account's device keys, then only signs and provides the
- * collateral. With a sponsor the funds spent cover the outputs alone,
- * whatever they hold beyond the outputs returns to the account, and the
- * sponsor pays the fee and the control output's growth and receives the
- * change. A stake operation, when given, rides on the same transaction
+ * collateral, or only signs when a collateral wallet provides it. With a
+ * sponsor the funds spent cover the outputs alone, whatever they hold
+ * beyond the outputs returns to the account, and the sponsor pays the fee
+ * and the control output's growth and receives the change. A stake
+ * operation, when given, rides on the same transaction
  * with the stake script attached, the spent control UTxO showing the stake
  * script the device that signs.
  */
@@ -440,6 +491,7 @@ const buildDeviceSpend = async (
   nextState: (state: AccountState) => AccountState,
   stakeOperation?: StakeOperation,
 ): Promise<string> => {
+  assertOnePayer(params);
   const account = resolveAccount(params);
   const { control, funds, state } = await findAccountUtxos(params.provider, params);
   const device = await deviceOf(params.wallet, state);
@@ -449,20 +501,21 @@ const buildDeviceSpend = async (
   const coins = controlLovelace(account, control.output.value.coins, next, adaPerUtxoByte);
   const requested = sumOutputs(outputs);
   const floor = changeFloor(params, account, adaPerUtxoByte);
-  const builder = await (params.sponsor ?? params.wallet).createTransactionBuilder();
+  let builder: TransactionBuilder;
   let selected: UTxO[];
   if (params.sponsor) {
+    builder = await params.sponsor.createTransactionBuilder();
     const selection = selectWithChangeFloor(floor, (minimumChange) => selectFundUtxos(funds, requested, minimumChange));
     selected = selection.selected;
     if (!isZeroBalance(selection.remainder)) {
       builder.sendValue({ address: account.address, value: toValue(selection.remainder) });
     }
   } else {
+    builder = await accountPaidBuilder(params, account);
     const required = addBalances(requested, { [LOVELACE_ASSET_ID]: coins - control.output.value.coins + maximumFee(parameters) });
     selected = selectWithChangeFloor(floor, (minimumChange) =>
       selectFundUtxos(funds, addBalances(required, { [LOVELACE_ASSET_ID]: minimumChange }), 0n),
     ).selected;
-    builder.setCoinSelector(accountOnlyCoinSelector).setChangeAddress(account.address);
   }
   builder.addInput({ utxo: control, redeemer: deviceRedeemer });
   for (const utxo of selected) {
@@ -657,7 +710,9 @@ const leavingBalance = (txCbor: string, account: Account, inputs: UTxO[]): Balan
  * spent with the fund redeemer, and the fee and the change come out of
  * and go back to the account, so that only the requested outputs leave
  * it. The grantee is a required signer and the wallet, which must hold
- * its key, provides the collateral and the signature.
+ * its key, provides the signature and the collateral, or the signature
+ * alone when a collateral wallet provides the collateral; a sponsor is
+ * refused, since nothing of the spend is the sponsor's to pay.
  *
  * The fee is part of what leaves, and the recreated state depends on it,
  * so the transaction is rebuilt until the state it carries matches the
@@ -666,9 +721,9 @@ const leavingBalance = (txCbor: string, account: Account, inputs: UTxO[]): Balan
  * The scripts are never evaluated: the validator refuses every draft
  * whose fee differs from the one the state was computed against, and a
  * provider reports that refusal as a failure, so the redeemers carry the
- * fixed budgets instead. The defaults cover a small state; a larger state
- * or more inputs raise the real cost, and the execution units option
- * raises the budgets for them.
+ * fixed budgets instead. The defaults cover the largest state over a
+ * handful of inputs; many more inputs raise the real cost, and the
+ * execution units option raises the budgets for them.
  *
  * The scope, recipient and expiry checks mirror the validator's rules so
  * that a spend the validator would refuse never reaches the chain; the
@@ -676,6 +731,7 @@ const leavingBalance = (txCbor: string, account: Account, inputs: UTxO[]): Balan
  * shows the validator refusing it.
  */
 export const spendWithGrant = async (params: SpendWithGrantParams): Promise<string> => {
+  assertNoSponsor(params);
   const account = resolveAccount(params);
   const { control, funds, state } = await findAccountUtxos(params.provider, params);
   const grant = findGrant(state, params.slot);
@@ -711,8 +767,7 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
       throw new Error(`Grant ${grant.slot} refuses the spend: ${violation}`);
     }
     const next = stateAfterSpend(state, params.slot, leaving);
-    const builder = await params.wallet.createTransactionBuilder();
-    builder.setTxEvaluator(evaluator).setCoinSelector(accountOnlyCoinSelector).setChangeAddress(account.address);
+    const builder = (await accountPaidBuilder(params, account)).setTxEvaluator(evaluator);
     builder.addInput({ utxo: control, redeemer: encodeAccountRedeemer({ kind: 'spendWithGrant', slot: params.slot }) });
     for (const utxo of selected) {
       builder.addInput({ utxo, redeemer: fundRedeemer });

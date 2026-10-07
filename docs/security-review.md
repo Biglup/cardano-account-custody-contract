@@ -635,7 +635,7 @@ Observations.
   executions, about 12.5 M in total, which is close to the limit. Around
   30 deposits per grant spend is a provisional batch size pending
   on-chain measurement; the off-chain builder must batch larger sweeps,
-  and with its default fixed budgets it stops at about 20.
+  and with its default fixed budgets it stops at about 14.
 - Complexity. `grant.leaving_value` folds `assets.merge` over the
   inputs and outputs at the address; each merge is linear in the number
   of asset entries of both operands, so the whole fold is linear in the
