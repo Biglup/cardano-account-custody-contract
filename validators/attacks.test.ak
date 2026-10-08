@@ -21,7 +21,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//
 // USINGS **********************************************************************
 
 use account
@@ -800,6 +799,24 @@ test attack_token_forgery_victims_address_with_the_attackers_signature() {
   let tx = creation(
     [control_output(AccountState { ..state(), devices: [attacker_key] }, 2)],
     [attacker_key],
+  )
+  mint(CreateAccount, tx) && !register(tx)
+}
+
+/// A dApp builds the creation of the owner's account with its own key as
+/// the only device and the owner, who cannot inspect the datum, signs it.
+/// The mint handler accepts the state, which is well formed, and the
+/// stake script refuses the registration because the owner is missing
+/// from the devices of the control output.
+test attack_token_forgery_owner_signed_creation_without_the_owner_as_a_device() {
+  let tx = creation(
+    [
+      control_output(
+        AccountState { ..state(), devices: [attacker_key] },
+        2_000_000,
+      ),
+    ],
+    [device_key],
   )
   mint(CreateAccount, tx) && !register(tx)
 }
@@ -1735,6 +1752,16 @@ test attack_locked_value_account_created_without_devices() {
   !mint(CreateAccount, tx)
 }
 
+/// A builder registers the credential in a transaction the owner signs
+/// without minting the state NFT. The ledger registers a credential once,
+/// so the account could never be created afterwards and every deposit to
+/// its address would be locked; the stake script refuses a registration
+/// that mints no state NFT, before it looks for a control output.
+test attack_locked_value_registration_without_the_state_nft_mint() {
+  let tx = Transaction { ..creation([], [device_key]), mint: assets.zero }
+  !register(tx)
+}
+
 /// The owner burns a grant token while leaving the outstanding count as
 /// it was, which would let a future close strand the remaining grant
 /// UTxOs; the control handler ties the count to the mint field.
@@ -2265,13 +2292,14 @@ test budget_largest_state_burn_grants() {
 }
 
 /// A creation whose control output carries the largest state with its
-/// counters and revoked list cleared.
+/// counters and revoked list cleared and the owner last among its devices.
 fn largest_state_creation_transaction() -> Transaction {
   creation(
     [
       control_output(
         AccountState {
           ..largest_state(),
+          devices: list.concat(keys(7), [device_key]),
           next_slot: 0,
           revoked: [],
           outstanding: 0,
@@ -2285,6 +2313,12 @@ fn largest_state_creation_transaction() -> Transaction {
 
 test budget_largest_state_account_creation() {
   mint(CreateAccount, largest_state_creation_transaction())
+}
+
+/// The stake script's registration over the same creation, with the owner
+/// last among the eight devices.
+test budget_largest_state_registration() {
+  register(largest_state_creation_transaction())
 }
 
 /// A token grant spend at the largest state over the treasury deposit,

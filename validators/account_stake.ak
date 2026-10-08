@@ -13,17 +13,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//
 // USINGS **********************************************************************
 
+use aiken/builtin
 use aiken/collection/list
 use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use cardano/address.{Credential, Script}
+use cardano/assets
 use cardano/certificate.{
   Certificate, DelegateCredential, RegisterAndDelegateCredential,
   RegisterCredential,
 }
-use cardano/transaction.{Transaction}
+use cardano/transaction.{InlineDatum, Output, Transaction}
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/types.{StakeRedeemer}
 
@@ -35,12 +36,15 @@ use cardano_account_custody_contract/types.{StakeRedeemer}
 /// NFT and the prefix of its grant token names, so every user has their
 /// own stake script, address and reward account. See README, Stake script.
 ///
-/// Publish: registering the credential, alone or with a delegation, needs
-/// the owner's signature and is the act that creates the account; a
-/// delegation change needs a device of the account, read from the control
-/// UTxO spent or referenced; deregistration and every other certificate
-/// are refused, so the credential stays registered for the life of the
-/// account.
+/// Publish: registering the credential, alone or with a delegation, is the
+/// act that creates the account and needs the owner's signature, exactly
+/// one state NFT of the credential minted under the account policy and the
+/// owner among the devices of the control output that holds it, so a
+/// registration can neither strand the credential without an account nor
+/// create one the owner is locked out of; a delegation change needs a
+/// device of the account, read from the control UTxO spent or referenced;
+/// deregistration and every other certificate are refused, so the
+/// credential stays registered for the life of the account.
 ///
 /// Withdraw: any withdrawal from the reward account, including zero, needs
 /// a device of the account.
@@ -52,10 +56,12 @@ validator account_stake(owner: VerificationKeyHash, account_hash: ScriptHash) {
 
   publish(_redeemer: StakeRedeemer, certificate: Certificate, self: Transaction) {
     when certificate is {
-      RegisterCredential { credential: Script(_), .. } ->
-        list.has(self.extra_signatories, owner)
-      RegisterAndDelegateCredential { credential: Script(_), .. } ->
-        list.has(self.extra_signatories, owner)
+      RegisterCredential { credential: Script(stake_script_hash), .. } ->
+        creates_the_account(self, owner, account_hash, stake_script_hash)
+      RegisterAndDelegateCredential {
+        credential: Script(stake_script_hash),
+        ..
+      } -> creates_the_account(self, owner, account_hash, stake_script_hash)
       DelegateCredential { credential: Script(stake_script_hash), .. } ->
         is_authorised_by_a_device(self, account_hash, stake_script_hash)
       _ -> False
@@ -83,4 +89,49 @@ fn is_authorised_by_a_device(
     account_hash,
     stake_script_hash,
   )
+}
+
+/// Whether the transaction creates the account named by `stake_script_hash`
+/// with the owner in it: the owner signs, the account policy mints exactly
+/// one token named after the credential, and the control output holding
+/// that token lists the owner among its devices. See README, Registration
+/// gated creation.
+fn creates_the_account(
+  self: Transaction,
+  owner: VerificationKeyHash,
+  account_hash: ScriptHash,
+  stake_script_hash: ScriptHash,
+) -> Bool {
+  and {
+    list.has(self.extra_signatories, owner),
+    assets.quantity_of(self.mint, account_hash, stake_script_hash) == 1,
+    lists_the_owner_as_a_device(
+      self.outputs,
+      owner,
+      account_hash,
+      stake_script_hash,
+    ),
+  }
+}
+
+/// Whether the account's single control output among the outputs lists
+/// `owner` in the device list of its inline state. Only the first field
+/// of the datum is decoded, since the account validator checks the whole
+/// state in the same transaction. Fails when no single control output
+/// exists or its datum is not an inline constructor with a key list first.
+fn lists_the_owner_as_a_device(
+  outputs: List<Output>,
+  owner: VerificationKeyHash,
+  account_hash: ScriptHash,
+  stake_script_hash: ScriptHash,
+) -> Bool {
+  expect Some(control) = custody.find_control_output(
+    outputs,
+    account_hash,
+    stake_script_hash,
+  )
+  expect InlineDatum(data) = control.datum
+  expect [first, ..] = builtin.unconstr_fields(data)
+  expect devices: List<VerificationKeyHash> = first
+  list.has(devices, owner)
 }
