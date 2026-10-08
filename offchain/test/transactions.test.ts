@@ -109,9 +109,9 @@ import {
   logicV1,
   logicV1Hash,
   logicV1RewardAddress,
-  logicV2,
-  logicV2Hash,
-  logicV2RewardAddress,
+  secondLogic,
+  secondLogicHash,
+  secondLogicRewardAddress,
   lovelaceScope,
   networkScripts,
   nftAssetId,
@@ -153,10 +153,10 @@ const ADA_PER_UTXO_BYTE = 4310n;
 /** The reference inputs of the parked proxy and logic scripts, in the order the ledger lists them. */
 const PROXY_REFERENCE = { txId: REFERENCE_UTXO_TX, index: 0 };
 const LOGIC_V1_REFERENCE = { txId: REFERENCE_UTXO_TX, index: 1 };
-const LOGIC_V2_REFERENCE = { txId: REFERENCE_UTXO_TX, index: 2 };
+const SECOND_LOGIC_REFERENCE = { txId: REFERENCE_UTXO_TX, index: 2 };
 
 /** The state of the fixture account once upgraded to the second logic: the generation bumped, the grants of generation zero dead. */
-const UPGRADED_STATE = stateWithLogic(grantedState, logicV2Hash);
+const UPGRADED_STATE = stateWithLogic(grantedState, secondLogicHash);
 
 /** A state whose revoked list is full, so that the next revoke bumps the generation. */
 const FULL_REVOKED_STATE = { ...grantedState, nextSlot: 40n, revoked: Array.from({ length: MAX_REVOKED }, (_, index) => BigInt(index + 3)) };
@@ -233,13 +233,13 @@ const reserveOutputsOf = (tx: string) => outputsAt(tx, address).filter((output) 
 const programOf = (bytes: string) => bytes.slice(6);
 
 /** Asserts which of the proxy, the logics and the stake script the witness set carries, and that nothing else is. */
-const expectScriptsAttached = (tx: string, { proxy = true, logic = true, logicV2: second = false, stake = false }: { proxy?: boolean; logic?: boolean; logicV2?: boolean; stake?: boolean } = {}) => {
+const expectScriptsAttached = (tx: string, { proxy = true, logic = true, secondLogic: second = false, stake = false }: { proxy?: boolean; logic?: boolean; secondLogic?: boolean; stake?: boolean } = {}) => {
   expect(inspect(tx).witness_set.plutus_scripts?.map((entry) => entry.language) ?? []).toEqual(
     Array<string>(Number(proxy) + Number(logic) + Number(second) + Number(stake)).fill('plutus_v3'),
   );
   expect(tx.includes(programOf(script.bytes))).toBe(proxy);
   expect(tx.includes(programOf(logicV1.bytes))).toBe(logic);
-  expect(tx.includes(programOf(logicV2.bytes))).toBe(second);
+  expect(tx.includes(programOf(secondLogic.bytes))).toBe(second);
   expect(tx.includes(programOf(ownerStakeScript.bytes))).toBe(stake);
 };
 
@@ -491,10 +491,10 @@ describe('createAccount', () => {
     const pinned = await createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: unnamed, script });
     expect(stateOf(pinned)).toEqual(initialState);
     expectLogicRun(pinned);
-    const second = await createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: { ...initialState, logic: logicV2Hash }, script });
-    expect(stateOf(second)).toEqual({ ...initialState, logic: logicV2Hash });
-    expectWithdrawals(second, [logicV2RewardAddress]);
-    expectScriptsAttached(second, { logic: false, logicV2: true, stake: true });
+    const second = await createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: { ...initialState, logic: secondLogicHash }, logics: [secondLogic], script });
+    expect(stateOf(second)).toEqual({ ...initialState, logic: secondLogicHash });
+    expectWithdrawals(second, [secondLogicRewardAddress]);
+    expectScriptsAttached(second, { logic: false, secondLogic: true, stake: true });
     expect(provider.phaseTwoFailures).toEqual([]);
   });
 
@@ -571,11 +571,11 @@ describe('createAccount', () => {
   it('is refused by the fake without the logic withdrawal, with a logic naming nothing, or arriving with counters', async () => {
     const { owner, provider } = scenario(undefined, []);
     await expect(rawCreation(owner, initialState, OWNER_PAYMENT_KEY, { withdrawFrom: [] })).rejects.toThrow(/build failed/);
-    await expect(rawCreation(owner, { ...initialState, logic: logicV2Hash }, OWNER_PAYMENT_KEY)).rejects.toThrow(/build failed/);
+    await expect(rawCreation(owner, { ...initialState, logic: secondLogicHash }, OWNER_PAYMENT_KEY)).rejects.toThrow(/build failed/);
     await expect(rawCreation(owner, { ...initialState, nextSlot: 1n, outstanding: 1n }, OWNER_PAYMENT_KEY)).rejects.toThrow(/build failed/);
     expect(provider.phaseTwoFailures).toEqual([
       `The transaction does not withdraw from the logic ${logicV1Hash} the control datum names`,
-      `The transaction does not withdraw from the logic ${logicV2Hash} the control datum names`,
+      `The transaction does not withdraw from the logic ${secondLogicHash} the control datum names`,
       'Creation must start from zero counters',
     ]);
   });
@@ -1222,7 +1222,7 @@ describe('collateral wallet', () => {
     { name: 'sweepGrant', state: stateWithRevokedSlot(grantedState, 0n), signer: 'owner', paid: 0n, locked: () => -GRANT_LOVELACE, build: (params) => sweepGrant({ ...params, slots: [0n] }) },
     { name: 'withdrawRewards', state: grantedState, signer: 'owner', paid: 0n, locked: () => 0n, build: (params) => withdrawRewards({ ...params, amount: 0n }) },
     { name: 'delegateStake', state: grantedState, signer: 'owner', paid: 0n, locked: () => 0n, build: (params) => delegateStake({ ...params, poolId: POOL_ID }) },
-    { name: 'upgradeLogic', state: grantedState, signer: 'owner', paid: 0n, locked: () => 0n, build: (params) => upgradeLogic({ ...params, newLogic: logicV2Hash }) },
+    { name: 'upgradeLogic', state: grantedState, signer: 'owner', paid: 0n, locked: () => 0n, build: (params) => upgradeLogic({ ...params, newLogic: secondLogicHash }) },
     {
       name: 'spendWithGrant',
       state: grantedState,
@@ -1236,7 +1236,7 @@ describe('collateral wallet', () => {
   /** The parameters of a builder over a fresh scenario: the signing wallet, the sponsor wallet as the collateral wallet and the account by its owner. */
   const paramsOf = (state: typeof grantedState, signer: 'owner' | 'agent') => {
     const scene = scenario(state, utxos());
-    return { wallet: scene[signer], collateral: scene.sponsor, provider: scene.provider, owner: OWNER_PAYMENT_KEY, script, logics: [logicV2], scene };
+    return { wallet: scene[signer], collateral: scene.sponsor, provider: scene.provider, owner: OWNER_PAYMENT_KEY, script, logics: [secondLogic], scene };
   };
 
   it.each(builders)('$name spends no UTxO of the collateral wallet, declares its collateral and return, and pays the fee from the account', async ({ state, signer, paid, locked, build }) => {
@@ -1493,8 +1493,8 @@ describe('reference scripts', () => {
     { name: 'sweepGrant', state: stateWithRevokedSlot(grantedState, 0n), signer: 'owner', logics: [LOGIC_V1_REFERENCE], build: (params) => sweepGrant({ ...params, slots: [0n] }) },
     { name: 'withdrawRewards', state: grantedState, signer: 'owner', stake: true, logics: [LOGIC_V1_REFERENCE], build: (params) => withdrawRewards({ ...params, amount: 0n }) },
     { name: 'delegateStake', state: grantedState, signer: 'owner', stake: true, logics: [LOGIC_V1_REFERENCE], build: (params) => delegateStake({ ...params, poolId: POOL_ID }) },
-    { name: 'upgradeLogic', state: grantedState, signer: 'owner', logics: [LOGIC_V1_REFERENCE, LOGIC_V2_REFERENCE], build: (params) => upgradeLogic({ ...params, newLogic: logicV2Hash }) },
-    { name: 'sweepGrant under v2', state: UPGRADED_STATE, signer: 'owner', logics: [LOGIC_V2_REFERENCE], build: (params) => sweepGrant({ ...params, slots: [0n] }) },
+    { name: 'upgradeLogic', state: grantedState, signer: 'owner', logics: [LOGIC_V1_REFERENCE, SECOND_LOGIC_REFERENCE], build: (params) => upgradeLogic({ ...params, newLogic: secondLogicHash }) },
+    { name: 'sweepGrant under the second logic', state: UPGRADED_STATE, signer: 'owner', logics: [SECOND_LOGIC_REFERENCE], build: (params) => sweepGrant({ ...params, slots: [0n] }) },
     {
       name: 'spendWithGrant',
       state: grantedState,
@@ -1507,7 +1507,7 @@ describe('reference scripts', () => {
   /** The parameters of a builder over a fresh scenario, with the network's reference scripts and the second logic known. */
   const paramsOf = (state: typeof grantedState, signer: 'owner' | 'agent') => {
     const scene = scenario(state, utxos());
-    return { wallet: scene[signer], provider: scene.provider, owner: OWNER_PAYMENT_KEY, script, logics: [logicV2], network: networkScripts(), scene };
+    return { wallet: scene[signer], provider: scene.provider, owner: OWNER_PAYMENT_KEY, script, logics: [secondLogic], network: networkScripts(), scene };
   };
 
   it.each(shapes)('$name references the proxy and the logics it runs instead of embedding them, and still passes the fake', async ({ state, signer, stake = false, logics, build }) => {
@@ -1517,7 +1517,7 @@ describe('reference scripts', () => {
     expect(references).toEqual([PROXY_REFERENCE, ...logics]);
     expectScriptsAttached(tx, { proxy: false, logic: false, stake });
     expect(withdrawalsOf(tx).map((withdrawal) => withdrawal.key)).toEqual(
-      expect.arrayContaining(logics.map((logic) => (logic.index === 1 ? logicV1RewardAddress : logicV2RewardAddress))),
+      expect.arrayContaining(logics.map((logic) => (logic.index === 1 ? logicV1RewardAddress : secondLogicRewardAddress))),
     );
     expect(params.scene.provider.phaseTwoFailures).toEqual([]);
     const { network, ...embedded } = params;
@@ -1546,13 +1546,13 @@ describe('reference scripts', () => {
     const spent = { network: 'fake', references: [{ ...referenceRecord(script), index: 7 }] };
     const { provider, owner, agent } = scenario(grantedState, utxos());
     await expect(spendWithDevice({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, outputs: [], script, network: stale })).rejects.toThrow(
-      new RegExp(`record of ${logicV1Hash} points at ${REFERENCE_UTXO_TX}#2, which carries a script hashing to ${logicV2Hash}; the network file is stale`),
+      new RegExp(`record of ${logicV1Hash} points at ${REFERENCE_UTXO_TX}#2, which carries a script hashing to ${secondLogicHash}; the network file is stale`),
     );
     await expect(spendWithDevice({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, outputs: [], script, network: spent })).rejects.toThrow(/#7, which the provider does not find; the network file is stale/);
     await expect(spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, slot: 0n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script, network: stale })).rejects.toThrow(/the network file is stale/);
     const fresh = scenario(undefined, []);
     await expect(createAccount({ wallet: fresh.owner, provider: fresh.provider, owner: OWNER_PAYMENT_KEY, state: initialState, script, network: stale })).rejects.toThrow(/the network file is stale/);
-    expect(transactionBodyParts(await createAccount({ wallet: fresh.owner, owner: OWNER_PAYMENT_KEY, state: initialState, script, network: stale })).referenceInputs).toEqual([PROXY_REFERENCE, LOGIC_V2_REFERENCE]);
+    expect(transactionBodyParts(await createAccount({ wallet: fresh.owner, owner: OWNER_PAYMENT_KEY, state: initialState, script, network: stale })).referenceInputs).toEqual([PROXY_REFERENCE, SECOND_LOGIC_REFERENCE]);
     expect(provider.phaseTwoFailures).toEqual([]);
   });
 
@@ -1569,18 +1569,18 @@ describe('reference scripts', () => {
 describe('upgradeLogic', () => {
   it('rewrites the logic with the generation bumped, running the old and the new logic', async () => {
     const { sponsor, ...params } = ownerParams();
-    const tx = await upgradeLogic({ ...params, logics: [logicV2], newLogic: logicV2Hash });
+    const tx = await upgradeLogic({ ...params, logics: [secondLogic], newLogic: secondLogicHash });
     expect(redeemerOf(tx, CONTROL_INPUT)).toBe(DEVICE_REDEEMER);
     expect(stateOf(tx)).toEqual(UPGRADED_STATE);
-    expect(stateOf(tx)).toEqual({ ...grantedState, logic: logicV2Hash, grantGeneration: 1n, revoked: [] });
-    expectWithdrawals(tx, [logicV1RewardAddress, logicV2RewardAddress]);
-    expectScriptsAttached(tx, { logicV2: true });
+    expect(stateOf(tx)).toEqual({ ...grantedState, logic: secondLogicHash, grantGeneration: 1n, revoked: [] });
+    expectWithdrawals(tx, [logicV1RewardAddress, secondLogicRewardAddress]);
+    expectScriptsAttached(tx, { secondLogic: true });
     expect(mintOf(tx)).toEqual({ mint: {}, redeemer: undefined });
     expect(inspect(tx).body.required_signers).toEqual([OWNER_PAYMENT_KEY]);
     expect(controlOutputOf(tx).value).toEqual({ coins: CONTROL_LOVELACE, assets: { [nftAssetId]: 1n } });
     expect(accountChangeOf(tx)).toEqual([{ coins: 10_000_000n - transactionBodyParts(tx).fee }]);
     expect(params.provider.phaseTwoFailures).toEqual([]);
-    const sponsored = await upgradeLogic({ ...params, sponsor, logics: [logicV2], newLogic: logicV2Hash });
+    const sponsored = await upgradeLogic({ ...params, sponsor, logics: [secondLogic], newLogic: secondLogicHash });
     expect(stateOf(sponsored)).toEqual(UPGRADED_STATE);
     expect(spendsInput(sponsored, fundInput(0))).toBe(false);
   });
@@ -1588,52 +1588,54 @@ describe('upgradeLogic', () => {
   it('lets any device upgrade, and a later upgrade move the account back', async () => {
     const state = stateWithDevice(grantedState, AGENT_PAYMENT_KEY);
     const { provider, agent } = scenario(state, [fundUtxo(0, { coins: 10_000_000n }), ...grantedUtxos()]);
-    const tx = await upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [logicV2], newLogic: logicV2Hash, script });
-    expect(stateOf(tx)).toEqual(stateWithLogic(state, logicV2Hash));
+    const tx = await upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [secondLogic], newLogic: secondLogicHash, script });
+    expect(stateOf(tx)).toEqual(stateWithLogic(state, secondLogicHash));
     expect(inspect(tx).body.required_signers).toEqual([AGENT_PAYMENT_KEY]);
     const back = scenario(UPGRADED_STATE, [fundUtxo(0, { coins: 10_000_000n })]);
-    const downgraded = await upgradeLogic({ wallet: back.owner, provider: back.provider, owner: OWNER_PAYMENT_KEY, logics: [logicV2], newLogic: logicV1Hash, script });
+    const downgraded = await upgradeLogic({ wallet: back.owner, provider: back.provider, owner: OWNER_PAYMENT_KEY, logics: [secondLogic], newLogic: logicV1Hash, script });
     expect(stateOf(downgraded)).toEqual({ ...UPGRADED_STATE, logic: logicV1Hash, grantGeneration: 2n });
-    expectWithdrawals(downgraded, [logicV1RewardAddress, logicV2RewardAddress]);
+    expectWithdrawals(downgraded, [logicV1RewardAddress, secondLogicRewardAddress]);
     expect(back.provider.phaseTwoFailures).toEqual([]);
   });
 
   it('refuses the logic the account runs, a logic it cannot attach, a wallet that is not a device and a grant spend in the same transaction', async () => {
     const { sponsor, ...params } = ownerParams();
-    await expect(upgradeLogic({ ...params, logics: [logicV2], newLogic: logicV1Hash })).rejects.toThrow(/already runs logic/);
+    await expect(upgradeLogic({ ...params, logics: [secondLogic], newLogic: logicV1Hash })).rejects.toThrow(/already runs logic/);
     await expect(upgradeLogic({ ...params, newLogic: foreignLogicHash })).rejects.toThrow(new RegExp(`logic ${foreignLogicHash} is not a version this library can attach`));
-    await expect(upgradeLogic({ ...params, logics: [logicV2], newLogic: 'ab'.repeat(28) })).rejects.toThrow(/not a version this library can attach/);
+    await expect(upgradeLogic({ ...params, logics: [secondLogic], newLogic: 'ab'.repeat(28) })).rejects.toThrow(/not a version this library can attach/);
     expect(stateOf(await upgradeLogic({ ...params, logics: [foreignLogic], newLogic: foreignLogicHash }))).toEqual({ ...UPGRADED_STATE, logic: foreignLogicHash });
     const { provider, agent } = scenario(grantedState, [fundUtxo(0, { coins: 10_000_000n })]);
-    await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [logicV2], newLogic: logicV2Hash, script })).rejects.toThrow(/not a device/);
+    await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [secondLogic], newLogic: secondLogicHash, script })).rejects.toThrow(/not a device/);
     void sponsor;
   });
 
   it('refuses a rewrite naming another logic without the bump, with other devices or beside an issuance, as the arriving logic would', async () => {
     const { sponsor, ...params } = ownerParams();
-    const withLogics = { ...params, logics: [logicV2] };
-    await expect(rewriteState({ ...withLogics, newState: { ...grantedState, logic: logicV2Hash } })).rejects.toThrow(/must bump the grant generation/);
+    const withLogics = { ...params, logics: [secondLogic] };
+    await expect(rewriteState({ ...withLogics, newState: { ...grantedState, logic: secondLogicHash } })).rejects.toThrow(/must bump the grant generation/);
     await expect(rewriteState({ ...withLogics, newState: { ...UPGRADED_STATE, devices: [OWNER_PAYMENT_KEY, OTHER_DEVICE_KEY] } })).rejects.toThrow(/cannot change the devices/);
     await expect(rewriteState({ ...withLogics, newState: { ...UPGRADED_STATE, grantGeneration: 0n } })).rejects.toThrow(/must bump the grant generation/);
     await expect(rewriteState({ ...params, newState: { ...UPGRADED_STATE, logic: foreignLogicHash } })).rejects.toThrow(/not a version this library can attach/);
     expect(stateOf(await rewriteState({ ...withLogics, newState: UPGRADED_STATE }))).toEqual(UPGRADED_STATE);
-    expect(stateOf(await rewriteState({ ...params, newState: UPGRADED_STATE }))).toEqual(UPGRADED_STATE);
+    await expect(rewriteState({ ...params, newState: UPGRADED_STATE })).rejects.toThrow(/not a version this library can attach/);
     void sponsor;
   });
 
   it('builds a move back unchecked for a wallet that is no device, with fixed budgets, for the node to refuse', async () => {
     const { provider, agent } = scenario(UPGRADED_STATE, [fundUtxo(0, { coins: 10_000_000n })]);
-    await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, newLogic: logicV1Hash, script })).rejects.toThrow(/not a device/);
-    const tx = await upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, newLogic: logicV1Hash, script, unchecked: true });
+    await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [secondLogic], newLogic: logicV1Hash, script })).rejects.toThrow(/not a device/);
+    const tx = await upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [secondLogic], newLogic: logicV1Hash, script, unchecked: true });
     expect(inspect(tx).body.required_signers).toEqual([AGENT_PAYMENT_KEY]);
     expect(stateOf(tx)).toEqual({ ...UPGRADED_STATE, logic: logicV1Hash, grantGeneration: 2n });
-    expectWithdrawals(tx, [logicV1RewardAddress, logicV2RewardAddress]);
+    expectWithdrawals(tx, [logicV1RewardAddress, secondLogicRewardAddress]);
     const units = inspect(tx).witness_set.redeemers?.map((entry) => [entry.tag, entry.ex_units.mem]);
     expect(units).toContainEqual(['reward', UNCHECKED_EXECUTION_UNITS.logic.memory.toString()]);
     expect(units).toContainEqual(['spend', UNCHECKED_EXECUTION_UNITS.proxy.memory.toString()]);
     expect(provider.phaseTwoFailures).toEqual([]);
     await expect(provider.evaluateTransaction(tx)).rejects.toThrow(/No device of the account signs the device spend/);
-    await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, newLogic: logicV1Hash, script, unchecked: true, sponsor: agent, collateral: agent })).rejects.toThrow(/not both/);
+    await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [secondLogic], newLogic: logicV1Hash, script, unchecked: true, sponsor: agent, collateral: agent })).rejects.toThrow(
+      /not both/,
+    );
   });
 
   it('is refused by the fake when the new logic does not run, the generation does not grow, the devices change or the old logic is left out', async () => {
@@ -1641,18 +1643,18 @@ describe('upgradeLogic', () => {
     const control = controlUtxo(grantedState);
     const fund = fundUtxo(0, { coins: 10_000_000n });
     await expect(rawRewrite(owner, control, fund, UPGRADED_STATE, [logicV1])).rejects.toThrow(/build failed/);
-    await expect(rawRewrite(owner, control, fund, { ...UPGRADED_STATE, grantGeneration: 0n }, [logicV1, logicV2])).rejects.toThrow(/build failed/);
-    await expect(rawRewrite(owner, control, fund, { ...UPGRADED_STATE, devices: [OWNER_PAYMENT_KEY, OTHER_DEVICE_KEY] }, [logicV1, logicV2])).rejects.toThrow(/build failed/);
-    await expect(rawRewrite(owner, control, fund, UPGRADED_STATE, [logicV2])).rejects.toThrow(/build failed/);
-    await expect(rawRewrite(owner, control, fund, UPGRADED_STATE, [logicV1, logicV2], AGENT_PAYMENT_KEY)).rejects.toThrow(/build failed/);
+    await expect(rawRewrite(owner, control, fund, { ...UPGRADED_STATE, grantGeneration: 0n }, [logicV1, secondLogic])).rejects.toThrow(/build failed/);
+    await expect(rawRewrite(owner, control, fund, { ...UPGRADED_STATE, devices: [OWNER_PAYMENT_KEY, OTHER_DEVICE_KEY] }, [logicV1, secondLogic])).rejects.toThrow(/build failed/);
+    await expect(rawRewrite(owner, control, fund, UPGRADED_STATE, [secondLogic])).rejects.toThrow(/build failed/);
+    await expect(rawRewrite(owner, control, fund, UPGRADED_STATE, [logicV1, secondLogic], AGENT_PAYMENT_KEY)).rejects.toThrow(/build failed/);
     expect(provider.phaseTwoFailures).toEqual([
-      `The account leaves for logic ${logicV2Hash}, which does not run`,
+      `The account leaves for logic ${secondLogicHash}, which does not run`,
       'An upgrade must grow the grant generation strictly',
       'An upgrade must keep the devices',
       `The transaction does not withdraw from the logic ${logicV1Hash} the control UTxO names`,
       'No device of the account signs the device spend',
     ]);
-    const tx = await rawRewrite(owner, control, fund, UPGRADED_STATE, [logicV1, logicV2]);
+    const tx = await rawRewrite(owner, control, fund, UPGRADED_STATE, [logicV1, secondLogic]);
     expect(stateOf(tx)).toEqual(UPGRADED_STATE);
     expect(provider.phaseTwoFailures).toHaveLength(5);
   });
@@ -1678,7 +1680,7 @@ describe('upgradeLogic', () => {
         .lockValue({ scriptAddress: otherAddress, value: { coins: CONTROL_LOVELACE, assets: { [otherNft]: 1n } }, datum: { type: Cometa.DatumType.InlineData, inlineDatum: encodeAccountState({ ...UPGRADED_STATE, logic: logicV1Hash, grantGeneration: 2n }) } })
         .addSigner(OWNER_PAYMENT_KEY)
         .addScript(script);
-      return withdrawFromLogic(withdrawFromLogic(builder, logicV1), logicV2).build();
+      return withdrawFromLogic(withdrawFromLogic(builder, logicV1), secondLogic).build();
     });
     await expect(tx).rejects.toThrow(/build failed/);
     expect(provider.phaseTwoFailures).toEqual([`A control output of another account names logic ${logicV1Hash}`]);
@@ -1689,7 +1691,7 @@ describe('after an upgrade', () => {
   /** The parameters of an owner builder over an upgraded account still holding the grants of generation zero, with the second logic known. */
   const upgradedParams = (utxos = [fundUtxo(0, { coins: 10_000_000n }), ...grantedUtxos()]) => {
     const { provider, owner, agent, sponsor } = scenario(UPGRADED_STATE, utxos);
-    return { wallet: owner, provider, owner: OWNER_PAYMENT_KEY, script, logics: [logicV2], agent, sponsor };
+    return { wallet: owner, provider, owner: OWNER_PAYMENT_KEY, script, logics: [secondLogic], agent, sponsor };
   };
 
   it('lists every grant live before the upgrade for reissue and refuses every agent spend against them', async () => {
@@ -1706,14 +1708,14 @@ describe('after an upgrade', () => {
   it('sweeps the dead grants under the new logic and reissues them under it', async () => {
     const { agent, sponsor, ...params } = upgradedParams();
     const swept = await sweepGrant({ ...params, slots: [0n, 1n, 2n] });
-    expectWithdrawals(swept, [logicV2RewardAddress]);
-    expectScriptsAttached(swept, { logic: false, logicV2: true });
+    expectWithdrawals(swept, [secondLogicRewardAddress]);
+    expectScriptsAttached(swept, { logic: false, secondLogic: true });
     expect(stateOf(swept)).toEqual({ ...UPGRADED_STATE, outstanding: 0n });
     expect(mintOf(swept).mint).toEqual({ [grantAssetIdOf(0n)]: -1n, [grantAssetIdOf(1n)]: -1n, [grantAssetIdOf(2n)]: -1n });
     const cleared = upgradedParams([fundUtxo(0, { coins: 10_000_000n })]);
     const requests = survivingGrantRequests((await findAccountUtxos(params.provider, params)).grants, grantedState, undefined, EXPIRY - 1n);
     const reissued = await issueGrant({ ...cleared, grants: requests });
-    expectWithdrawals(reissued, [logicV2RewardAddress]);
+    expectWithdrawals(reissued, [secondLogicRewardAddress]);
     expect(stateOf(reissued)).toEqual({ ...UPGRADED_STATE, nextSlot: 6n, outstanding: 6n });
     for (const [index, request] of requests.entries()) {
       expect(grantOf(reissued, 3n + BigInt(index))).toEqual({ slot: 3n + BigInt(index), grantee: request.grantee, generation: 1n, scope: request.scope });
@@ -1729,9 +1731,9 @@ describe('after an upgrade', () => {
     const state = { ...UPGRADED_STATE, nextSlot: 4n, outstanding: 4n };
     const { provider, agent } = scenario(state, [fundUtxo(0, { coins: 10_000_000n }), ...grantedUtxos(), grantUtxo(reissued)]);
     const payout = { address: recipientAddress, value: { coins: 3_000_000n } };
-    const tx = await spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script });
-    expectWithdrawals(tx, [logicV2RewardAddress]);
-    expectScriptsAttached(tx, { logic: false, logicV2: true });
+    const tx = await spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [secondLogic], slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script });
+    expectWithdrawals(tx, [secondLogicRewardAddress]);
+    expectScriptsAttached(tx, { logic: false, secondLogic: true });
     expect(transactionBodyParts(tx).referenceInputs).toEqual([CONTROL_INPUT]);
     expect(grantOf(tx, 3n)).toEqual(grantAfterSpend(reissued, { '': 3_000_000n + DEFAULT_GRANT_FEE_BOUND }));
     expect(provider.phaseTwoFailures).toEqual([]);
@@ -1739,8 +1741,19 @@ describe('after an upgrade', () => {
     await expect(spendWithGrant({ wallet: foreign.agent, provider: foreign.provider, owner: OWNER_PAYMENT_KEY, slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script })).rejects.toThrow(
       /not a version this library can attach/,
     );
-    const referenced = await spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, network: networkScripts(), slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script });
-    expect(transactionBodyParts(referenced).referenceInputs).toContainEqual(LOGIC_V2_REFERENCE);
+    const referenced = await spendWithGrant({
+      wallet: agent,
+      provider,
+      owner: OWNER_PAYMENT_KEY,
+      logics: [secondLogic],
+      network: networkScripts(),
+      slot: 3n,
+      outputs: [payout],
+      grantee: AGENT_PAYMENT_KEY,
+      validUntilSlot: VALID_UNTIL_SLOT,
+      script,
+    });
+    expect(transactionBodyParts(referenced).referenceInputs).toContainEqual(SECOND_LOGIC_REFERENCE);
     expect(transactionBodyParts(referenced).referenceInputs).not.toContainEqual(LOGIC_V1_REFERENCE);
   });
 

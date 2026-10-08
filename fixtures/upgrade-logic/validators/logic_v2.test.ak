@@ -13,6 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// The upgrade proof: the throwaway second logic accepting the account
+// transactions, refusing a batch over its bound where the deployed logic
+// accepts it, and the move between the two logics in both directions with
+// both of them running. The deployed logic is not compiled into this
+// project, so it is run here through `logic.validates_withdrawal`, which
+// is its withdraw handler whole; the project that ships it tests its
+// handler and its credential check directly.
+
 // USINGS **********************************************************************
 
 use aiken/collection/list
@@ -24,6 +32,7 @@ use cardano/governance.{StakePool}
 use cardano/script_context.{ScriptContext, Voting}
 use cardano/transaction.{Input, NoDatum, Output, Transaction}
 use cardano_account_custody_contract/account as custody
+use cardano_account_custody_contract/logic
 use cardano_account_custody_contract/test_helpers.{
   control_output, device_key, fund_output, grant_output, input, logic_hash,
   next_logic_hash, output, publishing, recipient_address, referencing,
@@ -33,7 +42,6 @@ use cardano_account_custody_contract/test_helpers.{
 use cardano_account_custody_contract/types.{
   AccountState, Asset, Grant, Run, Scope,
 }
-use logic_v1
 use logic_v2
 
 // CONSTANTS *******************************************************************
@@ -44,7 +52,7 @@ use logic_v2
 /// of the time rules.
 const expiry = 1_800_000_000_000
 
-/// One grant more than the batch the second version admits.
+/// One grant more than the batch the second logic admits.
 const over_the_batch = logic_v2.max_grant_batch + 1
 
 // FUNCTIONS *******************************************************************
@@ -63,7 +71,7 @@ fn state_under(logic: ByteArray) -> AccountState {
 }
 
 /// The fresh state of the account under test, which runs the second
-/// version as `next_logic_hash`.
+/// logic as `next_logic_hash`.
 fn state() -> AccountState {
   state_under(next_logic_hash)
 }
@@ -120,14 +128,17 @@ fn grant_tokens(count: Int, quantity: Int) -> Assets {
   )
 }
 
-/// Whether the second version, run as `next_logic_hash`, accepts `tx`.
-fn run_v2(tx: Transaction) -> Bool {
+/// Whether the second logic, run as `next_logic_hash`, accepts `tx`.
+fn run_second(tx: Transaction) -> Bool {
   logic_v2.logic_v2.withdraw(script_hash, Run, Script(next_logic_hash), tx)
 }
 
-/// Whether the first version, run as `logic_hash`, accepts `tx`.
-fn run_v1(tx: Transaction) -> Bool {
-  logic_v1.logic_v1.withdraw(script_hash, Run, Script(logic_hash), tx)
+/// Whether the deployed logic, run as `logic_hash`, accepts `tx`: its
+/// withdraw handler is the shared rules and nothing beyond them, which is
+/// what this calls, since the deployed validator is compiled in the
+/// project that ships it and not here.
+fn run_deployed(tx: Transaction) -> Bool {
+  logic.validates_withdrawal(logic_hash, script_hash, tx)
 }
 
 /// An owner transaction under `logic`: the control UTxO of `current`
@@ -285,52 +296,52 @@ fn move(from: ByteArray, to: ByteArray, signer: ByteArray) -> Transaction {
 
 // TESTS ***********************************************************************
 
-/// The bound the library applies to every batch it builds, so a change to
-/// one without the other fails here before it fails on a chain.
+/// The bound the off-chain library applies to every batch it builds, so a
+/// change to one without the other fails here before it fails on a chain.
 test max_grant_batch_is_eight() {
   logic_v2.max_grant_batch == 8
 }
 
 test create_account_validates_the_initial_state() {
-  run_v2(creation_under(next_logic_hash))
+  run_second(creation_under(next_logic_hash))
 }
 
 test device_spends_funds_and_keeps_the_state() {
-  run_v2(device_spend_under(next_logic_hash))
+  run_second(device_spend_under(next_logic_hash))
 }
 
 test device_issues_a_batch_of_grants() {
-  run_v2(issuance_under(next_logic_hash, logic_v2.max_grant_batch))
+  run_second(issuance_under(next_logic_hash, logic_v2.max_grant_batch))
 }
 
 test device_rejects_an_issuance_over_the_batch() {
-  !run_v2(issuance_under(next_logic_hash, over_the_batch))
+  !run_second(issuance_under(next_logic_hash, over_the_batch))
 }
 
-/// The first version has no batch bound: the issuance the second refuses
+/// The deployed logic has no batch bound: the issuance the second refuses
 /// is accepted under it, its size left to the execution budget.
-test logic_v1_issues_over_the_batch() {
-  run_v1(issuance_under(logic_hash, over_the_batch))
+test the_deployed_logic_issues_over_the_batch() {
+  run_deployed(issuance_under(logic_hash, over_the_batch))
 }
 
 test device_sweeps_a_batch_of_dead_grants() {
-  run_v2(sweep_under(next_logic_hash, logic_v2.max_grant_batch))
+  run_second(sweep_under(next_logic_hash, logic_v2.max_grant_batch))
 }
 
 test device_rejects_a_sweep_over_the_batch() {
-  !run_v2(sweep_under(next_logic_hash, over_the_batch))
+  !run_second(sweep_under(next_logic_hash, over_the_batch))
 }
 
-test logic_v1_sweeps_over_the_batch() {
-  run_v1(sweep_under(logic_hash, over_the_batch))
+test the_deployed_logic_sweeps_over_the_batch() {
+  run_deployed(sweep_under(logic_hash, over_the_batch))
 }
 
 test spend_with_grant_accepts_a_current_grant() {
-  run_v2(grant_spend_under(granted(state()), 0))
+  run_second(grant_spend_under(granted(state()), 0))
 }
 
 test spend_with_grant_rejects_a_grant_issued_before_an_upgrade() {
-  !run_v2(
+  !run_second(
     grant_spend_under(
       AccountState { ..granted(state()), grant_generation: 1 },
       0,
@@ -338,31 +349,31 @@ test spend_with_grant_rejects_a_grant_issued_before_an_upgrade() {
   )
 }
 
-test upgrade_from_the_first_version_is_accepted_by_both_logics() {
+test upgrade_from_the_deployed_logic_is_accepted_by_both_logics() {
   let tx = move(logic_hash, next_logic_hash, device_key)
-  run_v1(tx) && run_v2(tx)
+  run_deployed(tx) && run_second(tx)
 }
 
 /// The leaving logic is the one that reads the signature: without a
-/// device's, the first version refuses the device spend while the second
+/// device's, the deployed logic refuses the device spend while the second
 /// validates the arrival alone.
-test upgrade_from_the_first_version_rejects_a_grantee() {
+test upgrade_from_the_deployed_logic_rejects_a_grantee() {
   let tx = move(logic_hash, next_logic_hash, stranger_key)
-  !run_v1(tx) && run_v2(tx)
+  !run_deployed(tx) && run_second(tx)
 }
 
-test downgrade_to_the_first_version_is_accepted_by_both_logics() {
+test downgrade_to_the_deployed_logic_is_accepted_by_both_logics() {
   let tx = move(next_logic_hash, logic_hash, device_key)
-  run_v2(tx) && run_v1(tx)
+  run_second(tx) && run_deployed(tx)
 }
 
 /// The move back a grantee assembles without a device signature: the
-/// second version, which the account would leave, refuses the device
-/// spend, while the first, which it would arrive at, reads no signature
+/// second logic, which the account would leave, refuses the device spend,
+/// while the deployed logic, which it would arrive at, reads no signature
 /// and accepts.
-test downgrade_to_the_first_version_rejects_a_grantee() {
+test downgrade_to_the_deployed_logic_rejects_a_grantee() {
   let tx = move(next_logic_hash, logic_hash, stranger_key)
-  !run_v2(tx) && run_v1(tx)
+  !run_second(tx) && run_deployed(tx)
 }
 
 test withdraw_rejects_a_key_credential() fail {

@@ -1,0 +1,23 @@
+name = "biglup/upgrade_logic_fixture"
+version = "0.0.0"
+compiler = "v1.1.24"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Throwaway second logic script of the Cardano account custody contract, built only to prove its owner upgrade path against a chain. It is not a version of the contract and ships nothing: no account runs it and it is absent from the contract's blueprint."
+
+[repository]
+user = "biglup"
+project = "cardano_account_custody_contract"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v4.0.0"
+source = "github"
+
+[[dependencies]]
+name = "aiken-lang/fuzz"
+version = "v3.0.0"
+source = "github"
+
+[config]

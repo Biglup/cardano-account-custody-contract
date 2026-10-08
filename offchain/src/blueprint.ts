@@ -27,19 +27,13 @@ import { Cometa } from './cometa.js';
 /** The title every handler of the account proxy validator shares. */
 const ACCOUNT_VALIDATOR_TITLE = 'account.account';
 
-/** The prefix of the module title of every logic version: `logic_v1`, `logic_v2` and so on. */
-const LOGIC_MODULE_PREFIX = 'logic_';
-
-/** The module titles of the logic versions the blueprint carries, each applied to the proxy hash to become a logic credential. */
-export const LOGIC_V1_TITLE = 'logic_v1.logic_v1';
-export const LOGIC_V2_TITLE = 'logic_v2.logic_v2';
-
 /**
- * The title of the logic version this library pins: the one a new account
- * runs unless its creator names another, and the one the builders apply to
- * the proxy hash to attach the logic.
+ * The prefix of the module title of a logic validator. The contract has
+ * one logic version, `logic_v1`, and the upgrade mechanism names a later
+ * one by hash rather than by title, so the prefix is what identifies the
+ * logic of a blueprint without naming the version it holds.
  */
-export const CURRENT_LOGIC_TITLE = LOGIC_V1_TITLE;
+const LOGIC_MODULE_PREFIX = 'logic_';
 
 /** The blueprint `aiken build` writes at the repository root. */
 export const DEFAULT_BLUEPRINT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plutus.json');
@@ -98,27 +92,24 @@ export const accountScript = (blueprint: Blueprint = loadBlueprint()): PlutusScr
 export const accountScriptHash = (script: PlutusScript): string => Cometa.computeScriptHash(script);
 
 /**
- * The logic validator entries of a blueprint, one per logic version in
- * module order, each still parameterised by the proxy hash. Every handler
- * of a version carries the same compiled code, so the first entry of each
- * module is representative.
+ * The logic validator entry of a blueprint, still parameterised by the
+ * proxy hash. A blueprint carries the rules of exactly one logic script,
+ * so a blueprint with none or with several is refused rather than read as
+ * if one of them were the rules. Every handler of the validator carries
+ * the same compiled code, so the first entry of its module is
+ * representative.
  */
-export const logicValidators = (blueprint: Blueprint): BlueprintValidator[] => {
-  const versions = new Map<string, BlueprintValidator>();
+export const logicValidator = (blueprint: Blueprint): BlueprintValidator => {
+  const modules = new Map<string, BlueprintValidator>();
   for (const validator of blueprint.validators) {
     const title = moduleTitleOf(validator);
-    if (title.startsWith(LOGIC_MODULE_PREFIX) && !versions.has(title)) {
-      versions.set(title, validator);
+    if (title.startsWith(LOGIC_MODULE_PREFIX) && !modules.has(title)) {
+      modules.set(title, validator);
     }
   }
-  return [...versions.values()];
-};
-
-/** The logic validator entry of a blueprint with the given module title, the current version's when none is given. */
-export const logicValidator = (blueprint: Blueprint, title: string = CURRENT_LOGIC_TITLE): BlueprintValidator => {
-  const validator = logicValidators(blueprint).find((entry) => moduleTitleOf(entry) === title);
-  if (!validator) {
-    throw new Error(`The blueprint has no logic validator titled ${title}`);
+  const [validator] = modules.values();
+  if (!validator || modules.size !== 1) {
+    throw new Error(`A blueprint carries one logic validator, this one ${modules.size}: ${[...modules.keys()].join(', ')}`);
   }
   return validator;
 };

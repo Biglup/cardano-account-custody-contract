@@ -39,7 +39,7 @@ import {
   initialState,
   logicV1Hash,
   logicV1RewardAddress,
-  logicV2Hash,
+  secondLogicHash,
   nftAssetId,
   ownerRewardAddress,
   ownerStakeScriptHash,
@@ -141,9 +141,9 @@ describe('accountExists', () => {
     expect(live?.control.input).toEqual({ txId: '11'.repeat(32), index: 0 });
     expect(live?.state).toEqual(grantedState);
     expect(live?.logic).toBe(logicV1Hash);
-    const upgraded = scenario(stateWithLogic(grantedState, logicV2Hash), []);
-    expect((await accountExists(upgraded.provider, record))?.logic).toBe(logicV2Hash);
-    expect(logicOf(controlUtxo(stateWithLogic(grantedState, logicV2Hash)))).toBe(logicV2Hash);
+    const upgraded = scenario(stateWithLogic(grantedState, secondLogicHash), []);
+    expect((await accountExists(upgraded.provider, record))?.logic).toBe(secondLogicHash);
+    expect(logicOf(controlUtxo(stateWithLogic(grantedState, secondLogicHash)))).toBe(secondLogicHash);
     expect(() => logicOf(fundUtxo(0, { coins: 1n }))).toThrow(/no inline datum/);
   });
 
@@ -177,7 +177,7 @@ describe('grants of an account', () => {
   it('lists a grant of another shape as dead once the generation moved past it, and never by expiry', async () => {
     const live = scenario(grantedState, [extendedGrantUtxo(5n)]);
     expect(await deadGrantsOf(live.provider, record, EXPIRY + 1n)).toEqual([]);
-    const upgraded = scenario(stateWithLogic(grantedState, logicV2Hash), [extendedGrantUtxo(5n)]);
+    const upgraded = scenario(stateWithLogic(grantedState, secondLogicHash), [extendedGrantUtxo(5n)]);
     expect((await deadGrantsOf(upgraded.provider, record, EXPIRY)).map(({ prefix, grant }) => [prefix.slot, grant])).toEqual([[5n, undefined]]);
   });
 });

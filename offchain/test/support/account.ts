@@ -18,13 +18,14 @@
 
 import type { PlutusData, PlutusScript, UTxO, Value } from '@biglup/cometa';
 import { accountAddress, grantAssetId, rewardAddress, stateNftAssetId } from '../../src/address.js';
-import { LOGIC_V2_TITLE, accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../../src/blueprint.js';
+import { accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../../src/blueprint.js';
 import { Cometa } from '../../src/cometa.js';
 import { transactionBodyParts } from '../../src/body.js';
 import { type AccountState, type Grant, type Scope, bytes, encodeAccountState, encodeGrant, encodeReserveDatum } from '../../src/data.js';
-import { currentLogicScript, logicScriptHash, logicVersionScript } from '../../src/logic.js';
+import { currentLogicScript, logicScriptHash } from '../../src/logic.js';
 import { type NetworkScripts, type ReferenceScriptRecord } from '../../src/network.js';
 import { applyParameters, stakeScript, stakeScriptHash } from '../../src/stake-script.js';
+import { fixtureLogicScript } from '../../scripts/fixture-logic.js';
 import { FakeProvider, FakeWallet, utxo } from './fake.js';
 
 /* CONSTANTS ******************************************************************/
@@ -70,17 +71,23 @@ export const nftAssetId = stateNftAssetId(scriptHash, ownerStakeScriptHash);
 export const address = accountAddress(scriptHash, ownerStakeScriptHash).toString();
 export const ownerRewardAddress = rewardAddress(ownerStakeScriptHash).toBech32();
 
-/** The current logic applied to the proxy hash, which every fixture account runs, and the reward account its zero withdrawal draws from. */
+/** The logic of the blueprint applied to the proxy hash, which every fixture account runs, and the reward account its zero withdrawal draws from. */
 export const logicV1: PlutusScript = currentLogicScript(scriptHash);
 export const logicV1Hash = logicScriptHash(logicV1);
 export const logicV1RewardAddress = rewardAddress(logicV1Hash).toBech32();
 
-/** The second logic version applied to the proxy hash, which the upgrade fixtures move accounts to, and the reward account its zero withdrawal draws from. */
-export const logicV2: PlutusScript = logicVersionScript(LOGIC_V2_TITLE, scriptHash);
-export const logicV2Hash = logicScriptHash(logicV2);
-export const logicV2RewardAddress = rewardAddress(logicV2Hash).toBech32();
+/**
+ * The throwaway second logic of the upgrade fixture project applied to
+ * the proxy hash, which the upgrade fixtures move accounts to, and the
+ * reward account its zero withdrawal draws from. It is outside the
+ * blueprint, so every builder that serves an account on it is given it
+ * among the logics it may attach.
+ */
+export const secondLogic: PlutusScript = fixtureLogicScript(scriptHash);
+export const secondLogicHash = logicScriptHash(secondLogic);
+export const secondLogicRewardAddress = rewardAddress(secondLogicHash).toBech32();
 
-/** The logic outside the blueprint, the current logic applied to `FOREIGN_LOGIC_PARAMETER`, and its hash. */
+/** A logic of another proxy, the blueprint's logic applied to `FOREIGN_LOGIC_PARAMETER`, and its hash. */
 export const foreignLogic: PlutusScript = {
   type: Cometa.ScriptType.Plutus,
   bytes: applyParameters(logicValidator(loadBlueprint()).compiledCode, [bytes(FOREIGN_LOGIC_PARAMETER)]),
@@ -93,7 +100,7 @@ export const parkingAddress = Cometa.EnterpriseAddress.fromCredentials(Cometa.Ne
   .toAddress()
   .toString();
 
-/** The state of a freshly created account under the current logic. */
+/** The state of a freshly created account under the blueprint's logic. */
 export const initialState: AccountState = { logic: logicV1Hash, devices: [OWNER_PAYMENT_KEY], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
 
 /** The transaction ids of the UTxOs each wallet and the account hold in a scenario. */
@@ -196,11 +203,12 @@ export const grantUtxo = (grant: Grant, coins = GRANT_LOVELACE): UTxO =>
 export const grantedUtxos = (): UTxO[] => fixtureGrants.map((grant) => grantUtxo(grant));
 
 /**
- * The scripts parked as reference scripts in every scenario: the proxy
- * and both logic versions, each in its own UTxO at the parking address,
- * indexed in this order under the reference transaction.
+ * The scripts parked as reference scripts in every scenario: the proxy,
+ * the blueprint's logic and the second logic the upgrade moves an
+ * account to, each in its own UTxO at the parking address, indexed in
+ * this order under the reference transaction.
  */
-export const parkedScripts: PlutusScript[] = [script, logicV1, logicV2];
+export const parkedScripts: PlutusScript[] = [script, logicV1, secondLogic];
 
 /** The reference script UTxO of a parked script, as the network setup leaves it and the fake provider serves it. */
 export const referenceUtxo = (parked: PlutusScript): UTxO => ({

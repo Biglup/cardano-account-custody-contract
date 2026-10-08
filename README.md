@@ -92,13 +92,12 @@ with nothing but lovelace beside it, under an inline datum and without a
 reference script, and that an account is created once, under a
 registration its owner signs.
 
-`logic_v1` is the first version and `logic_v2` the second, the same
-rules with one bound added; see [Logic v2](#logic-v2). A later version
-is another script, and the owner moves an account to it with one
-transaction; see [Permanent and replaceable](#permanent-and-replaceable).
-Accounts under different versions share the address format, the tokens
-and the stake script and differ only in the hash their control datum
-names.
+The contract has one logic version, `logic_v1`, and every account runs
+it. A later version would be another script, and the owner moves an
+account to it with one transaction; see
+[Permanent and replaceable](#permanent-and-replaceable). Accounts under
+different versions would share the address format, the tokens and the
+stake script and differ only in the hash their control datum names.
 
 ```mermaid
 sequenceDiagram
@@ -123,8 +122,7 @@ the staking rewards, delegate to a pool or a DRep, and point the account
 at another logic. The logic only insists that the state written back is
 well formed (one to 8 distinct devices, at most 16 outstanding grants, at
 most 32 revoked slots, a generation that never decreases, counters that
-follow the grant tokens minted and burned), logic v2 that at most 8
-grants are issued or swept in one transaction, and the proxy that the NFT
+follow the grant tokens minted and burned), and the proxy that the NFT
 comes back to the same address in exactly one control UTxO.
 
 Devices are listed as key hashes, so a device is whatever signs Ed25519: a
@@ -436,8 +434,8 @@ on what it finds. The path functions and the `publish` rule live in
 `lib/cardano_account_custody_contract/logic.ak`, which every version
 shares; `logic.validates_withdrawal` is the same dispatch for later
 versions, and `logic_v1` writes it out in its handler because a call in
-its place compiles to different code, and the compiled code of the first
-version is final: its applied hash is the credential every account on it
+its place compiles to different code, and the compiled code of this
+version is final: its applied hash is the credential every account
 names.
 
 - Exactly one, spent: the owner path. The control UTxO's proxy redeemer is
@@ -469,28 +467,6 @@ names.
 The `publish` handler accepts the registration of a script credential,
 from anyone, and refuses every other certificate, so the credential can
 never be deregistered. The `else` handler fails.
-
-### Logic v2
-
-`logic_v2` is the second version, parameterised by the proxy hash like
-the first: `logic.validates_withdrawal`, the rules above, plus one bound
-a user can see, `max_grant_batch`. At most 8 tokens are minted or burned
-under the account policy in one transaction, so an issuance or a sweep
-of more grants is refused where logic v1 accepts whatever fits the
-execution budget; the shared rules admit only grant tokens of the
-account on the owner path and the state NFT alone at creation, so the
-bound is a bound on grants issued or swept, and it is the batch the
-off-chain builders apply under every version (`MAX_GRANT_BATCH`). The
-`publish` and `else` handlers are the first version's.
-
-An account moves from v1 to v2 with the upgrade transaction of
-[Permanent and replaceable](#permanent-and-replaceable), v1 approving
-the leave and v2 validating the arrival, and moves back the same way.
-`validators/logic_v2.test.ak` proves the bound against v1 and the
-handover in both directions; the devnet run in `docs/devnet-evidence.md`
-proves the upgrade, the dead grant, its sweep, the reissue, a spend
-under v2 and the grantee's refused move back on a chain, as steps 43
-to 54 of the flow plan.
 
 ### Stake script
 
@@ -540,9 +516,9 @@ name and address, and can touch no other.
 
 The initial logic is chosen at creation: the control datum names it and
 the proxy requires its withdrawal, so that logic validates the initial
-state as an arrival with no control input. Logic v1 requires zero
-counters and a well formed state. The library pins the current version
-unless the creator names another it can attach.
+state as an arrival with no control input. The contract's logic requires
+zero counters and a well formed state. The library pins it unless the
+creator names another logic it can attach.
 
 ### Owner path
 
@@ -840,8 +816,7 @@ carries.
   followed by `s` as four big endian bytes.
 - Bounds, constants in `state.ak`: `max_devices` 8, `max_grants` 16
   outstanding, `max_revoked` 32, `max_recipients` 8. They belong to the
-  logic, and logic v1 and v2 share them; `max_grant_batch` 8 in
-  `logic_v2.ak` belongs to logic v2 alone.
+  logic: a later version is free to keep or change them.
 
 ## Grant accounting
 
@@ -895,9 +870,9 @@ aiken check -D
 aiken build
 ```
 
-`aiken build` writes the blueprint of the four validators to
+`aiken build` writes the blueprint of the three validators to
 `plutus.json`, which is committed so off-chain code can load it directly.
-The proxy's hash in the blueprint is final. Each logic's entry is the
+The proxy's hash in the blueprint is final. The logic's entry is the
 parameterised code; its hash becomes the logic credential once the proxy
 hash is applied, which the library does. The stake validator's entry is
 the parameterised code too, and its hash only becomes an account's stake
@@ -911,16 +886,11 @@ The hashes of the committed blueprint:
 
 - Account proxy, the payment credential and the token policy:
   `ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253`.
-- Logic v1: unapplied
+- Logic: unapplied
   `7cf7daa6c0a5825e23a9dadece990d5a602fa1508d01f061eacaed52`, applied
   to the proxy hash
   `2cd68e398bdf9fbc8d257614b54403451ee722520ec785fe14f8df5a`, the
-  credential every account on v1 names.
-- Logic v2: unapplied
-  `03489f90cbd00ec38d8669cb582fa7014becd1122b9ba3a03c7b7dc1`, applied
-  to the proxy hash
-  `69baa8a8c877247028c56c8130449e186e3658d541536d168f92db3d`, the
-  credential every account on v2 names.
+  credential every account names.
 - Account stake script, unapplied:
   `edcfa41389b7b924916ad7408cd2d0f75a7a3dae8717f9bbf1a668c6`; applied
   to an owner key and the proxy hash it is that account's stake
@@ -936,6 +906,45 @@ npm run typecheck
 npm test
 ```
 
+### Upgrade fixture
+
+The upgrade mechanism of
+[Permanent and replaceable](#permanent-and-replaceable) can only be
+proven against a chain with a second logic script to move an account to,
+and the contract has only one. `fixtures/upgrade-logic` is an Aiken
+project of its own holding that second script, `logic_v2`: the shared
+rules plus one bound a user can see, `max_grant_batch`, so at most 8
+tokens are minted or burned under the account policy in one transaction
+and an issuance or a sweep of more grants is refused where the
+contract's logic accepts whatever fits the execution budget. The bound
+exists to make the move observable, not because the contract wants it.
+
+The project is not part of the contract. No account runs the script, it
+is absent from `plutus.json`, and nothing ships it: it is a fixture, and
+the security review puts it out of scope. It compiles the contract's
+library through a relative symlink, `lib/cardano_account_custody_contract`,
+and commits its own blueprint, so a flow run needs no extra build step.
+Its hashes: unapplied
+`03489f90cbd00ec38d8669cb582fa7014becd1122b9ba3a03c7b7dc1`, applied to
+the proxy hash
+`69baa8a8c877247028c56c8130449e186e3658d541536d168f92db3d`, which the
+devnet evidence names as the credential the upgraded account runs.
+
+```sh
+cd fixtures/upgrade-logic
+aiken fmt --check
+aiken check -D
+aiken build
+```
+
+Its `validators/logic_v2.test.ak` proves the bound against the contract's
+logic, which it runs through `logic.validates_withdrawal`, that logic's
+withdraw handler whole, and the handover in both directions with both
+logics running. The devnet run in `docs/devnet-evidence.md` proves the
+upgrade, the dead grant, its sweep, the reissue, a spend under the second
+logic and the grantee's refused move back on a chain, as steps 43 to 54
+of the flow plan.
+
 ## Off-chain library
 
 `offchain/` is a TypeScript library, built on `@biglup/cometa`, that
@@ -949,14 +958,15 @@ surface.
   proxy hash to the blueprint's stake validator in pure TypeScript
   (`applyParameters`), byte for byte what `aiken blueprint apply`
   produces, and `stakeScriptHash` gives the stake credential.
-  `logicScript` applies the proxy hash to a logic version the same way,
-  `logicVersionScript` and `logicVersionHash` by the version's module
-  title, `LOGIC_V1_TITLE` or `LOGIC_V2_TITLE`; `currentLogicHash` is the
-  version the library pins, `CURRENT_LOGIC_TITLE`, v1, the one a new
-  account runs unless its creator names another, and `logicCatalog`
-  holds every version the blueprint carries plus any given alongside,
-  keyed by hash. `accountAddress`, `rewardAddress`, `stateNftAssetId`
-  and `grantAssetId` derive the rest.
+  `logicScript` applies the proxy hash to a logic validator the same
+  way, and `logicValidator` reads the one logic validator a blueprint
+  carries, refusing a blueprint with none or with several.
+  `currentLogicScript` and `currentLogicHash` give the logic of the
+  blueprint applied to the proxy hash, what every account runs, and
+  `logicCatalog` holds it plus any script given alongside, keyed by
+  hash, which is how a builder serves an account an upgrade moved to a
+  logic the blueprint does not carry. `accountAddress`, `rewardAddress`,
+  `stateNftAssetId` and `grantAssetId` derive the rest.
 - Discovery. `accountByOwner` computes the record of an account from the
   owner key hash alone; `accountExists` confirms the control UTxO on chain
   and returns the current state and the logic hash the control datum
@@ -1120,16 +1130,20 @@ a batched agent sweep of many deposits and an upgrade to a second logic.
 The script reads the network file, runs the fifty four flows against the
 live network, reads the execution units of every confirmed transaction
 back from the chain and rewrites `docs/<network>-evidence.md` with the
-result. Steps 43 to 54 are the upgrade path: logic v2 registered and
-parked on the network and appended to the network file, a deposit the
-owner steps are paid from, a grant issued under v1, the upgrade with both
-logics running from their parked UTxOs and its execution units set
-against the upgrade row of the budget table, the grant dead by the
-generation bump, refused by the builder and by v2 and swept under v2,
-issued again under v2 from `survivingGrantRequests`, a spend under v2,
-the move back to v1 refused to the grantee by the builder and, built
-unchecked, by v2 on the node, and a final sweep that leaves the control
-UTxO under v2. The runner checks the generation it finds before the
+result. Steps 43 to 54 prove the upgrade mechanism. They need a second
+logic script to move an account to, and use the throwaway one of
+`fixtures/upgrade-logic`, which no account runs and the blueprint does
+not carry; see [Upgrade fixture](#upgrade-fixture). The second logic is
+registered and parked on the network and appended to the network file, a
+deposit the owner steps are paid from, a grant issued under the
+contract's logic, the upgrade with both logics running from their parked
+UTxOs and its execution units set against the upgrade row of the budget
+table, the grant dead by the generation bump, refused by the builder and
+by the second logic and swept under it, issued again under it from
+`survivingGrantRequests`, a spend under it, the move back refused to the
+grantee by the builder and, built unchecked, by the second logic on the
+node, and a final sweep that leaves the control UTxO under the second
+logic. The runner checks the generation it finds before the
 upgrade against the plan, which the earlier steps fix at two. Before the
 flows it runs the setup of the network when
 `offchain/networks/<network>.json` does not already record the proxy and
@@ -1162,8 +1176,8 @@ The devnet is a single Cardano node with a Blockfrost compatible API in
 front of it, running Conway at the protocol version of preprod over a
 chain of its own with one second blocks and five minute epochs. The
 setup and the fifty four flows, which take hours on preprod, take
-5 minutes 3 seconds on it, the setup of logic v2 and the upgrade path
-included, and cost nothing. How far its parameters and its cost models
+5 minutes 3 seconds on it, the setup of the second logic and the upgrade
+path included, and cost nothing. How far its parameters and its cost models
 follow preprod's is below.
 
 ```sh
@@ -1252,7 +1266,7 @@ reaches the chain.
 
 ## Security review and chain evidence
 
-`docs/security-review.md` is an adversarial review of the four
+`docs/security-review.md` is an adversarial review of the three
 validators, organised by vulnerability class, with each attack reproduced
 as a transaction in `validators/attacks.test.ak` that the validators are
 shown to refuse. It records the findings that needed a code change and

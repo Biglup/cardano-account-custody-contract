@@ -41,7 +41,7 @@ import {
   encodeStakeRedeemer,
   withoutCborCache,
 } from '../src/data.js';
-import { AGENT_PAYMENT_KEY, OWNER_PAYMENT_KEY, address, fixtureGrants, grantedState, logicV1Hash, logicV2Hash, lovelaceScope, recipientAddress } from './support/account.js';
+import { AGENT_PAYMENT_KEY, OWNER_PAYMENT_KEY, address, fixtureGrants, grantedState, logicV1Hash, secondLogicHash, lovelaceScope, recipientAddress } from './support/account.js';
 
 /* FUNCTIONS ******************************************************************/
 
@@ -64,8 +64,8 @@ describe('account state', () => {
 
   it('reads the logic from the first field of any control datum, as the proxy does, without decoding the rest', () => {
     expect(decodeLogicHash(encodeAccountState(grantedState))).toBe(logicV1Hash);
-    expect(decodeLogicHash({ constructor: 0n, fields: { items: [Cometa.hexToUint8Array(logicV2Hash), 7n] } })).toBe(logicV2Hash);
-    expect(decodeLogicHash({ constructor: 0n, fields: { items: [Cometa.hexToUint8Array(logicV2Hash), 7n, { items: [] }, Cometa.hexToUint8Array('ab'), 1n, 2n, 3n] } })).toBe(logicV2Hash);
+    expect(decodeLogicHash({ constructor: 0n, fields: { items: [Cometa.hexToUint8Array(secondLogicHash), 7n] } })).toBe(secondLogicHash);
+    expect(decodeLogicHash({ constructor: 0n, fields: { items: [Cometa.hexToUint8Array(secondLogicHash), 7n, { items: [] }, Cometa.hexToUint8Array('ab'), 1n, 2n, 3n] } })).toBe(secondLogicHash);
     expect(() => decodeLogicHash({ constructor: 0n, fields: { items: [] } })).toThrow(/control datum/);
     expect(() => decodeLogicHash({ constructor: 0n, fields: { items: [0n] } })).toThrow(/logic hash/);
     expect(() => decodeLogicHash(0n)).toThrow(/control datum/);

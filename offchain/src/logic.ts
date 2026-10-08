@@ -17,7 +17,7 @@
 /* IMPORTS ********************************************************************/
 
 import type { PlutusScript } from '@biglup/cometa';
-import { type Blueprint, type BlueprintValidator, CURRENT_LOGIC_TITLE, loadBlueprint, logicValidator, logicValidators } from './blueprint.js';
+import { type Blueprint, type BlueprintValidator, loadBlueprint, logicValidator } from './blueprint.js';
 import { Cometa } from './cometa.js';
 import { bytes } from './data.js';
 import { applyParameters } from './stake-script.js';
@@ -25,9 +25,10 @@ import { applyParameters } from './stake-script.js';
 /* TYPES **********************************************************************/
 
 /**
- * The logic scripts a builder can attach, by hash: every version the
- * blueprint carries applied to the proxy hash, plus any version given
- * alongside. A control UTxO names its logic by hash, so the builder looks
+ * The logic scripts a builder can attach, by hash: the blueprint's logic
+ * applied to the proxy hash, plus any script given alongside, which is
+ * how an account that an upgrade moved to a logic outside the blueprint
+ * is served. A control UTxO names its logic by hash, so the builder looks
  * the script up here to run it, embedded or through its reference script.
  */
 export type LogicCatalog = Map<string, PlutusScript>;
@@ -48,30 +49,18 @@ export const logicScript = (validator: BlueprintValidator, proxyHash: string): P
 /** The hash of a logic script, which is the credential its zero withdrawal draws from and the pointer a control datum names. */
 export const logicScriptHash = (script: PlutusScript): string => Cometa.computeScriptHash(script);
 
-/** A logic version of the blueprint, named by its module title, applied to the proxy hash. */
-export const logicVersionScript = (title: string, proxyHash: string, blueprint: Blueprint = loadBlueprint()): PlutusScript =>
-  logicScript(logicValidator(blueprint, title), proxyHash);
-
-/** The hash of a logic version of the blueprint applied to the proxy hash: the credential every account on that version names. */
-export const logicVersionHash = (title: string, proxyHash: string, blueprint: Blueprint = loadBlueprint()): string =>
-  logicScriptHash(logicVersionScript(title, proxyHash, blueprint));
-
-/** The logic version this library pins, applied to the proxy hash. */
+/** The logic version a blueprint carries, applied to the proxy hash: what every account under that blueprint runs. */
 export const currentLogicScript = (proxyHash: string, blueprint: Blueprint = loadBlueprint()): PlutusScript =>
-  logicVersionScript(CURRENT_LOGIC_TITLE, proxyHash, blueprint);
+  logicScript(logicValidator(blueprint), proxyHash);
 
-/** The hash of the logic version this library pins, applied to the proxy hash: what a new account runs unless its creator names another. */
+/** The hash of the logic version a blueprint carries, applied to the proxy hash: the credential every account on it names. */
 export const currentLogicHash = (proxyHash: string, blueprint: Blueprint = loadBlueprint()): string =>
   logicScriptHash(currentLogicScript(proxyHash, blueprint));
 
-/** Every logic version the blueprint carries, applied to the proxy hash, in module order. */
-export const blueprintLogicScripts = (proxyHash: string, blueprint: Blueprint = loadBlueprint()): PlutusScript[] =>
-  logicValidators(blueprint).map((validator) => logicScript(validator, proxyHash));
-
 /**
  * The catalog of logic scripts a builder can attach for accounts under a
- * proxy: the blueprint's versions applied to the proxy hash and the extra
+ * proxy: the blueprint's logic applied to the proxy hash and the extra
  * scripts given, each keyed by its hash.
  */
 export const logicCatalog = (proxyHash: string, extra: PlutusScript[] = [], blueprint: Blueprint = loadBlueprint()): LogicCatalog =>
-  new Map([...blueprintLogicScripts(proxyHash, blueprint), ...extra].map((script) => [logicScriptHash(script), script]));
+  new Map([currentLogicScript(proxyHash, blueprint), ...extra].map((script) => [logicScriptHash(script), script]));

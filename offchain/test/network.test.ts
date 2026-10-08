@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Cometa } from '../src/cometa.js';
 import { DEFAULT_NETWORKS_DIRECTORY, loadNetworkScripts, networkFilePath, referenceOf, referenceScriptUtxo, resolveReferenceScript, resolveScriptSource } from '../src/network.js';
-import { PARKED_LOVELACE, REFERENCE_UTXO_TX, logicV1, logicV1Hash, logicV2, logicV2Hash, networkScripts, parkingAddress, referenceRecord, script, scenario, scriptHash } from './support/account.js';
+import { PARKED_LOVELACE, REFERENCE_UTXO_TX, logicV1, logicV1Hash, secondLogic, secondLogicHash, networkScripts, parkingAddress, referenceRecord, script, scenario, scriptHash } from './support/account.js';
 import { utxo } from './support/fake.js';
 
 /* CONSTANTS ******************************************************************/
@@ -90,14 +90,14 @@ describe('reference script UTxOs', () => {
   });
 
   it('refuses a script that does not hash to the record', () => {
-    expect(() => referenceScriptUtxo(referenceRecord(logicV1), logicV2)).toThrow(/was given a script hashing to/);
+    expect(() => referenceScriptUtxo(referenceRecord(logicV1), secondLogic)).toThrow(/was given a script hashing to/);
   });
 
   it('takes a script from its reference UTxO when the network records one and embeds it otherwise', async () => {
     const network = networkScripts([script, logicV1]);
     expect(await resolveScriptSource(undefined, network, script)).toEqual({ kind: 'reference', utxo: referenceScriptUtxo(referenceRecord(script), script) });
     expect((await resolveScriptSource(undefined, network, logicV1)).kind).toBe('reference');
-    expect(await resolveScriptSource(undefined, network, logicV2)).toEqual({ kind: 'embedded', script: logicV2 });
+    expect(await resolveScriptSource(undefined, network, secondLogic)).toEqual({ kind: 'embedded', script: secondLogic });
     expect(await resolveScriptSource(undefined, undefined, script)).toEqual({ kind: 'embedded', script });
   });
 
@@ -116,10 +116,10 @@ describe('reference script UTxOs', () => {
     const spent = { ...referenceRecord(logicV1), index: 7 };
     await expect(resolveReferenceScript(provider, spent, logicV1)).rejects.toThrow(new RegExp(`record of ${logicV1Hash} points at ${REFERENCE_UTXO_TX}#7, which the provider does not find; the network file is stale`));
     const swapped = { ...referenceRecord(logicV1), index: 2 };
-    await expect(resolveReferenceScript(provider, swapped, logicV1)).rejects.toThrow(new RegExp(`points at ${REFERENCE_UTXO_TX}#2, which carries a script hashing to ${logicV2Hash}; the network file is stale`));
+    await expect(resolveReferenceScript(provider, swapped, logicV1)).rejects.toThrow(new RegExp(`points at ${REFERENCE_UTXO_TX}#2, which carries a script hashing to ${secondLogicHash}; the network file is stale`));
     provider.addUtxo(utxo(REFERENCE_UTXO_TX, 9, parkingAddress, { coins: PARKED_LOVELACE }));
     await expect(resolveReferenceScript(provider, { ...referenceRecord(logicV1), index: 9 }, logicV1)).rejects.toThrow(/#9, which carries no reference script; the network file is stale/);
-    await expect(resolveReferenceScript(provider, referenceRecord(logicV1), logicV2)).rejects.toThrow(/was given a script hashing to/);
+    await expect(resolveReferenceScript(provider, referenceRecord(logicV1), secondLogic)).rejects.toThrow(/was given a script hashing to/);
     await expect(resolveScriptSource(provider, { network: 'fake', references: [swapped] }, logicV1)).rejects.toThrow(/the network file is stale/);
     expect(await resolveScriptSource(undefined, { network: 'fake', references: [swapped] }, logicV1)).toEqual({ kind: 'reference', utxo: referenceScriptUtxo(swapped, logicV1) });
   });

@@ -13,6 +13,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// A throwaway logic script, built only to prove the owner upgrade path of
+// the account custody contract against a chain. It is not a version of
+// the contract: no account runs it, it is absent from the contract's
+// blueprint and it is shipped nowhere. The upgrade rewrites the logic
+// hash in an account's control datum while the logic the account leaves
+// and the logic it arrives at both run, so proving it needs a second
+// logic script whose code differs from the deployed one. This is that
+// second script, and the bound below is the whole of the difference.
+
 // USINGS **********************************************************************
 
 use aiken/collection/dict
@@ -27,8 +36,8 @@ use cardano_account_custody_contract/types.{LogicRedeemer}
 // CONSTANTS *******************************************************************
 
 /// The most tokens one transaction may mint or burn under the account
-/// policy on this version: the size of an issuance or a sweep, which the
-/// first version leaves to the execution budget. Eight grants with eight
+/// policy here: the size of an issuance or a sweep, which the deployed
+/// logic leaves to the execution budget. Eight grants with eight
 /// recipients each issue or sweep within half of the memory limit and
 /// sixteen exceed it, so the bound is the batch the off-chain builders
 /// already apply; see the security review, Resource exhaustion.
@@ -36,19 +45,22 @@ pub const max_grant_batch = 8
 
 // VALIDATORS ******************************************************************
 
-/// The second version of the account logic, applied to the account proxy's
-/// hash like the first. It is the shared rules of `logic`, the owner,
-/// agent and arrival paths with the one control UTxO per transaction
-/// rule, plus one bound a user can see: at most `max_grant_batch` tokens
-/// are minted or burned under the account policy in one transaction, so
-/// an issuance or a sweep of more grants is refused here where the first
-/// version accepts whatever fits the budget. The shared rules admit only
-/// grant tokens of the account on the owner path and the state NFT alone
-/// at creation, so the bound is a bound on grants issued or swept.
+/// The second logic of the upgrade proof, applied to the account proxy's
+/// hash like the deployed one. It is the shared rules of `logic`, the
+/// owner, agent and arrival paths with the one control UTxO per
+/// transaction rule, plus one bound a user can see: at most
+/// `max_grant_batch` tokens are minted or burned under the account
+/// policy in one transaction, so an issuance or a sweep of more grants
+/// is refused here where the deployed logic accepts whatever fits the
+/// budget. The shared rules admit only grant tokens of the account on
+/// the owner path and the state NFT alone at creation, so the bound is a
+/// bound on grants issued or swept. The bound is visible from the
+/// outside, which is what makes the move observable; it is not a rule
+/// the contract wants.
 ///
-/// An account moves here from the first version with the upgrade the
+/// An account moves here from the deployed logic with the upgrade the
 /// shared arrival path validates, the generation bumped so that every
-/// grant issued before is dead, and moves on or back the same way.
+/// grant issued before is dead, and moves back the same way.
 ///
 /// Publish: the credential may be registered by anyone, which the
 /// withdrawal needs once; every other certificate is refused.

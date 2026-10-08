@@ -223,10 +223,10 @@ export type AccountParams = AccountIdentity & {
    */
   network?: NetworkScripts;
   /**
-   * Logic scripts beyond the versions the blueprint carries, already
-   * applied to the proxy hash, so that an account running one of them can
-   * be served. A control UTxO names its logic by hash and the builder
-   * refuses an account whose logic it cannot attach.
+   * Logic scripts beyond the one the blueprint carries, already applied
+   * to the proxy hash, so that an account an upgrade moved to a later
+   * version can be served. A control UTxO names its logic by hash and
+   * the builder refuses an account whose logic it cannot attach.
    */
   logics?: PlutusScript[];
 };
@@ -437,7 +437,7 @@ interface ScriptSources {
 /**
  * Derives the account identifiers from the builder parameters, applying
  * the stake script to the owner and the proxy hash and the blueprint's
- * logic versions to the proxy hash. A record names the same owner, so the
+ * logic to the proxy hash. A record names the same owner, so the
  * derivation is the same either way; the stake script is always rebuilt
  * since the record cannot carry it.
  */

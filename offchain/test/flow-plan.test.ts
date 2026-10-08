@@ -138,12 +138,12 @@ const measured = (txId: string, spendMemory: bigint): MeasuredTransaction => ({
 describe('SETUP_PLAN', () => {
   it('registers the logic credential, parks the proxy and the logic, and shows the bare withdrawal refused from a registered and an unregistered credential', () => {
     expect(SETUP_PLAN.map((flow) => flow.step)).toEqual([1, 2, 3, 4, 5]);
-    expect(SETUP_PLAN[0]!.description).toContain('register the logic v1 credential');
+    expect(SETUP_PLAN[0]!.description).toContain("register the contract's logic credential");
     expect(SETUP_PLAN[1]!.description).toContain('park the proxy as a reference script');
-    expect(SETUP_PLAN[2]!.description).toContain('park logic v1 as a reference script');
+    expect(SETUP_PLAN[2]!.description).toContain("park the contract's logic as a reference script");
     expect(SETUP_PLAN.filter((flow) => /always fail script address/.test(flow.description)).map((flow) => flow.step)).toEqual([2, 3]);
     expect(SETUP_PLAN[3]!.outcome).toBe('refused by the node');
-    expect(SETUP_PLAN[3]!.description).toContain('bare zero withdrawal from the registered logic v1 credential');
+    expect(SETUP_PLAN[3]!.description).toContain('bare zero withdrawal from the registered logic credential');
     expect(SETUP_PLAN[3]!.description).toContain('arrival path');
     expect(SETUP_PLAN[3]!.expectedMessage?.test('ValidationTagMismatch Phase2Valid (FailedUnexpectedly (PlutusFailure "boom")))')).toBe(true);
     expect(SETUP_PLAN[3]!.expectedMessage?.test('ConwayCertsFailure (WithdrawalsNotInRewardsCERTS (fromList [...]))')).toBe(false);
@@ -160,17 +160,17 @@ describe('FLOW_PLAN', () => {
   });
 
   it('runs the logic through its zero withdrawal from creation on and references the parked scripts', () => {
-    expect(FLOW_PLAN[0]!.description).toContain('names logic v1 in the control datum and runs it through its zero withdrawal');
-    expect(FLOW_PLAN[7]!.description).toContain('running logic v1 through its zero withdrawal');
+    expect(FLOW_PLAN[0]!.description).toContain("names the contract's logic in the control datum and runs it through its zero withdrawal");
+    expect(FLOW_PLAN[7]!.description).toContain("running the contract's logic through its zero withdrawal");
     expect(FLOW_PLAN[45]!.description).toContain('both referenced from their parked UTxOs');
   });
 
-  it('sets up logic v2, upgrades, kills and sweeps the old grant, reissues under v2, spends under v2 and refuses the grantee', () => {
-    expect(FLOW_PLAN[42]!.description).toContain('setup of logic v2');
+  it('sets up the second logic, upgrades, kills and sweeps the old grant, reissues, spends and refuses the grantee under it', () => {
+    expect(FLOW_PLAN[42]!.description).toContain('setup of the second logic');
     expect(FLOW_PLAN[43]!.description).toContain('deposit 30 tADA');
     expect(FLOW_PLAN[44]!.description).toContain(`issueGrant slot ${PRE_UPGRADE_GRANT_SLOT}`);
-    expect(FLOW_PLAN[44]!.description).toContain('under logic v1');
-    expect(FLOW_PLAN[45]!.description).toContain('upgradeLogic to v2');
+    expect(FLOW_PLAN[44]!.description).toContain("under the contract's logic");
+    expect(FLOW_PLAN[45]!.description).toContain('upgradeLogic to the second logic');
     expect(FLOW_PLAN[45]!.description).toContain(`generation bumped to ${GENERATION_AFTER_UPGRADE}`);
     expect(FLOW_PLAN[45]!.budget).toEqual([{ path: 'upgrade', handlers: 'Device, the leaving logic and the arriving logic', netMemory: 1_620_000, netSteps: 500_000_000 }]);
     expect(FLOW_PLAN[46]!.outcome).toBe('refused by the builder');
@@ -179,10 +179,10 @@ describe('FLOW_PLAN', () => {
     expect(FLOW_PLAN[48]!.description).toContain('stable prefix');
     expect(FLOW_PLAN[49]!.description).toContain(`issueGrant slot ${REISSUED_GRANT_SLOT}`);
     expect(FLOW_PLAN[49]!.description).toContain('survivingGrantRequests');
-    expect(FLOW_PLAN[50]!.description).toContain('names logic v2');
+    expect(FLOW_PLAN[50]!.description).toContain('names the second logic');
     expect(FLOW_PLAN[51]!.expectedMessage?.test('The wallet payment key is not a device of the account')).toBe(true);
     expect(FLOW_PLAN[52]!.outcome).toBe('refused by the node');
-    expect(FLOW_PLAN[53]!.description).toContain('leaving only the control UTxO under logic v2');
+    expect(FLOW_PLAN[53]!.description).toContain('leaving only the control UTxO under the second logic');
     expect(PRE_UPGRADE_GRANT_SLOT).toBe(SWEEP_GRANT_SLOT + 1n);
     expect(REISSUED_GRANT_SLOT).toBe(PRE_UPGRADE_GRANT_SLOT + 1n);
     expect(GENERATION_BEFORE_UPGRADE).toBe(2n);
@@ -478,8 +478,8 @@ describe('evidence', () => {
       rewardAddress: 'stake_test1reward',
       poolId: 'pool1pool',
       tokenPolicyId: '99'.repeat(28),
-      logicV1Hash: '11'.repeat(28),
-      logicV2Hash: '22'.repeat(28),
+      logicHash: '11'.repeat(28),
+      secondLogicHash: '22'.repeat(28),
       setup: [{ flow: SETUP_PLAN[0]!, txIds: [TX_ID] }, { flow: SETUP_PLAN[4]!, txIds: [], refusal: 'WithdrawalsNotInRewardsCERTS' }],
       records: [
         { flow: FLOW_PLAN[0]!, txIds: [TX_ID] },
@@ -490,17 +490,18 @@ describe('evidence', () => {
     });
     expect(document).toContain('- Date: 2026-10-08');
     expect(document).toContain(`- Account proxy hash: \`${'cd'.repeat(28)}\``);
-    expect(document).toContain(`- Logic v1 hash: \`${'11'.repeat(28)}\``);
-    expect(document).toContain(`- Logic v2 hash: \`${'22'.repeat(28)}\``);
+    expect(document).toContain(`- Logic hash: \`${'11'.repeat(28)}\``);
+    expect(document).toContain(`- Second logic hash of the upgrade proof: \`${'22'.repeat(28)}\``);
     expect(document).toContain('## Setup');
     expect(document).toContain('refused by the logic in\nphase two');
-    expect(document).toContain('| 1 | register the logic v1 credential');
+    expect(document).toContain("| 1 | register the contract's logic credential");
     expect(document).toContain('| 5 | a zero withdrawal from an unregistered logic credential');
     expect(document).toContain('refused by the node in phase one: "WithdrawalsNotInRewardsCERTS"');
-    expect(document).toContain('| 46 | upgradeLogic to v2');
+    expect(document).toContain('| 46 | upgradeLogic to the second logic');
     expect(document).toContain('| 46 | upgrade | Device, the leaving logic and the arriving logic |');
     expect(document).toContain('over an account holding one device, no revoked\nslot and one outstanding grant');
-    expect(document).toContain('refused a move back to the first version');
+    expect(document).toContain('shows the grantee refused a move back by the builder');
+    expect(document).toContain('throwaway one of fixtures/upgrade-logic');
     expect(document).toContain('zero\nwithdrawal from the logic credential');
     expect(document.indexOf('## Setup')).toBeLessThan(document.indexOf('## Flows'));
     expect(document).toContain('- Owner address: `addr_test1owner`');
@@ -528,7 +529,7 @@ describe('evidence', () => {
     expect(document).toContain('the control UTxO the held transaction references');
   });
 
-  it('leaves out the logic v2 fact and the setup section while the run records neither', () => {
+  it('leaves out the second logic fact and the setup section while the run records neither', () => {
     const document = evidenceDocument({
       limits: LIMITS,
       date: '2026-10-08',
@@ -542,12 +543,12 @@ describe('evidence', () => {
       rewardAddress: 'stake_test1reward',
       poolId: 'pool1pool',
       tokenPolicyId: '99'.repeat(28),
-      logicV1Hash: '11'.repeat(28),
+      logicHash: '11'.repeat(28),
       records: [{ flow: FLOW_PLAN[0]!, txIds: [TX_ID] }],
       supporting: [],
     });
-    expect(document).toContain(`- Logic v1 hash: \`${'11'.repeat(28)}\`\n\n## Flows`);
-    expect(document).not.toContain('Logic v2 hash');
+    expect(document).toContain(`- Logic hash: \`${'11'.repeat(28)}\`\n\n## Flows`);
+    expect(document).not.toContain('Second logic hash');
     expect(document).not.toContain('## Setup');
     expect(document).not.toContain('| ---- | ---- | ------------ | ------- |\n\n');
     expect(document).toContain('| 1 | createAccount');
@@ -568,7 +569,7 @@ describe('evidence', () => {
       rewardAddress: 'stake_test1reward',
       poolId: 'pool1pool',
       tokenPolicyId: '99'.repeat(28),
-      logicV1Hash: '11'.repeat(28),
+      logicHash: '11'.repeat(28),
       records: [{ flow: FLOW_PLAN[31]!, txIds: [TX_ID], measured: [measured(TX_ID, 1_100_000n)] }],
       supporting: [],
     });

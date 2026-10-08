@@ -215,18 +215,18 @@ const GIGA = 1_000_000_000;
  * A run reuses the recorded setup when the file exists.
  */
 export const SETUP_PLAN: Flow[] = [
-  { step: 1, description: 'register the logic v1 credential with the Conway deposit through the logic publish handler, paid by the funding wallet', outcome: 'confirmed' },
+  { step: 1, description: "register the contract's logic credential with the Conway deposit through the logic publish handler, paid by the funding wallet", outcome: 'confirmed' },
   { step: 2, description: 'park the proxy as a reference script in its own UTxO at the always fail script address, holding its minimum lovelace', outcome: 'confirmed' },
-  { step: 3, description: 'park logic v1 as a reference script in its own UTxO at the always fail script address, holding its minimum lovelace', outcome: 'confirmed' },
+  { step: 3, description: "park the contract's logic as a reference script in its own UTxO at the always fail script address, holding its minimum lovelace", outcome: 'confirmed' },
   {
     step: 4,
-    description: 'a bare zero withdrawal from the registered logic v1 credential in a plain transaction of the funding wallet, with no control UTxO spent or referenced, built unchecked, signed and submitted: the logic takes its arrival path, which expects exactly one control output, and finds none',
+    description: "a bare zero withdrawal from the registered logic credential in a plain transaction of the funding wallet, with no control UTxO spent or referenced, built unchecked, signed and submitted: the logic takes its arrival path, which expects exactly one control output, and finds none",
     outcome: 'refused by the node',
     expectedMessage: NODE_REFUSAL_MESSAGE,
   },
   {
     step: 5,
-    description: 'a zero withdrawal from an unregistered logic credential, logic v1 applied to another parameter, in a plain transaction of the funding wallet',
+    description: "a zero withdrawal from an unregistered logic credential, the contract's logic applied to another parameter, in a plain transaction of the funding wallet",
     outcome: 'refused by the node in phase one',
     expectedMessage: UNREGISTERED_WITHDRAWAL_MESSAGE,
   },
@@ -245,14 +245,14 @@ export const SETUP_PLAN: Flow[] = [
  * transaction is compared with.
  */
 export const FLOW_PLAN: Flow[] = [
-  { step: 1, description: 'createAccount, sponsored by the funding wallet and signed by the owner key, registers the stake credential with its deposit, mints the state NFT with the owner key as the only device and zero counters, names logic v1 in the control datum and runs it through its zero withdrawal', outcome: 'confirmed' },
+  { step: 1, description: "createAccount, sponsored by the funding wallet and signed by the owner key, registers the stake credential with its deposit, mints the state NFT with the owner key as the only device and zero counters, names the contract's logic in the control datum and runs it through its zero withdrawal", outcome: 'confirmed' },
   { step: 2, description: 'deposit 120 tADA into the account with a plain transfer from the funding wallet', outcome: 'confirmed' },
   { step: 3, description: 'deposit 60 tADA into the account as a reserve from the funding wallet, under the reserve datum the owner alone can spend', outcome: 'confirmed' },
   { step: 4, description: 'spendWithDevice 5 tADA to the owner address, fee drawn from the reserve and the reserve recreated', outcome: 'confirmed' },
   { step: 5, description: 'withdrawRewards of zero from the reward account signed by the owner device', outcome: 'confirmed' },
   { step: 6, description: 'delegateStake to an active pool of the network signed by the owner device', outcome: 'confirmed' },
   { step: 7, description: 'issueGrant slot 0 to the agent key: 10 tADA per call, 15 tADA in total, owner as the only recipient, minted into its own grant UTxO paid by the account', outcome: 'confirmed' },
-  { step: 8, description: 'spendWithGrant 8 tADA to the owner address signed by the agent, spending the grant UTxO, referencing the control UTxO and running logic v1 through its zero withdrawal', outcome: 'confirmed' },
+  { step: 8, description: "spendWithGrant 8 tADA to the owner address signed by the agent, spending the grant UTxO, referencing the control UTxO and running the contract's logic through its zero withdrawal", outcome: 'confirmed' },
   { step: 9, description: 'spendWithGrant 8 tADA again, beyond the remaining cap', outcome: 'refused by the builder', expectedMessage: /exceeds the remaining cap/ },
   { step: 10, description: 'spendWithGrant 8 tADA again, beyond the remaining cap, built unchecked, signed and submitted', outcome: 'refused by the node', expectedMessage: NODE_REFUSAL_MESSAGE },
   { step: 11, description: 'spendWithGrant 3 tADA to an address outside the recipients', outcome: 'refused by the builder', expectedMessage: /is not a recipient/ },
@@ -338,18 +338,18 @@ export const FLOW_PLAN: Flow[] = [
   {
     step: 43,
     description:
-      'setup of logic v2 on the network: register its credential with the Conway deposit through the logic publish handler and park it as a reference script at the always fail script address, both paid by the funding wallet and recorded in the network file, which the builders reference it from; a network that records it already has the parked UTxO checked through the provider and reused',
+      'setup of the second logic on the network: register its credential with the Conway deposit through the logic publish handler and park it as a reference script at the always fail script address, both paid by the funding wallet and recorded in the network file, which the builders reference it from; a network that records it already has the parked UTxO checked through the provider and reused',
     outcome: 'confirmed',
   },
   { step: 44, description: 'deposit 30 tADA into the account as plain funds from the funding wallet, from which the upgrade flows pay their owner steps, the reserve having been swept', outcome: 'confirmed' },
   {
     step: 45,
-    description: `issueGrant slot ${PRE_UPGRADE_GRANT_SLOT} to the agent key under logic v1: 10 tADA per call, 15 tADA in total, owner as the only recipient, issued under generation ${GENERATION_BEFORE_UPGRADE}, which the runner checks the account is at`,
+    description: `issueGrant slot ${PRE_UPGRADE_GRANT_SLOT} to the agent key under the contract's logic: 10 tADA per call, 15 tADA in total, owner as the only recipient, issued under generation ${GENERATION_BEFORE_UPGRADE}, which the runner checks the account is at`,
     outcome: 'confirmed',
   },
   {
     step: 46,
-    description: `upgradeLogic to v2, rewriting the first field of the control datum with the generation bumped to ${GENERATION_AFTER_UPGRADE}, running logic v1, which approves the leave, and logic v2, which validates the arrival, both referenced from their parked UTxOs, over an account holding one device, no revoked slot and one outstanding grant`,
+    description: `upgradeLogic to the second logic, rewriting the first field of the control datum with the generation bumped to ${GENERATION_AFTER_UPGRADE}, running the contract's logic, which approves the leave, and the second logic, which validates the arrival, both referenced from their parked UTxOs, over an account holding one device, no revoked slot and one outstanding grant`,
     outcome: 'confirmed',
     budget: [{ path: 'upgrade', handlers: 'Device, the leaving logic and the arriving logic', netMemory: 1.62 * MEGA, netSteps: 0.5 * GIGA }],
   },
@@ -361,28 +361,28 @@ export const FLOW_PLAN: Flow[] = [
   },
   {
     step: 48,
-    description: `spendWithGrant 1 tADA with the slot ${PRE_UPGRADE_GRANT_SLOT} grant, built unchecked against the upgraded control state, signed and submitted; logic v2 refuses the dead grant`,
+    description: `spendWithGrant 1 tADA with the slot ${PRE_UPGRADE_GRANT_SLOT} grant, built unchecked against the upgraded control state, signed and submitted; the second logic refuses the dead grant`,
     outcome: 'refused by the node',
     expectedMessage: NODE_REFUSAL_MESSAGE,
   },
-  { step: 49, description: `sweepGrant slot ${PRE_UPGRADE_GRANT_SLOT} under logic v2, dead by generation, which the sweep rule reads from the stable prefix of its datum, burning its grant token`, outcome: 'confirmed' },
+  { step: 49, description: `sweepGrant slot ${PRE_UPGRADE_GRANT_SLOT} under the second logic, dead by generation, which the sweep rule reads from the stable prefix of its datum, burning its grant token`, outcome: 'confirmed' },
   {
     step: 50,
-    description: `issueGrant slot ${REISSUED_GRANT_SLOT} to the agent key under logic v2, the one request survivingGrantRequests lists from the grants and the state before the upgrade, issued under generation ${GENERATION_AFTER_UPGRADE}`,
+    description: `issueGrant slot ${REISSUED_GRANT_SLOT} to the agent key under the second logic, the one request survivingGrantRequests lists from the grants and the state before the upgrade, issued under generation ${GENERATION_AFTER_UPGRADE}`,
     outcome: 'confirmed',
   },
-  { step: 51, description: `spendWithGrant 8 tADA to the owner address with the slot ${REISSUED_GRANT_SLOT} grant, referencing the control UTxO that names logic v2 and running it`, outcome: 'confirmed' },
-  { step: 52, description: 'upgradeLogic back to v1 attempted from the agent wallet, which holds no device key of the account', outcome: 'refused by the builder', expectedMessage: /not a device of the account/ },
+  { step: 51, description: `spendWithGrant 8 tADA to the owner address with the slot ${REISSUED_GRANT_SLOT} grant, referencing the control UTxO that names the second logic and running it`, outcome: 'confirmed' },
+  { step: 52, description: "upgradeLogic back to the contract's logic attempted from the agent wallet, which holds no device key of the account", outcome: 'refused by the builder', expectedMessage: /not a device of the account/ },
   {
     step: 53,
     description:
-      'upgradeLogic back to v1 assembled on the agent wallet with the grantee key as the only signer, built unchecked, signed and submitted; logic v2, which the account would leave, refuses the device spend without a device signature, while logic v1 reads no signature of the arrival',
+      "upgradeLogic back to the contract's logic assembled on the agent wallet with the grantee key as the only signer, built unchecked, signed and submitted; the second logic, which the account would leave, refuses the device spend without a device signature, while the contract's logic reads no signature of the arrival",
     outcome: 'refused by the node',
     expectedMessage: NODE_REFUSAL_MESSAGE,
   },
   {
     step: 54,
-    description: `spendWithDevice, sponsored by the funding wallet, sweeps every fund UTxO back to it once the slot ${REISSUED_GRANT_SLOT} grant is revoked and swept, leaving only the control UTxO under logic v2 at the account address`,
+    description: `spendWithDevice, sponsored by the funding wallet, sweeps every fund UTxO back to it once the slot ${REISSUED_GRANT_SLOT} grant is revoked and swept, leaving only the control UTxO under the second logic at the account address`,
     outcome: 'confirmed',
   },
 ];
@@ -513,10 +513,10 @@ export interface EvidenceFacts {
   rewardAddress: string;
   poolId: string;
   tokenPolicyId: string;
-  /** The hash of the logic version the run creates under. */
-  logicV1Hash: string;
-  /** The hash of the logic version the run upgrades to, once the upgrade flows run. */
-  logicV2Hash?: string;
+  /** The hash of the contract's logic, which the run creates the account under. */
+  logicHash: string;
+  /** The hash of the second logic the run upgrades to, once the upgrade flows run. */
+  secondLogicHash?: string;
   /** The records of the network setup flows, reused from the network file or run once, once the setup flows run. */
   setup?: FlowRecord[];
   records: FlowRecord[];
@@ -714,7 +714,7 @@ const setupSection = (setup: FlowRecord[] | undefined, network: string): string[
     : [
         '## Setup',
         '',
-        'The one time setup of the network for logic v1: the logic credential',
+        "The one time setup of the network for the contract's logic: the credential",
         'registered, the proxy and the logic parked as reference scripts, a bare',
         'zero withdrawal from the registered credential refused by the logic in',
         'phase two, since with no control UTxO spent or referenced it takes its',
@@ -787,16 +787,19 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
     'its first field, which every account transaction runs through a zero',
     'withdrawal from the logic credential, with the proxy and the logic',
     'referenced from UTxOs parked at an always fail script address and',
-    'recorded in the network file. After the sweep the run sets up a second',
-    'logic version on the network, upgrades the account to it with the',
-    'generation bumped, shows a grant issued under the first version dead',
-    'by that bump, refused by the builder and by the second logic, and swept',
-    'under the second version, which judges it by the stable prefix of its',
-    'datum, issues it again under the second version from the request',
-    'survivingGrantRequests lists, spends under it, shows the grantee',
-    'refused a move back to the first version by the builder and by the',
-    'second logic, and sweeps the account again, leaving the control UTxO',
-    'under the second version.',
+    'recorded in the network file. After the sweep the run proves the owner',
+    'upgrade, the mechanism that lets a later logic replace the one every',
+    'account runs. It needs a second logic script to move an account to, so',
+    'it sets up the throwaway one of fixtures/upgrade-logic on the network,',
+    'which no account of the contract runs and the blueprint does not',
+    "carry, upgrades the account from the contract's logic to it with the",
+    'generation bumped, shows a grant issued before the upgrade dead by',
+    'that bump, refused by the builder and by the second logic, and swept',
+    'under it, which judges it by the stable prefix of its datum, issues it',
+    'again under it from the request survivingGrantRequests lists, spends',
+    'under it, shows the grantee refused a move back by the builder and by',
+    'the second logic, and sweeps the account again, leaving the control',
+    'UTxO under the second logic.',
     '',
     `- Date: ${facts.date}`,
     `- Funding address: \`${facts.fundingAddress}\``,
@@ -810,8 +813,8 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
     `- Reward address: \`${facts.rewardAddress}\``,
     `- Delegated pool: \`${facts.poolId}\``,
     `- Test token policy id: \`${facts.tokenPolicyId}\``,
-    `- Logic v1 hash: \`${facts.logicV1Hash}\``,
-    ...(facts.logicV2Hash === undefined ? [] : [`- Logic v2 hash: \`${facts.logicV2Hash}\``]),
+    `- Logic hash: \`${facts.logicHash}\``,
+    ...(facts.secondLogicHash === undefined ? [] : [`- Second logic hash of the upgrade proof: \`${facts.secondLogicHash}\``]),
     '',
     ...setupSection(facts.setup, network),
     '## Flows',

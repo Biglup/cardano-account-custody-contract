@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import type { NativeScript, PlutusScript, Provider, UTxO, Wallet } from '@biglup/cometa';
 import { config as loadEnv } from 'dotenv';
 import { accountAddress, paymentKeyHashOf, rewardAddress } from '../src/address.js';
-import { CURRENT_LOGIC_TITLE, LOGIC_V2_TITLE, accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../src/blueprint.js';
+import { accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
 import { DEVNET_NETWORK, ENV_PATH, type ProviderConfiguration, loadRunEnvironment, providerConfiguration } from '../src/config.js';
 import { posixTimeToSlot, transactionBodyParts } from '../src/body.js';
@@ -31,7 +31,8 @@ import { type AccountState, type Asset, type Scope, encodeLogicRedeemer } from '
 import { type AccountRecord, accountByOwner, accountExists } from '../src/discovery.js';
 import { type NetworkScripts, type ReferenceScriptRecord, loadNetworkScripts, networkFilePath, referenceOf, resolveReferenceScript } from '../src/network.js';
 import { minimumUtxoLovelace } from '../src/output.js';
-import { currentLogicHash, currentLogicScript, logicScript, logicScriptHash, logicVersionHash, logicVersionScript } from '../src/logic.js';
+import { currentLogicHash, currentLogicScript, logicScript, logicScriptHash } from '../src/logic.js';
+import { fixtureLogicScript } from './fixture-logic.js';
 import { stakeScript, stakeScriptHash } from '../src/stake-script.js';
 import { LOVELACE } from '../src/state.js';
 import {
@@ -238,6 +239,13 @@ interface Actors {
   /** The native policy of the test token, requiring the funding wallet's signature, and the token's asset. */
   tokenScript: NativeScript;
   token: Asset;
+  /**
+   * The throwaway second logic of the upgrade fixture project applied to
+   * the proxy hash. It is outside the blueprint, so every builder of the
+   * run is given it among the logics it may attach, both before the
+   * upgrade, when no account names it, and after, when the account does.
+   */
+  secondLogic: PlutusScript;
 }
 
 /** A redeemer of a transaction as Blockfrost lists it. */
@@ -651,14 +659,14 @@ class Run {
 
   /** The parameters every owner transaction shares: the owner key is the account's initial device and the owner of its stake script. */
   private get ownerParams() {
-    const { owner, provider, ownerKeyHash, network } = this.actors;
-    return { wallet: owner, provider, owner: ownerKeyHash, network, slotConfig: target.slotConfig };
+    const { owner, provider, ownerKeyHash, network, secondLogic } = this.actors;
+    return { wallet: owner, provider, owner: ownerKeyHash, network, logics: [secondLogic], slotConfig: target.slotConfig };
   }
 
   /** The parameters every agent transaction shares: the agent wallet signs and provides the collateral, and the account comes from the persisted record. */
   private get agentParams() {
-    const { agent, provider, record, network } = this.actors;
-    return { wallet: agent, provider, record, network, slotConfig: target.slotConfig };
+    const { agent, provider, record, network, secondLogic } = this.actors;
+    return { wallet: agent, provider, record, network, logics: [secondLogic], slotConfig: target.slotConfig };
   }
 
   /**
@@ -1076,89 +1084,89 @@ class Run {
   }
 
   /**
-   * Step 43, the setup of logic v2 on the network: its credential
+   * Step 43, the setup of the second logic on the network: its credential
    * registered through the logic publish handler and the script parked at
    * the always fail address the proxy is parked at, both paid by the
    * funding wallet and appended to the network file, from which every
-   * later builder references it. On a network whose file records v2
-   * already the parked UTxO is checked through the provider and reused,
-   * and the step lists the transaction that parked it.
+   * later builder references it. On a network whose file records the
+   * second logic already the parked UTxO is checked through the provider
+   * and reused, and the step lists the transaction that parked it.
    */
-  private async setUpLogicV2(logic: PlutusScript): Promise<void> {
+  private async setUpSecondLogic(logic: PlutusScript): Promise<void> {
     const { provider, funding, network } = this.actors;
     const logicHash = logicScriptHash(logic);
     const proxy = referenceOf(network, accountScriptHash(accountScript()));
     if (!proxy) {
-      throw new Error('The network file does not record the proxy, so the setup of logic v2 has no address to park it at');
+      throw new Error('The network file does not record the proxy, so the setup of the second logic has no address to park it at');
     }
     const record = this.record(43);
     const recorded = referenceOf(network, logicHash);
     if (recorded) {
       await resolveReferenceScript(provider, recorded, logic);
       record.txIds.push(recorded.txId);
-      console.log(`  logic v2 ${logicHash} is registered and parked already at ${recorded.txId}#${recorded.index}`);
+      console.log(`  the second logic ${logicHash} is registered and parked already at ${recorded.txId}#${recorded.index}`);
       return;
     }
     const adaPerUtxoByte = BigInt((await provider.getParameters()).adaPerUtxoByte);
-    await this.confirm(43, `register the logic v2 credential ${logicHash}`, [funding], () => registerLogic(funding, logic));
-    const txId = await this.confirm(43, `park logic v2 at ${proxy.address}`, [funding], () => parkScript(funding, proxy.address, logic, adaPerUtxoByte));
+    await this.confirm(43, `register the second logic credential ${logicHash}`, [funding], () => registerLogic(funding, logic));
+    const txId = await this.confirm(43, `park the second logic at ${proxy.address}`, [funding], () => parkScript(funding, proxy.address, logic, adaPerUtxoByte));
     const reference = await parkedRecord(provider, logic, proxy.address, txId, adaPerUtxoByte);
     writeNetworkFile([...network.references, reference]);
     this.actors.network = loadNetworkScripts(target.network);
   }
 
   /**
-   * Steps 43 to 54: logic v2 set up on the network, a deposit the owner
-   * steps are paid from, a grant issued under v1, the upgrade with both
-   * logics running, the grant dead by the generation bump, refused by the
-   * builder and by v2 and swept under v2, issued again from the surviving
-   * requests, spent under v2, the move back to v1 refused to the grantee
-   * by the builder and by v2, and the account swept to its control UTxO.
+   * Steps 43 to 54: the second logic set up on the network, a deposit the
+   * owner steps are paid from, a grant issued under the logic the account
+   * runs, the upgrade with both logics running, the grant dead by the
+   * generation bump, refused by the builder and by the second logic and
+   * swept under it, issued again from the surviving requests, spent under
+   * it, the move back refused to the grantee by the builder and by the
+   * second logic, and the account swept to its control UTxO.
    */
   private async upgrade(): Promise<void> {
-    const { funding, owner, agent, ownerAddress, agentKeyHash } = this.actors;
+    const { funding, owner, agent, ownerAddress, agentKeyHash, secondLogic } = this.actors;
     const scriptHash = accountScriptHash(accountScript());
-    const logicV1Hash = currentLogicHash(scriptHash);
-    const logicV2 = logicVersionScript(LOGIC_V2_TITLE, scriptHash);
-    const logicV2Hash = logicScriptHash(logicV2);
-    await this.setUpLogicV2(logicV2);
+    const logicHash = currentLogicHash(scriptHash);
+    const secondLogicHash = logicScriptHash(secondLogic);
+    await this.setUpSecondLogic(secondLogic);
     await this.confirm(44, `deposit ${UPGRADE_DEPOSIT_LOVELACE} lovelace from the funding wallet`, [funding], () =>
       deposit({ ...this.ownerParams, wallet: funding, value: { coins: UPGRADE_DEPOSIT_LOVELACE } }),
     );
-    await this.assertAccountAt(logicV1Hash, GENERATION_BEFORE_UPGRADE, 'before the grant issued under logic v1');
-    await this.confirm(45, `issueGrant slot ${PRE_UPGRADE_GRANT_SLOT} to the agent under logic v1`, [owner], () =>
+    await this.assertAccountAt(logicHash, GENERATION_BEFORE_UPGRADE, "before the grant issued under the contract's logic");
+    await this.confirm(45, `issueGrant slot ${PRE_UPGRADE_GRANT_SLOT} to the agent under the contract's logic`, [owner], () =>
       issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: this.scope(GRANT_LIFETIME_MS) }] }),
     );
     const before = await findAccountUtxos(this.actors.provider, this.ownerParams);
     if (before.grants.length !== 1 || before.grants[0]?.prefix.slot !== PRE_UPGRADE_GRANT_SLOT) {
       throw new Error(`The account holds ${before.grants.length} grant UTxOs before the upgrade instead of the one in slot ${PRE_UPGRADE_GRANT_SLOT}`);
     }
-    await this.confirm(46, `upgradeLogic to ${logicV2Hash}`, [owner], () => upgradeLogic({ ...this.ownerParams, newLogic: logicV2Hash }));
-    await this.assertAccountAt(logicV2Hash, GENERATION_AFTER_UPGRADE, 'after the upgrade');
+    await this.confirm(46, `upgradeLogic to ${secondLogicHash}`, [owner], () => upgradeLogic({ ...this.ownerParams, newLogic: secondLogicHash }));
+    await this.assertAccountAt(secondLogicHash, GENERATION_AFTER_UPGRADE, 'after the upgrade');
     await this.refuseInBuilder(47, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the grant issued before the upgrade`, () =>
       this.lovelaceSpend(PRE_UPGRADE_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, validityWindowSlots),
     );
     await this.refuseAtNode(48, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the grant issued before the upgrade, unchecked`, [agent], () =>
       this.lovelaceSpend(PRE_UPGRADE_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, validityWindowSlots, true),
     );
-    await this.confirm(49, `sweepGrant slot ${PRE_UPGRADE_GRANT_SLOT} under logic v2`, [owner], () =>
+    await this.confirm(49, `sweepGrant slot ${PRE_UPGRADE_GRANT_SLOT} under the second logic`, [owner], () =>
       sweepGrant({ ...this.ownerParams, slots: [PRE_UPGRADE_GRANT_SLOT] }),
     );
     const requests = survivingGrantRequests(before.grants, before.state);
     if (requests.length !== 1 || requests[0]?.grantee !== agentKeyHash) {
       throw new Error(`survivingGrantRequests lists ${requests.length} grants to issue again instead of the one issued before the upgrade`);
     }
-    await this.confirm(50, `issueGrant slot ${REISSUED_GRANT_SLOT} from the surviving request under logic v2`, [owner], () =>
+    await this.confirm(50, `issueGrant slot ${REISSUED_GRANT_SLOT} from the surviving request under the second logic`, [owner], () =>
       issueGrant({ ...this.ownerParams, grants: requests }),
     );
-    await this.confirm(51, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace to the owner under logic v2`, [agent], () =>
+    await this.confirm(51, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace to the owner under the second logic`, [agent], () =>
       this.lovelaceSpend(REISSUED_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, validityWindowSlots),
     );
-    await this.refuseInBuilder(52, 'upgradeLogic back to v1 from the agent wallet', () => upgradeLogic({ ...this.agentParams, newLogic: logicV1Hash }));
-    await this.refuseAtNode(53, 'upgradeLogic back to v1 assembled on the agent wallet, unchecked', [agent], () =>
-      upgradeLogic({ ...this.agentParams, newLogic: logicV1Hash, unchecked: true }),
+    await this.refuseInBuilder(52, "upgradeLogic back to the contract's logic from the agent wallet", () => upgradeLogic({ ...this.agentParams, newLogic: logicHash }));
+    await this.refuseAtNode(53, "upgradeLogic back to the contract's logic assembled on the agent wallet, unchecked", [agent], () =>
+      upgradeLogic({ ...this.agentParams, newLogic: logicHash, unchecked: true }),
     );
-    await this.support(`revokeGrant slot ${REISSUED_GRANT_SLOT}, which kills the grant issued again under logic v2`, [owner], () =>
+    await this.support(`revokeGrant slot ${REISSUED_GRANT_SLOT}, which kills the grant issued again under the second logic`, [owner], () =>
       revokeGrant({ ...this.ownerParams, slot: REISSUED_GRANT_SLOT }),
     );
     await this.support(`sweepGrant slot ${REISSUED_GRANT_SLOT}, the last outstanding grant, so that only the control UTxO is left to sweep`, [owner], () =>
@@ -1320,7 +1328,7 @@ const setUpNetwork = async (provider: Provider, projectId: string, funding: Wall
 
   await refuseSetup(funding, setupRecord(4, records), await bareWithdrawal(funding, logic), 'node', isNodeScriptRefusal);
 
-  const stranger = logicScript(logicValidator(loadBlueprint(), CURRENT_LOGIC_TITLE), UNREGISTERED_LOGIC_PARAMETER);
+  const stranger = logicScript(logicValidator(loadBlueprint()), UNREGISTERED_LOGIC_PARAMETER);
   await refuseSetup(funding, setupRecord(5, records), await bareWithdrawal(funding, stranger), 'node in phase one', isNodePhaseOneRefusal);
 
   writeNetworkFile(references);
@@ -1405,6 +1413,7 @@ const main = async (): Promise<void> => {
     poolId,
     tokenScript,
     token,
+    secondLogic: fixtureLogicScript(scriptHash),
   };
 
   const run = new Run(actors);
@@ -1426,14 +1435,14 @@ const main = async (): Promise<void> => {
   await run.sweepOwnerWallet();
   await run.sweepRecipientWallet();
 
-  const logicV2Hash = logicVersionHash(LOGIC_V2_TITLE, scriptHash);
+  const secondLogicHash = logicScriptHash(actors.secondLogic);
   const remaining = await provider.getUnspentOutputs(address);
   const live = await accountExists(provider, record);
   if (remaining.length !== 1 || !live || live.state.devices.length !== 1) {
     throw new Error(`The account address should hold only its control UTxO with the owner device after the sweep but holds ${remaining.length} UTxOs`);
   }
-  if (live.logic !== logicV2Hash) {
-    throw new Error(`The account should run logic v2 ${logicV2Hash} after the run but names ${live.logic}`);
+  if (live.logic !== secondLogicHash) {
+    throw new Error(`The account should run the second logic ${secondLogicHash} after the run but names ${live.logic}`);
   }
   if (!(await isStakeCredentialRegistered(projectId, reward))) {
     throw new Error(`Blockfrost no longer lists ${reward} as registered`);
@@ -1457,8 +1466,8 @@ const main = async (): Promise<void> => {
       rewardAddress: reward,
       poolId,
       tokenPolicyId: token.policyId,
-      logicV1Hash: currentLogicHash(scriptHash),
-      logicV2Hash,
+      logicHash: currentLogicHash(scriptHash),
+      secondLogicHash,
       records: run.records,
       supporting: run.supporting,
     }),

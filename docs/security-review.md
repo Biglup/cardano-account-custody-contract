@@ -1,35 +1,29 @@
 # Security review
 
-An adversarial review of the account proxy, the first and the second
-logic versions and the account stake validator, organised by the
-vulnerability classes of the Cardano developer portal's smart contract
-security curriculum, with one class added for the split between the
-proxy and the logic. Every class was attacked with concrete transactions
+An adversarial review of the account proxy, the account logic and the
+account stake validator, the three validators the contract deploys,
+organised by the vulnerability classes of the Cardano developer portal's
+smart contract security curriculum, with one class added for the split
+between the proxy and the logic. Every class was attacked with concrete transactions
 written as Aiken tests in `validators/attacks.test.ak`; each `attack_`
 test asserts that a validator refuses the transaction. The document only
 claims what those tests and the reasoning below establish.
 
-## Scope and versions
+## Scope
 
-- Validators: `validators/account.ak`, the account proxy, a multi
-  purpose validator with no parameters, with the mint handler
+- Validators, the three entries of `plutus.json` and the whole of what
+  the contract deploys: `validators/account.ak`, the account proxy, a
+  multi purpose validator with no parameters, with the mint handler
   (`CreateAccount`, `IssueGrants`, `BurnGrants`) and the spend handler
   (`Device`, `SpendWithGrant`, `SweepGrant`, `Fund`), script hash
-  `ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253` in
-  `plutus.json`; `validators/logic_v1.ak`, the first logic version, a
-  validator parameterised by the proxy hash with the `withdraw` and
+  `ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253`;
+  `validators/logic_v1.ak`, the account logic, which every account runs,
+  a validator parameterised by the proxy hash with the `withdraw` and
   `publish` handlers, whose blueprint entry (hash
   `7cf7daa6c0a5825e23a9dadece990d5a602fa1508d01f061eacaed52`) is the
   unapplied code and whose applied hash, the logic credential every
-  account on this version names, is
-  `2cd68e398bdf9fbc8d257614b54403451ee722520ec785fe14f8df5a`;
-  `validators/logic_v2.ak`, the second logic version, the same handlers
-  over the shared rules plus the `max_grant_batch` bound, whose
-  blueprint entry (hash
-  `03489f90cbd00ec38d8669cb582fa7014becd1122b9ba3a03c7b7dc1`) is the
-  unapplied code and whose applied hash, the logic credential every
-  account on this version names, is
-  `69baa8a8c877247028c56c8130449e186e3658d541536d168f92db3d`; and
+  account names, is
+  `2cd68e398bdf9fbc8d257614b54403451ee722520ec785fe14f8df5a`; and
   `validators/account_stake.ak`, the parameterised stake validator with
   the `withdraw` and `publish` handlers, whose blueprint entry (hash
   `edcfa41389b7b924916ad7408cd2d0f75a7a3dae8717f9bbf1a668c6`) is the
@@ -38,32 +32,39 @@ claims what those tests and the reasoning below establish.
 - Libraries:
   `lib/cardano_account_custody_contract/{types,state,account,grant,rules,logic}.ak`.
   `rules.ak` holds the path rules of the logic; `logic.ak` the withdraw
-  and publish handlers every logic version shares, the dispatch over the
-  control UTxOs, `is_own_control` and the owner, agent and arrival arms,
-  which `logic_v1` writes out in its handler and calls for the arms and
-  `logic_v2` calls whole; `account.ak` the helpers the proxy, the stake
-  script and the logic share.
+  and publish handlers a logic version is built from, the dispatch over
+  the control UTxOs, `is_own_control` and the owner, agent and arrival
+  arms, which `logic_v1` writes out in its handler and calls for the
+  arms; `account.ak` the helpers the proxy, the stake script and the
+  logic share.
 - Toolchain: Aiken v1.1.24, Plutus V3, aiken-lang/stdlib v4.0.0,
   aiken-lang/fuzz v3.0.0.
-- Tests: 2388 checks under `aiken check -D`, from 903 tests of which 15
+- Tests: 2369 checks under `aiken check -D`, from 884 tests of which 15
   are property tests run 100 times each. `validators/attacks.test.ak`
   holds 171 of the tests: 111 `attack_` tests and 60 `budget_` tests, of
   which 16 are baselines and one bounds the datum size.
   `validators/logic_v1.test.ak` holds 218, the functional suite of the
-  logic over the whole transaction; `validators/logic_v2.test.ak` 19,
-  the batch bound against logic v1 and the handover between the two
-  versions in both directions; `validators/account.test.ak` 104, the
-  proxy's; `validators/account_stake.test.ak` 40, the stake script's;
-  the `lib/**/*.test.ak` files hold the remaining 351 (166 for
+  logic over the whole transaction; `validators/account.test.ak` 104,
+  the proxy's; `validators/account_stake.test.ak` 40, the stake
+  script's; the `lib/**/*.test.ak` files hold the remaining 351 (166 for
   `account.ak` including 3 property tests, 89 for `grant.ak` including
   12 property tests over the cap arithmetic, the time rules and the
   token names, 31 for `rules.ak`, 31 for `state.ak`, 14 for `logic.ak`,
   20 for the test helpers). Functional tests are cited below where they
   already cover an attack variant.
-- Out of scope: the off-chain transaction builder, key management, the
-  signer's list of known logic hashes, the sponsor service, the network
-  setup that registers the logic credential and parks the reference
-  scripts, and the ledger rules the validators rely on (balance,
+- Out of scope: `fixtures/upgrade-logic`, an Aiken project of its own
+  holding a throwaway second logic script. No account runs it, it is
+  absent from `plutus.json` and nothing ships it; it exists so that the
+  upgrade mechanism can be proven against a chain, which needs a second
+  logic to move an account to, and the properties this review claims of
+  an upgrade are claimed of the arriving logic as an unknown script, not
+  of that fixture. Its own `aiken check -D` reports 1855 checks, the 19
+  tests of its `validators/logic_v2.test.ak` over the library suite the
+  project compiles through a symlink. Also out of scope: the off-chain
+  transaction builder, key management, the signer's list of known logic
+  hashes, the sponsor service, the network setup that registers the
+  logic credential and parks the reference scripts, and the ledger rules
+  the validators rely on (balance,
   witnesses, datum availability, validity interval enforcement, single
   registration of a stake credential, which script runs on which
   certificate or withdrawal, one redeemer per mint policy per
@@ -81,9 +82,10 @@ fixtures' control datum names and `run_as` runs the same code under
 another credential, which is how a next version is played in the attack
 suite; `register`, `withdraw` and `delegate` run the stake script. The
 upgrade tests of the attack suite and of `validators/logic_v1.test.ak`
-therefore prove the handover between two instances of logic v1 under
-different credentials; `validators/logic_v2.test.ak` proves it between
-logic v1 and logic v2, each under its own credential, in both
+therefore prove the handover between two instances of the logic under
+different credentials; the fixture project's
+`validators/logic_v2.test.ak` proves it between the deployed rules and a
+script whose code differs, each under its own credential, in both
 directions, and `docs/devnet-evidence.md` records it on a chain.
 
 Documentation of the tests follows the shape of the test. An adversarial
@@ -667,12 +669,12 @@ logic). Functional companions, the upgrade suite in
 `publish_accepts_a_registration_of_the_credential`,
 `publish_rejects_a_deregistration`, `publish_rejects_a_delegation`,
 `publish_rejects_a_registration_with_a_delegation`; in
-`validators/logic_v2.test.ak`, with logic v1 and logic v2 each run under
-its own credential:
-`upgrade_from_the_first_version_is_accepted_by_both_logics`,
-`upgrade_from_the_first_version_rejects_a_grantee`,
-`downgrade_to_the_first_version_is_accepted_by_both_logics`,
-`downgrade_to_the_first_version_rejects_a_grantee`,
+the fixture project's `validators/logic_v2.test.ak`, with the deployed
+rules and the fixture script each run under its own credential:
+`upgrade_from_the_deployed_logic_is_accepted_by_both_logics`,
+`upgrade_from_the_deployed_logic_rejects_a_grantee`,
+`downgrade_to_the_deployed_logic_is_accepted_by_both_logics`,
+`downgrade_to_the_deployed_logic_rejects_a_grantee`,
 `spend_with_grant_rejects_a_grant_issued_before_an_upgrade`,
 `publish_rejects_a_deregistration`; in
 `validators/account.test.ak`: `device_requires_the_logic_the_control_names`,
@@ -719,7 +721,7 @@ accepts `CreateAccount` with one name in quantity one, `IssueGrants`
 with every name in quantity one and `BurnGrants` with every name in
 quantity minus one; the agent path additionally requires that nothing
 is minted or burned under the policy and that a single output holds the
-grant token, which a burn makes impossible. All four validators fail in
+grant token, which a burn makes impossible. All three validators fail in
 their `else` handler.
 
 Tests. `attack_other_redeemer_withdraw_rewards_with_a_grantee_signature`
@@ -1263,12 +1265,15 @@ units:
   percent, since the logic's issuance grows with the count, which leaves
   less margin than the context decoding the runner does not charge, so
   sixteen does not fit on chain. The off-chain builder issues at most
-  eight grants per transaction (`MAX_GRANT_BATCH`), and logic v2 pins
-  that batch on chain for issuances and sweeps alike (`max_grant_batch`,
-  `device_rejects_an_issuance_over_the_batch` and
+  eight grants per transaction (`MAX_GRANT_BATCH`); the deployed logic
+  leaves the count to the execution budget, and a later version could
+  pin the batch on chain instead, as the fixture project's
+  `max_grant_batch` does
+  (`device_rejects_an_issuance_over_the_batch` and
   `device_rejects_a_sweep_over_the_batch` against
-  `logic_v1_issues_over_the_batch` and `logic_v1_sweeps_over_the_batch`
-  in `validators/logic_v2.test.ak`); grants with fewer recipients are
+  `the_deployed_logic_issues_over_the_batch` and
+  `the_deployed_logic_sweeps_over_the_batch` in
+  `validators/logic_v2.test.ak`). Grants with fewer recipients are
   cheaper.
 - Sweep of one dead grant: 2.14 M. Eight at once, with eight proxy
   executions at the last input's figure: 8.08 M, 46 percent. Sixteen at
@@ -1291,17 +1296,25 @@ measured 45.2 and 47.5 percent of the memory limit, an eight grant sweep
 49.5 and 52.5 percent, and a device rewrite or revoke over the largest
 state 8.7 to 9.9 percent. The agent spend over many deposits is where
 the method matters most, since every `Fund` execution decodes the whole
-transaction: a grant spend over twelve fund UTxOs, the most a checked
-spend takes, measured 6.20 M memory units and 2.12 G steps, 35.4 percent
-of the memory limit, with each `Fund` execution between 0.26 M and
-0.40 M against the 0.16 M of the local row, so the per input cost on
-chain is roughly 0.1 M to 0.2 M more than the local rows on a
-transaction of that size. The library bounds a checked grant spend at
+transaction and scans the inputs for the account token input: a grant
+spend over twelve fund UTxOs, the most a checked spend takes, measured
+6.20 M memory units and 2.12 G steps, 35.4 percent of the memory limit,
+with each `Fund` execution between 0.26 M and 0.40 M against the 0.16 M
+of the local row, so the per input cost on chain is roughly 0.1 M to
+0.2 M more than the local rows on a transaction of that size. That is
+the figure to budget against, and it is the worst case of the scan: the
+cost of a `Fund` execution depends on where the input carrying the
+account token sorts among the inputs, which follows the transaction
+ids, so a run whose grant UTxO sorts first measures less, 4.27 M memory
+units and 1.56 G steps over the same twelve, each `Fund` execution
+between 0.10 M and 0.14 M, which is what the recorded run happens to
+show. The library bounds a checked grant spend at
 `MAX_FUND_INPUTS` (12) fund UTxOs and splits a larger sweep into batches
 (`fundBatches`); the builder evaluates every grant spend through the
 provider, so a spend over the limit is refused before submission, as the
 run's spend over thirteen fund UTxOs shows. The same run upgrades an
-account from logic v1 to logic v2 after the teardown, over one device,
+account from the deployed logic to the fixture's second logic after the
+teardown, over one device,
 no revoked slot and one outstanding grant: the proxy's two spends and
 the two logics measured 1.27 M memory units and 0.43 G steps on chain,
 7.2 percent of the memory limit, under the 1.62 M of the upgrade row
@@ -1484,7 +1497,7 @@ Closed in this revision:
    size of an agent spend at around thirty deposits from the local
    figures. Every `Fund` execution pays to decode the whole transaction
    context and now the proxy execution beside it, neither of which the
-   local runner charges: the devnet run measured a grant spend over
+   local runner charges: a devnet run measured a grant spend over
    twelve fund UTxOs at 6.20 M memory units, 35.4 percent of the limit,
    each `Fund` execution between 0.26 M and 0.40 M against the 0.16 M of
    the local row, and the builder refused a spend over thirteen before
@@ -1672,6 +1685,11 @@ No other attack succeeded.
 
 ## Audit scope
 
+An audit covers the three validators of `plutus.json` and nothing else:
+the permanent part below, and the one logic version every account runs.
+`fixtures/upgrade-logic` is outside it, since no account runs that
+script, it is absent from the blueprint and nothing ships it.
+
 The permanent part, which no upgrade can change and which every account
 on every version depends on:
 
@@ -1695,7 +1713,8 @@ on every version depends on:
   running: the proxy's withdrawal rule on the spent datum, and every
   version's leaving rule on the arriving datum.
 
-The first version, `validators/logic_v1.ak` with
+The replaceable part, the one logic version every account runs,
+`validators/logic_v1.ak` with
 `lib/cardano_account_custody_contract/{logic,rules,grant,state}.ak`: the
 owner, agent and arrival arms, the one control UTxO per transaction
 rule, the rules of each path, the bounds, the upgrade branch of
@@ -1703,10 +1722,6 @@ rule, the rules of each path, the bounds, the upgrade branch of
 state it did not write, and the `publish` handler. The handler of
 `logic_v1` writes the dispatch of `logic.validates_withdrawal` out, so
 the two are reviewed together as one piece of code.
-
-The second version, `validators/logic_v2.ak`: `logic.validates_withdrawal`
-and the shared rules above, which it calls whole, plus the
-`max_grant_batch` bound on the mint under the policy.
 
 A later version is audited on its own: its rules, its arrival branch,
 that it keeps the stable prefixes and that its leaving rule requires the
