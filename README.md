@@ -1,56 +1,62 @@
 # Cardano Account Custody Contract
 
-Cardano account custody contract in Aiken: a stable per-user address with owner keys and on-chain bounded, revocable agent grants (cap, expiry, destinations).
+Cardano account custody contract in Aiken: a stable per-user address with owner keys, on-chain bounded, revocable agent grants (cap, expiry, destinations), and rules the owner can replace without changing the address.
 
 This is the Cardano counterpart of the Midnight Passport Account Custody
 Contract (ACC). The account is a script address: the owner holds full
 authority through the device keys listed in the account state, and each
-agent holds a grant that the script checks on every spend. A grant bounds
-what the agent may move by asset, cap, expiry and destination.
+agent holds a grant that the rules check on every spend. A grant bounds
+what the agent may move by asset, cap, expiry and destination. The rules
+live in a logic script that each account names in its state; the
+address, the tokens and the stake script are permanent.
 
 ## How it works
 
 ### Address and control UTxO
 
-Every user gets one address. The payment part is the account validator,
-shared by everybody. The stake part is the user's own stake script: the
-`account_stake` validator applied to the user's first device key and to the
-account validator's hash. That first device key is called the owner; it
-names the account, signs its creation and is listed as a device from the
-start. Afterwards any device controls the account, its rewards and its
-delegation. The hash of the applied script is the user's stake credential,
-so each user gets their own address and their own reward account on top of
-the shared payment script.
+Every user gets one address. The payment part is the account proxy,
+shared by everybody; its hash is also the policy id of every account
+token. The stake part is the user's own stake script: the `account_stake`
+validator applied to the user's first device key and to the proxy's hash.
+That first device key is called the owner; it names the account, signs
+its creation and is listed as a device from the start. Afterwards any
+device controls the account, its rewards and its delegation. The hash of
+the applied script is the user's stake credential, so each user gets
+their own address and their own reward account on top of the shared
+payment script.
 
 Funds live at that address as normal UTxOs. Anybody can deposit with a
 plain transfer, no datum needed, and the user earns staking rewards on all
 of it.
 
 Next to the funds sits one small UTxO, the control UTxO. It holds a state
-NFT (minted by the account validator, named after the stake credential) and
-an inline datum with the account state: the device keys and the grant
-bookkeeping (the grant generation, the next slot, the revoked slots and
-the number of outstanding grants). Each grant lives in its own grant UTxO
-at the same address, holding a grant token named after the account and the
-grant's slot and an inline datum with the grant. The stake script reads the
+NFT (minted by the proxy, named after the stake credential) and an inline
+datum with the account state: the hash of the logic script whose rules
+govern the account, the device keys and the grant bookkeeping (the grant
+generation, the next slot, the revoked slots and the number of
+outstanding grants). Each grant lives in its own grant UTxO at the same
+address, holding a grant token named after the account and the grant's
+slot and an inline datum with the grant. The stake script reads the
 control UTxO too: a transaction that withdraws rewards or changes the
 delegation must include it, spent or referenced, and be signed by one of
 the devices listed in it.
 
 ```mermaid
 flowchart LR
-    subgraph addr["Account address = account script hash + the user's own stake script"]
-        control["Control UTxO<br/>state NFT + AccountState datum<br/>devices, generation, next slot,<br/>revoked slots, outstanding"]
+    subgraph addr["Account address = account proxy hash + the user's own stake script"]
+        control["Control UTxO<br/>state NFT + AccountState datum<br/>logic, devices, generation, next slot,<br/>revoked slots, outstanding"]
         g1["Grant UTxO slot 0<br/>grant token + Grant datum"]
         g2["Grant UTxO slot 1<br/>grant token + Grant datum"]
         r1["Reserve UTxO<br/>deposit with a datum, owner only"]
         f1["Fund UTxO<br/>50 ADA"]
         f2["Fund UTxO<br/>10000 NIGHT"]
     end
+    logic["Logic script named by the control datum<br/>run once per transaction<br/>through a zero withdrawal"]
     rewards["Reward account<br/>of the stake script"]
-    owner["Owner<br/>any device key"] -- "Device: rewrite the state,<br/>issue, revoke, sweep, spend" --> control
+    owner["Owner<br/>any device key"] -- "Device: rewrite the state,<br/>issue, revoke, sweep, spend, upgrade" --> control
     agent["Agent<br/>grantee key"] -- "SpendWithGrant: spends its grant UTxO<br/>and plain funds, references the control UTxO" --> g1
     owner -- "withdraw, delegate:<br/>the stake script reads the devices<br/>from the control UTxO" --> rewards
+    control -. "the proxy requires<br/>a withdrawal from the logic<br/>the control datum names" .-> logic
     control -. "funds move with the control UTxO<br/>or with a grant UTxO" .-> f1
     control -.-> f2
     control -. "reserves move with<br/>the control UTxO only" .-> r1
@@ -59,32 +65,64 @@ flowchart LR
 
 A fund UTxO can only be spent in a transaction that also spends an account
 token of the same account: the control UTxO on the owner path, a grant
-UTxO on the agent path. A fund UTxO checks almost nothing itself beyond
-that; the control UTxO or the grant UTxO checks the whole transaction once,
-over everything that enters and leaves the address. A deposit that carries
-a datum is a reserve: it can only be spent together with the control UTxO,
-so it is the owner's alone.
+UTxO on the agent path. A fund UTxO checks nothing else itself; the logic
+checks the whole transaction once, over everything that enters and leaves
+the address. A deposit that carries a datum is a reserve: it can only be
+spent together with the control UTxO, so it is the owner's alone.
 
-Creating the account is one transaction. It registers the stake credential
-and mints the state NFT into the control UTxO. The stake script allows the
-registration only when the owner signs, the state NFT of that credential is
-minted in the same transaction and the control output lists the owner among
-its devices; the mint handler refuses to run without that registration. The
-ledger refuses to register a credential that is already registered, so an
-account can only be created once. Nobody, not even the owner key, can mint
-a second control UTxO later.
+### Proxy and logic
+
+The proxy is thin and permanent. On every spend under its address except
+a plain fund spend, and on every mint under its policy except the creation
+of an account, it requires that the control UTxO of the account is in the
+transaction, spent or referenced, and that the transaction withdraws from
+the reward account of the logic script that control UTxO names. A
+withdrawal makes the ledger run the script of the credential it draws
+from, once, with the whole transaction as its context: that run is the
+logic, and the amount withdrawn is zero. The logic reads the proxy's
+redeemers back from the script context and applies the rules of its
+version to the whole transaction: the device signature on the owner path,
+the grant on the agent path, the issuance and the sweep of grants, the
+shape of the state written back. The proxy keeps only the rules no logic
+may change: how tokens are named, that each is minted in quantity one and
+burned in quantity minus one,
+that every account token sits at the address of its own account, that
+the state NFT comes back in exactly one control UTxO at the same address
+with nothing but lovelace beside it, under an inline datum and without a
+reference script, and that an account is created once, under a
+registration its owner signs.
+
+`logic_v1` is the first version. A later version is another script, and
+the owner moves an account to it with one transaction; see
+[Permanent and replaceable](#permanent-and-replaceable). Accounts under
+different versions share the address format, the tokens and the stake
+script and differ only in the hash their control datum names.
+
+```mermaid
+sequenceDiagram
+    participant D as Device
+    participant P as Account proxy
+    participant L as Logic named by the control datum
+
+    D->>D: build tx: control UTxO in and out (Device), funds in (Fund),<br/>withdrawal of zero from the logic credential (Run),<br/>proxy and logic as reference inputs, required signer = device key
+    D->>P: submit
+    P->>P: control UTxO present exactly once, the transaction withdraws from the logic it names,<br/>the state NFT returns in one control output at the same address
+    P->>L: the withdrawal runs the logic once over the whole transaction
+    L->>L: the control UTxO carries Device, a listed device signed,<br/>the new state is well formed and the counters follow the mint,<br/>every other input at the address carries Fund or a valid SweepGrant
+    L-->>D: accepted
+```
 
 ### Owner operations
 
 Any device key listed in the state has full authority. With a device
 signature the owner can spend whatever they want, add or remove devices,
 issue grants, revoke one grant or all of them, sweep dead grants, withdraw
-the staking rewards and delegate to a pool or a DRep. The validator only
-insists that the state written back is well formed (one to 8 distinct
-devices, at most 16 outstanding grants, at most 32 revoked slots, a
-generation that never decreases, counters that follow the grant tokens
-minted and burned) and that the NFT comes back to the same address in
-exactly one control UTxO.
+the staking rewards, delegate to a pool or a DRep, and point the account
+at another logic. Logic v1 only insists that the state written back is
+well formed (one to 8 distinct devices, at most 16 outstanding grants, at
+most 32 revoked slots, a generation that never decreases, counters that
+follow the grant tokens minted and burned), and the proxy that the NFT
+comes back to the same address in exactly one control UTxO.
 
 Devices are listed as key hashes, so a device is whatever signs Ed25519: a
 normal Cardano payment key, a passkey derived key, a hardware wallet.
@@ -102,17 +140,20 @@ devices out of its datum, and one of them has to be among the required
 signers. Any device listed in the state can withdraw rewards and
 delegate, regardless of which device created the account or which earned
 the rewards. Losing one device does not affect rewards or delegation
-while another device remains in the state. Deregistering the credential
-is refused outright; see [Permanence](#permanence).
+while another device remains in the state. The stake script reads the
+device list and nothing else of the state, so rewards and delegation
+answer to the devices whatever logic the account runs. Deregistering the
+credential is refused outright; see [Permanence](#permanence).
 
 ```mermaid
 sequenceDiagram
     participant D2 as Second device
-    participant Chain as Cardano (account + stake script)
+    participant Chain as Cardano (proxy, logic and stake script)
 
-    D2->>D2: build tx: control UTxO in and out (Device),<br/>withdrawal from the reward account (Operate),<br/>required signer = device 2 key
+    D2->>D2: build tx: control UTxO in and out (Device),<br/>withdrawal from the reward account (Operate),<br/>withdrawal of zero from the logic (Run),<br/>required signer = device 2 key
     D2->>Chain: submit
-    Chain->>Chain: account validator: device 2 is in the datum,<br/>control UTxO recreated with the same state
+    Chain->>Chain: proxy: control UTxO present, its logic withdraws,<br/>control UTxO recreated in place
+    Chain->>Chain: logic: device 2 is in the datum, the state is written back unchanged
     Chain->>Chain: stake script: a control UTxO of this account is present,<br/>one of its devices signed
     Chain-->>D2: accepted, rewards paid out
 ```
@@ -138,7 +179,7 @@ grant UTxO under a grant token, and its datum carries:
 Issuing a grant is an owner transaction: it spends the control UTxO, mints
 one grant token per grant and puts each token in a new grant UTxO with its
 datum, paid for by the account. The agent spends with its own key; the
-owner is not involved and gets no prompt. The validator checks the
+owner is not involved and gets no prompt. The logic checks the
 transaction against the grant and, if it passes, recreates the grant UTxO
 with the remaining caps (`cap` and `lovelace_cap`) reduced by at least
 what actually left, fees included. The per call caps never change. Caps
@@ -150,6 +191,7 @@ stateDiagram-v2
     Active --> Active: agent SpendWithGrant, remaining caps decrease by at least the net outflow
     Active --> Revoked: owner revoke (Device), slot added to the revoked list
     Active --> Revoked: owner revoke all (Device), generation bumped
+    Active --> Revoked: owner upgrade (Device, both logics), generation bumped
     Active --> Expired: validity interval passes expires_at
     Revoked --> [*]: owner sweep (Device + SweepGrant + BurnGrants), token burned, lovelace freed
     Expired --> [*]: owner sweep (Device + SweepGrant + BurnGrants), token burned, lovelace freed
@@ -166,14 +208,18 @@ revoked list, or, to revoke every grant at once or when the list holds 32
 slots, the generation is bumped and the list cleared. The grant UTxO is
 not touched by the revoke. Expiry needs no transaction at all; the spend
 stops validating. A dead grant UTxO stays at the address until the owner
-sweeps it, which burns its token and frees its lovelace.
+sweeps it, which burns its token and frees its lovelace. An upgrade bumps
+the generation as well, so it kills every grant; the owner issues the
+survivors again under the new logic.
 
 ### Agent spend checks
 
 ```mermaid
 flowchart TD
-    A["grant UTxO spent with SpendWithGrant,<br/>control UTxO among the reference inputs"] --> B{"exactly one control UTxO of this account referenced,<br/>exactly one account token among the inputs,<br/>the grant UTxO holds only lovelace and its token?"}
-    B -- no --> X["refused"]
+    A["grant UTxO spent with SpendWithGrant,<br/>control UTxO among the reference inputs"] --> P{"proxy: exactly one control UTxO of this account<br/>spent or referenced, and a withdrawal<br/>from the logic its datum names?"}
+    P -- no --> X["refused"]
+    P -- yes --> B{"logic: its control UTxO is referenced, not spent,<br/>nothing minted under the policy,<br/>exactly one account token among the inputs,<br/>the grant UTxO holds only lovelace and its token?"}
+    B -- no --> X
     B -- yes --> C{"grant.generation == control generation<br/>and slot not in the revoked list?"}
     C -- no --> X
     C -- yes --> D{"grantee key hash among the required signers?"}
@@ -185,43 +231,74 @@ flowchart TD
     G -- no --> X
     G -- yes --> H{"every external output<br/>goes to a recipient?<br/>(when the list is set)<br/>every deposit back carries no datum<br/>and no reference script?"}
     H -- no --> X
-    H -- yes --> I{"grant UTxO recreated at the same address<br/>with the same value, no reference script,<br/>datum == spent grant with cap and lovelace_cap<br/>each between zero and old minus max(0, leaving),<br/>nothing minted under the account policy?"}
+    H -- yes --> I{"grant UTxO recreated at the same address<br/>with the same value, no reference script,<br/>datum == spent grant with cap and lovelace_cap<br/>each between zero and old minus max(0, leaving)?"}
     I -- no --> X
     I -- yes --> OK["accepted"]
 ```
 
 The check is over the net value leaving the address, so the number of
 fund UTxOs the agent spends and how it splits the change do not enter
-into it. The validator has no check of the form "an output exists that
-pays X", so there is no output check that two scripts could share. The
-control UTxO is only read: an agent spend never spends it, so an owner's
-revoke never competes with the agent for it.
+into it. The logic has no check of the form "an output exists that pays
+X", so there is no output check that two scripts could share. The control
+UTxO is only read: an agent spend never spends it, so an owner's revoke
+never competes with the agent for it.
+
+### Upgrades
+
+An upgrade is an owner transaction that rewrites the logic field of the
+control datum. Both logics run: the one the account leaves approves the
+leave on a device signature and requires that the new one runs; the one
+the account arrives at finds no control UTxO naming it, treats the
+control output that does as an arrival, and validates its state as fresh
+under its own rules, requiring the grant generation to grow so that
+every grant issued before is dead. The owner then sweeps the dead grant
+UTxOs and issues again the grants that should survive, under the new
+logic. The proxy pins the state NFT and the address through all of it.
+
+```mermaid
+sequenceDiagram
+    participant D as Device
+    participant P as Account proxy
+    participant Old as Logic the account leaves
+    participant New as Logic the account arrives at
+
+    D->>D: build tx: control UTxO in (Device) and out with logic = New,<br/>generation + 1, devices unchanged, no mint,<br/>withdrawals of zero from Old and from New (Run)
+    D->>P: submit
+    P->>P: control UTxO present, withdrawal from Old (named by the spent datum),<br/>state NFT back in one control output at the same address
+    P->>Old: withdrawal runs Old
+    Old->>Old: Device on the control UTxO, a device signed,<br/>the output names another logic: New withdraws, nothing minted
+    P->>New: withdrawal runs New
+    New->>New: no control UTxO names New: arrival, exactly one control output names New,<br/>state well formed, generation grew, devices equal, nothing minted,<br/>the leaving logic Old withdraws
+    New-->>D: accepted, every grant issued before is dead
+    D->>P: later: sweep the dead grants, issue the survivors again under New
+```
 
 ### Custody services
 
 The agent key may be held by a custody service that signs on request. On
 chain the grantee is the hash of an Ed25519 key: the service holds that
 key, the agent builds the transaction and hands it over, and the service
-signs the transaction body. The validator only sees a required signer that
-matches the grant. There is no other kind of grantee: a service that cannot
-produce an Ed25519 witness over the transaction cannot be a grantee.
+signs the transaction body. The logic only sees a required signer that
+matches the grant. There is no other kind of grantee: a service that
+cannot produce an Ed25519 witness over the transaction cannot be a
+grantee.
 
 ```mermaid
 sequenceDiagram
     participant Owner
     participant Agent
     participant Custody as Custody service (holds the agent key)
-    participant Chain as Cardano (validator)
+    participant Chain as Cardano (proxy and logic)
 
     Owner->>Chain: Device + IssueGrants: grant token minted into a grant UTxO (slot, agent key hash, scope)
     Note over Chain: control UTxO rewritten with the next slot and outstanding count
 
-    Agent->>Agent: build tx: grant UTxO + funds in, control UTxO referenced,<br/>payout + change + recreated grant UTxO out,<br/>required signer = agent key hash
+    Agent->>Agent: build tx: grant UTxO + funds in, control UTxO referenced,<br/>withdrawal of zero from the logic, payout + change + recreated grant UTxO out,<br/>required signer = agent key hash
     Agent->>Custody: sign(tx)
     Custody->>Custody: policy check, sign the body with the agent's Ed25519 key
     Custody-->>Agent: witness
     Agent->>Chain: submit tx, redeemer SpendWithGrant
-    Chain->>Chain: grant current against the referenced control UTxO,<br/>grantee among the required signers,<br/>check caps, expiry, recipients, recreated grant
+    Chain->>Chain: proxy: control UTxO referenced, its logic withdraws,<br/>logic: grant current against the control UTxO,<br/>grantee among the required signers,<br/>caps, expiry, recipients, recreated grant
     Chain-->>Agent: accepted, remaining caps reduced
     Owner->>Chain: Device: revoke(slot) whenever they want, control UTxO only
     Owner->>Chain: Device + SweepGrant + BurnGrants: sweep the dead grant UTxO
@@ -229,23 +306,24 @@ sequenceDiagram
 
 A service holding the grantee key can spend at most what the grant
 allows: the caps, the expiry and the recipient list are checked by the
-validator on every spend, and the owner revokes the grant with one
-`Device` transaction on the control UTxO.
+logic on every spend, and the owner revokes the grant with one `Device`
+transaction on the control UTxO.
 
 ### Account discovery
 
 The address is a pure function of the owner key and the compiled scripts:
-apply the stake script to the owner key hash and the account script hash,
-hash the result, and you have the stake credential, the address, the
-reward account and the name of the state NFT. A passkey synced to a second
+apply the stake script to the owner key hash and the proxy hash, hash the
+result, and you have the stake credential, the address, the reward
+account and the name of the state NFT. A passkey synced to a second
 machine derives the same key and therefore the same account; that is what
 `accountByOwner` does. A second device with its own key doesn't know the
 owner key, so when it gets added it receives an account record (owner key
 hash, stake script hash, address) in the add device handshake, persists it,
 and every builder accepts the record in place of the owner key.
 `accountExists` confirms the control UTxO is on chain and returns the
-current state; `grantsOf` and `deadGrantsOf` list an account's grant UTxOs
-by their tokens, all of them or only those the owner can sweep.
+current state and the logic hash it names; `grantsOf` and `deadGrantsOf`
+list an account's grant UTxOs by their tokens, all of them or only those
+the owner can sweep.
 
 Every account is also discoverable from the chain alone: list the UTxOs
 under the account policy, read each control datum, and look for the
@@ -259,12 +337,13 @@ UTxO both pick, since every path draws from the same plain deposits. There
 is no rolling daily cap; a cap is a total the owner replaces by issuing a
 new grant. Fees on an agent spend come out of the account and count
 against the grant; the fee is bounded ahead of evaluation and the bound
-counts against the caps. An account is permanent, with no delete. Create
-the account before you share the address: until the ledger removes the
-legacy registration certificate, anybody who learns the stake credential
-first can register it with that certificate and block creation at that
-address for good, which the key derivation convention below keeps from
-happening by accident.
+counts against the caps. An account is permanent, with no delete. An
+upgrade kills every grant; grants are issued again, never carried over.
+Create the account before you share the address: until the ledger removes
+the legacy registration certificate, anybody who learns the stake
+credential first can register it with that certificate and block creation
+at that address for good, which the key derivation convention below keeps
+from happening by accident.
 
 Details in [Limitations](#limitations) and in the
 [security review](docs/security-review.md).
@@ -273,33 +352,121 @@ Details in [Limitations](#limitations) and in the
 
 ### Address, control UTxO and tokens
 
-An account's address pairs the account validator's script hash as its
-payment credential with the hash of the account's own stake script as an
-inline script stake credential. The account validator is multi purpose:
-the same script hash is both the spend handler guarding every UTxO at that
-address and the mint policy of the account's tokens, so the two handlers
-can trust each other's checks within one transaction. The state NFT is
-named after the stake credential (28 bytes), so its policy id and name
-together identify the account. It sits in exactly one control UTxO holding
-only lovelace, the NFT and an inline `AccountState` datum. A grant token is
-named after the stake credential followed by the grant's slot as four big
-endian bytes (32 bytes), and sits in exactly one grant UTxO holding only
-lovelace, the token and an inline `Grant` datum. Every other UTxO at the
-address is a deposit: a plain one with no datum, spendable on the owner
-and the agent paths, or a reserve under any datum, spendable with the
-control UTxO only. A deposit's datum is never read.
+An account's address pairs the account proxy's script hash as its payment
+credential with the hash of the account's own stake script as an inline
+script stake credential. The proxy is multi purpose: the same script hash
+is both the spend handler guarding every UTxO at that address and the
+mint policy of the account's tokens. The state NFT is named after the
+stake credential (28 bytes), so its policy id and name together identify
+the account. It sits in exactly one control UTxO holding only lovelace,
+the NFT and an inline `AccountState` datum, whose first field names the
+logic. A grant token is named after the stake credential followed by the
+grant's slot as four big endian bytes (32 bytes), and sits in exactly one
+grant UTxO holding only lovelace, the token and an inline `Grant` datum.
+Every other UTxO at the address is a deposit: a plain one with no datum,
+spendable on the owner and the agent paths, or a reserve under any datum,
+spendable with the control UTxO only. A deposit's datum is never read.
 
-An output at the account script whose stake part is anything but an inline
-script credential belongs to no account and cannot be spent, because
+An output at the proxy whose stake part is anything but an inline script
+credential belongs to no account and cannot be spent, because
 `account.stake_script_hash_of` aborts on it.
+
+### Proxy
+
+`account` is the proxy: a validator with no parameters, so its hash, the
+payment credential and the policy id, is fixed for every account on a
+network.
+
+Mint. `CreateAccount` accepts exactly one minted entry, a 28 byte name in
+quantity one, and requires a `Publish` redeemer for a certificate
+registering that credential (`account.registers_stake_credential`),
+exactly one output at the account address of the name holding the NFT
+under an inline datum (`account.find_control_output`), holding nothing
+but lovelace and the NFT and carrying no reference script, every account
+token among the outputs at its own account address
+(`account.tokens_sit_at_their_own_addresses`), a 28 byte script hash in
+the first field of that datum (`account.logic_of`,
+`account.is_script_hash`) and a withdrawal from that hash
+(`account.withdraws_from`). It reads nothing else of the state: the
+logic named validates the initial state as an arrival. `IssueGrants`
+requires every minted entry to be a 32 byte grant name prefixed by one
+account's stake script hash, in quantity one (`account.mints_grants_of`),
+the control UTxO of that account present exactly once among the inputs
+and the reference inputs (`account.find_present_control`), a withdrawal
+from the logic it names, and every account token among the outputs at
+its own account address. `BurnGrants` requires the same names in quantity
+minus one, with the same control UTxO and withdrawal; it checks no
+placement, since a burn creates no account token output.
+A 28 byte name is never a grant name, so only `CreateAccount` mints a
+state NFT and no redeemer burns one.
+
+Spend. `Fund` requires that the spent UTxO holds no token of the policy
+and, with no datum, that some input at the same full address holds an
+account token of the account (`account.has_account_token_input`), or,
+with any datum, that the control UTxO is spent
+(`account.has_control_input`). Every other redeemer requires the control
+UTxO of the spent UTxO's own account present exactly once among the
+inputs and the reference inputs and a withdrawal from the logic its
+inline datum names; when the spent UTxO holds the state NFT, exactly one
+output holds that NFT, at the same address, holding nothing but lovelace
+and the NFT, under an inline datum and with no reference script
+(`account.keeps_control_output`); and when the spent UTxO holds any token
+of the policy, every account token among the outputs sits at its own
+account address. These arms run once per input and read nothing of the
+transaction but the inputs, the reference inputs, the outputs and the
+withdrawals. The proxy does not decode the state beyond its first field,
+does not check signatures and does not bind a redeemer to a kind of UTxO:
+those are the logic's rules. A withdrawal of any amount from the logic
+credential satisfies the proxy; the amount is not read.
+
+### Logic v1
+
+`logic_v1` is a validator parameterised by the proxy hash. Its applied
+hash is a stake credential; the proxy requires a withdrawal from it
+whenever a control UTxO naming it is spent or referenced, so the ledger
+runs the `withdraw` handler once per transaction. The handler filters the
+inputs and the reference inputs for control UTxOs under the proxy whose
+datum names its own hash (`is_own_control`: inline datum, the proxy as
+payment credential, an inline script stake credential, the state NFT of
+that stake credential, the first field equal to the hash) and branches on
+what it finds.
+
+- Exactly one, spent: the owner path. The control UTxO's proxy redeemer is
+  `Device`; every output that is a control output naming this logic sits
+  at the spent account's address; a mint under the policy carries
+  `IssueGrants` or `BurnGrants` and passes `rules.issue_grants_rule` or
+  `rules.burn_grants_rule` for this account, `CreateAccount` is refused;
+  and every input at the account address spent under a proxy redeemer
+  other than `Fund` passes the rule its redeemer names:
+  `rules.device_rule` for `Device`, `rules.sweep_rule` for `SweepGrant`,
+  `SpendWithGrant` refused. The redeemers are walked, not the inputs, so a
+  `Fund` deposit costs one comparison.
+- Exactly one, referenced: the agent path. Nothing is minted under the
+  policy, no output is a control output naming this logic, and every
+  input at the account address spent under a proxy redeemer other than
+  `Fund` carries `SpendWithGrant` and passes `rules.grant_spend_rule`.
+- None: an arrival. Exactly one output is a control output naming this
+  logic, else the handler aborts; it holds only lovelace and the NFT and
+  carries a well formed `AccountState`. Without a control UTxO of that
+  account among the inputs the account is being created: the state NFT
+  is the only mint under the policy and the counters are zero. With one,
+  the account leaves another logic: the transaction withdraws from the
+  logic the spent datum names, the generation grows strictly, the devices
+  are equal, read positionally from the spent datum, and nothing is
+  minted under the policy.
+- Anything else, two control UTxOs naming this logic spent, referenced or
+  both, is refused: one account per logic version per transaction.
+
+The `publish` handler accepts the registration of a script credential,
+from anyone, and refuses every other certificate, so the credential can
+never be deregistered. The `else` handler fails.
 
 ### Stake script
 
 `account_stake` is a parameterised validator taking `owner`, the
-verification key hash of the account's initial device, and `account_hash`,
-the account validator's hash. Applying both yields the user's stake
-script, and its hash is the account's stake credential. The script has two
-handlers.
+verification key hash of the account's initial device, and `proxy_hash`.
+Applying both yields the user's stake script, and its hash is the
+account's stake credential. The script has two handlers.
 
 `publish` runs on every certificate naming the credential. A
 `RegisterCredential` or `RegisterAndDelegateCredential` passes only when
@@ -314,45 +481,55 @@ delegate representative or both, passes only under the device rule. An
 of any amount including zero, under the same device rule. The device rule,
 `account.is_authorised_by_a_device`, looks for the account's control UTxO
 among the transaction's inputs or reference inputs, an output at the
-account address holding exactly one state NFT and an inline state, and
-requires one of that state's devices among the required signers. The `else`
-handler fails, so the stake script never acts as anything else.
+account address holding the state NFT under an inline datum, and requires
+one of that datum's devices among the required signers. The devices are
+read positionally from the datum's second field (`account.devices_of`),
+so the script answers to no logic version. The `else` handler fails.
 
 ### Registration gated creation
 
 `CreateAccount` mints exactly one token under the account policy, named
-after the stake credential, into a single valid control output whose state
-has zero counters (no slot issued, no revoked slot, nothing outstanding),
-and requires that the transaction's redeemers hold a `Publish` entry for a
-certificate registering that credential
-(`account.registers_stake_credential`). A publish redeemer exists only when
-the ledger ran the stake script on that certificate, which is when the
-owner's signature, the mint and the owner's place in the device list were
-checked. The check reads the redeemers and not the certificate list,
-because a registration in the legacy certificate format carries no
-witness. The two handlers depend on each other both ways: the stake script
-refuses a registration without the mint, so a registration can never leave
-the credential registered with no account behind it, and the mint handler
-refuses a mint without the registration. The ledger registers a credential
-at most once and the stake script refuses to deregister, so a second
-`CreateAccount` for the same credential can never carry the registration
-it needs. The mint handler does not read the stake script's code: an
-account created under some other script's credential is that script's own
-account, with its own name and address, and can touch no other.
+after the stake credential, into a single control output whose datum
+names a logic, and requires that the transaction's redeemers hold a
+`Publish` entry for a certificate registering that credential. A publish
+redeemer exists only when the ledger ran the stake script on that
+certificate, which is when the owner's signature, the mint and the
+owner's place in the device list were checked. The check reads the
+redeemers and not the certificate list, because a registration in the
+legacy certificate format carries no witness. The two handlers depend on
+each other both ways: the stake script refuses a registration without the
+mint, so a registration can never leave the credential registered with no
+account behind it, and the mint handler refuses a mint without the
+registration. The ledger registers a credential at most once and the
+stake script refuses to deregister, so a second `CreateAccount` for the
+same credential can never carry the registration it needs. The mint
+handler does not read the stake script's code: an account created under
+some other script's credential is that script's own account, with its own
+name and address, and can touch no other.
+
+The initial logic is chosen at creation: the control datum names it and
+the proxy requires its withdrawal, so that logic validates the initial
+state as an arrival with no control input. Logic v1 requires zero
+counters and a well formed state. The library pins the current version
+unless the creator names another it can attach.
 
 ### Owner path
 
-A device key, found in `AccountState.devices`, authorises the owner path by
-signing the transaction. With a device signature the control UTxO may be
-spent and rewritten freely, as long as the new state stays well formed: at
-least one and at most eight distinct devices, at most sixteen outstanding
-grants, at most thirty two revoked slots, non negative counters, and a
-grant generation that never decreases. The next slot moves by exactly the
-number of grant tokens minted and the outstanding count by the tokens
-minted minus the tokens burned, read from the mint field, so the counters
-cannot drift from the grant UTxOs that exist. The device path can add or
-remove devices, revoke one slot or every grant, and spend any amount of
-funds and reserves to any destination.
+A device key, found in `AccountState.devices`, authorises the owner path
+by signing the transaction. Under logic v1 (`rules.device_rule`) the
+spent UTxO holds the state NFT, every account token among the inputs and
+the outputs sits at its own account address, and the control output
+(`rules.recreates_control_output`) carries a well formed state under
+this logic: at least one and at most eight distinct devices, at most
+sixteen outstanding grants, at most thirty two revoked slots, non
+negative counters, and a grant generation that never decreases. The next
+slot moves by exactly the number of grant tokens minted and the
+outstanding count by the tokens minted minus the tokens burned, read
+from the mint field, so the counters cannot drift from the grant UTxOs
+that exist. The device path can add or remove devices, revoke one slot
+or every grant, and spend any amount of funds and reserves to any
+destination. A control output naming another logic is an upgrade; see
+[Permanent and replaceable](#permanent-and-replaceable).
 
 Issuing grants adds the `IssueGrants` mint redeemer to a device spend of
 the control UTxO: each minted token must be named for the next slots in
@@ -363,7 +540,11 @@ generation, with a well formed scope. Sweeping dead grants adds
 `SweepGrant` on each dead grant UTxO and the `BurnGrants` mint redeemer:
 every entry burns one grant token of the account, and each swept grant is
 dead against the state of the spent control UTxO, by an older generation,
-a revoked slot, or a validity range starting after its expiry. The mint
+a revoked slot, or a validity range starting after its expiry. The sweep
+reads the slot and the generation through the stable prefix of the grant
+datum and the expiry only when the datum decodes as a full `Grant`, so a
+grant of another datum shape is swept once its generation is older than
+the control's or its slot is revoked, and not for expiry alone. The mint
 handler runs once per transaction with one redeemer, so an issuance and a
 sweep cannot share a transaction, and a sweep is judged against the state
 the control UTxO held before the transaction, so a revoke or a generation
@@ -400,33 +581,35 @@ it with the same state, which puts the devices in front of the stake script
 and lets the account pay the fee from its own reserve or funds; referencing
 the control UTxO instead is equally valid on chain. A withdrawal of zero is
 valid and runs the same check, so the path can be exercised before any
-reward has accrued.
+reward has accrued. The account's reward withdrawal and the logic's zero
+withdrawal are two entries of the same map, keyed by credential.
 
 ### Agent path
 
 A grant names a grantee, an Ed25519 verification key hash, its slot and
 generation, and a scope: an asset class, a per call cap, a remaining
 cumulative cap, a lovelace per call cap, a remaining lovelace cap, an
-expiry and a recipient list. `SpendWithGrant` runs on the grant UTxO, which
-must hold only lovelace and the grant token of its slot and be the only
-input holding an account token, so the accounting runs over one grant and
-never over the control UTxO. The control UTxO must be among the reference
-inputs exactly once, and the grant must be current against its state: the
-same generation and a slot outside the revoked list. The handler checks,
-once over the whole transaction, that the grantee is among the required
-signers and that the validity range ends before the grant expires. The
-value leaving the account address must stay within the per call cap and
-the remaining cap for the scoped asset and, when that asset is not
-lovelace, within the lovelace per call cap and the remaining lovelace cap;
-nothing of any other asset may leave. Every output away from the account
-must go to an allowed recipient when the list is non empty, and every
-output paid back to the account other than the grant output must be a
-plain deposit: no datum and no reference script. The grant UTxO is
-recreated at the same address with the same value and no reference script,
-carrying the grant with every field as spent except the remaining caps,
-each at most the spent cap less what left of its asset and at least zero.
-Nothing is minted or burned under the account policy, and every account
-token among the inputs and outputs sits at its own account address.
+expiry and a recipient list. `SpendWithGrant` is spent on the grant UTxO
+and judged by the logic's agent path (`rules.grant_spend_rule`): the UTxO
+holds only lovelace and the grant token of its slot and is the only input
+holding an account token, so the accounting runs over one grant and never
+over the control UTxO. The control UTxO is referenced, not spent, and the
+grant must be current against its state: the same generation and a slot
+outside the revoked list. The rule checks, once over the whole
+transaction, that the grantee is among the required signers and that the
+validity range ends before the grant expires. The value leaving the
+account address must stay within the per call cap and the remaining cap
+for the scoped asset and, when that asset is not lovelace, within the
+lovelace per call cap and the remaining lovelace cap; nothing of any
+other asset may leave. Every output away from the account must go to an
+allowed recipient when the list is non empty, and every output paid back
+to the account other than the grant output must be a plain deposit: no
+datum and no reference script. The grant UTxO is recreated at the same
+address with the same value and no reference script, carrying the grant
+with every field as spent except the remaining caps, each at most the
+spent cap less what left of its asset and at least zero. Nothing is
+minted or burned under the account policy, and every account token among
+the inputs and outputs sits at its own account address.
 
 ### Fund path
 
@@ -434,9 +617,9 @@ A plain deposit is spent with the `Fund` redeemer, which only requires that
 an account token of the deposit's own account, identified at the same full
 address, is spent in the same transaction: the control UTxO on the owner
 path or a grant UTxO on the agent path. A deposit carrying a datum requires
-the control UTxO itself. The control UTxO's or the grant UTxO's own handler
-does the accounting once; the fund UTxO itself carries no authorisation and
-is not read for its datum.
+the control UTxO itself. The logic does the accounting once; the fund
+UTxO itself carries no authorisation, needs no logic withdrawal of its
+own and is not read for its datum.
 
 ### Lovelace caps
 
@@ -452,32 +635,117 @@ the asset caps cover lovelace and both lovelace caps must be zero.
 
 ### Token placement
 
-The validator enforces that a state NFT named N only ever sits at the
-account address of N, in exactly one control UTxO, and that a grant token
-whose prefix is N only ever sits at that same address, in quantity one.
-This holds on every creation, on every device spend and on every grant
-spend: the control output is always found at the spent input's own full
-address and checked to hold only lovelace and that one NFT, a grant output
-at issuance is found by its token and checked the same way, and every
-account token among the inputs and outputs of a device or grant spend is
-checked to sit at the address its name denotes. An agent spend that
-strands its grant token on a plain deposit, or anywhere else, is refused.
-The state NFT can never be relocated, duplicated or parked under a foreign
-address, and no redeemer burns it; a grant token is burned only by a
-sweep.
+The proxy enforces that a state NFT named N only ever sits at the account
+address of N, in exactly one control UTxO, and that a grant token whose
+prefix is N only ever sits at that same address, in quantity one, whatever
+the logic of either account allows. This holds on every creation and
+issuance, where every account token among the outputs is checked, and on
+every spend of a UTxO holding an account token, where the same check runs
+and the control output, when the state NFT is spent, is found by the NFT
+and pinned to the same address, to lovelace and the NFT alone, to an
+inline datum and to no reference script. Logic v1 repeats the placement
+check on the inputs and the outputs of every device and grant spend. An
+agent spend that strands its grant token on a plain deposit, or anywhere
+else, is refused. The state NFT can never be relocated, duplicated or
+parked under a foreign address, and no redeemer burns it; a grant token
+is burned only by a sweep.
+
+### Permanent and replaceable
+
+Permanent. The proxy's hash, so the payment credential and the policy id;
+the stake script's code and its parameters, the owner key and the proxy
+hash, so every address, reward account and token name; the naming of
+tokens and their quantity; the creation gate: the registration the owner
+signs, tied to the mint, with the owner among the devices; the `Fund`
+rule; the control output pinned to its address on every spend; and the
+stable prefixes of the datums. `AccountState` keeps `logic`, `devices`
+and `grant_generation` as its first three fields, in that order: the
+proxy reads field 0, the stake script field 1, and a logic an account
+arrives at fields 1 and 2 of the state it leaves, each positionally and
+without decoding the rest. `Grant` keeps `slot`, `grantee` and
+`generation` first, which is all a sweep reads. A later version may only
+change what follows.
+
+Replaceable. Everything else is the logic: the device rule, the grant
+rules, the bounds, the shape of the fields after the prefix.
+
+The upgrade transaction. A device spends the control UTxO with `Device`
+and writes it back with the new logic in field 0, the generation
+strictly greater, the devices unchanged, nothing minted or burned under
+the policy, and two withdrawals of zero: from the old logic, which the
+proxy requires because the spent datum names it, and from the new one,
+which the old logic requires through `rules.recreates_control_output`
+when the output names another logic, and which the proxy will require on
+every later spend. The old logic checks the device signature, placement
+and that the new logic runs, and reads nothing else of the arriving
+state. The new logic finds no control UTxO naming it and validates the
+arrival: the state under its own well formedness, the generation past
+the one it leaves, the devices equal, read from the stable prefix of the
+old state, so a state of another shape hands over. A device is the only
+key that can do this: a grantee never spends the control UTxO, and on
+the owner path lacks the signature.
+
+Grants are reissued, never migrated. The generation bump kills every
+grant issued before, under either logic, so no grant is ever interpreted
+by a logic that did not issue it. The owner sweeps the dead grant UTxOs,
+which the sweep rule judges by the prefix alone, and issues the survivors again under
+the new logic from the list `survivingGrantRequests` computes, each step
+its own transaction, since a sweep is judged against the state before
+the bump and an issuance cannot share a transaction with a burn.
+
+Downgrade. The mechanism allows moving to any version with both
+withdrawals, an earlier one included; the library refuses only the logic
+the account already runs. The signing device gates it.
+
+Initial logic. Chosen at creation, as described under
+[Registration gated creation](#registration-gated-creation).
+
+One account per logic version per transaction. A logic validates exactly
+one control UTxO naming it and refuses two, spent, referenced or one of
+each. Two accounts under different logics can share a transaction, each
+logic netting its own address, except when either mints: the proxy
+admits grant tokens of one account per transaction, and each logic
+validates a mint under the policy as its own account's.
+
+The control UTxO is never spent and referenced in one transaction: the
+proxy finds two and refuses, and the logic refuses the same.
+
+Reference scripts. Every transaction but a plain deposit carries the
+proxy and one logic, an upgrade two. The setup of a network parks the
+proxy and each logic version once, each in its own UTxO at an always
+fail script address nobody can spend from, and records the UTxOs in
+`offchain/networks/<network>.json`; the builders reference them from
+there and embed the scripts when the network records none.
+
+Logic credential registration. The withdrawal needs the logic's
+credential registered, once per network and per version, with the
+registration deposit of 2 ADA, which anyone may pay: the `publish`
+handler accepts the registration of a script credential from anyone and
+refuses every other certificate, so nobody can deregister it. A
+withdrawal of any amount runs the logic; zero is what the builders use.
+
+Any registered script may be named as a logic. The proxy admits every 28
+byte hash whose credential withdraws; it does not know which hashes are
+versions of this contract. A device that signs an upgrade to an unknown
+hash hands the account to that code, which is the one thing a device
+signature can do under this design that it could not before. The
+signer's list of known logic hashes is the gate, and the library attaches
+only logics from the blueprint or those given to it.
 
 ### Permanence
 
 An account is never deleted. No redeemer burns a state NFT, and the stake
 script refuses every deregistration, so the credential stays registered for
 the life of the account. From creation on exactly one control UTxO of the
-account exists at all times: every spend of it recreates it, and a second
-one cannot be minted while the credential is registered. That invariant
-keeps every deposit spendable, since a plain deposit leaves alongside the
-control UTxO or a grant UTxO, a reserve alongside the control UTxO, and
-the control UTxO is always there to spend. A grant UTxO's lovelace is
-freed by the owner's sweep once the grant is dead, so no value is
-stranded in a dead grant either.
+account exists at all times: every spend of it recreates it, under the
+proxy's rule and whatever the logic, and a second one cannot be minted
+while the credential is registered. That invariant keeps every deposit
+spendable, since a plain deposit leaves alongside the control UTxO or a
+grant UTxO, a reserve alongside the control UTxO, and the control UTxO is
+always there to spend. A grant UTxO's lovelace is freed by the owner's
+sweep once the grant is dead, so no value is stranded in a dead grant
+either. The logic's credential stays registered too, so the withdrawal
+every spend needs is always available.
 
 The registration deposit and the control UTxO's minimum lovelace stay
 locked for the life of the account, and a dormant account remains. There
@@ -505,30 +773,40 @@ carries.
   record, the inline datum of a grant UTxO. `slot` is the grant's
   identifier within the account and the suffix of its token name;
   `grantee` is a 28 byte Ed25519 verification key hash; `generation` is
-  the account's grant generation at issuance. The first three fields are a
-  stable prefix that later revisions keep first and in this order.
-- `AccountState { devices, grant_generation, next_slot, revoked,
+  the account's grant generation at issuance. The first three fields are
+  the stable prefix: later versions keep them first and in this order and
+  may only append fields after `scope`.
+- `AccountState { logic, devices, grant_generation, next_slot, revoked,
   outstanding }`, a single constructor record, the inline datum of the
-  control UTxO. `devices` stays the first field in later revisions, since
-  the stake script reads it positionally.
+  control UTxO. `logic` is the 28 byte hash of the logic script. The
+  first three fields are the stable prefix: the proxy reads `logic` at
+  field 0, the stake script `devices` at field 1, and a logic an account
+  arrives at `devices` and `grant_generation` at fields 1 and 2 of the
+  state it leaves. Later versions keep them first and in this order and
+  may only change what follows.
 - `AccountRedeemer` (constructor index, no fields): `Device` is 0,
-  `SpendWithGrant` is 1, `SweepGrant` is 2, `Fund` is 3.
+  `SpendWithGrant` is 1, `SweepGrant` is 2, `Fund` is 3. The proxy
+  branches on it and the logic reads it back from the script context.
 - `MintRedeemer` (constructor index, no fields): `CreateAccount` is 0,
   `IssueGrants` is 1, `BurnGrants` is 2.
 - `StakeRedeemer` (constructor index): `Operate` is 0 and is the only
   constructor. Both stake handlers learn what they authorise from the
   script context, the withdrawal's credential or the certificate, so the
   redeemer carries no choice.
+- `LogicRedeemer` (constructor index): `Run` is 0 and is the only
+  constructor. The logic learns what it validates from the control UTxO
+  that names it and the proxy redeemers beside its own.
 - Token names under the account policy: the state NFT is the 28 byte stake
   script hash; the grant token of slot `s` is the stake script hash
   followed by `s` as four big endian bytes.
 - Bounds, constants in `state.ak`: `max_devices` 8, `max_grants` 16
-  outstanding, `max_revoked` 32, `max_recipients` 8.
+  outstanding, `max_revoked` 32, `max_recipients` 8. They belong to logic
+  v1.
 
 ## Grant accounting
 
-A grant spend is checked once, over the whole transaction, on the grant
-UTxO. The value leaving the account is the sum of every input at the
+A grant spend is checked once, over the whole transaction, by the logic.
+The value leaving the account is the sum of every input at the
 account address minus the sum of every output paid back to it, per asset
 class, so deposits made in the same transaction count against what left.
 The per call caps and the remaining caps are checked against that net
@@ -577,11 +855,13 @@ aiken check -D
 aiken build
 ```
 
-`aiken build` writes the blueprint of both validators to `plutus.json`,
-which is committed so off-chain code can load it directly. The account
-validator's hash in the blueprint is final; the stake validator's entry is
-the parameterised code, and its hash only becomes an account's stake
-credential once `owner` and `account_hash` are applied.
+`aiken build` writes the blueprint of the three validators to
+`plutus.json`, which is committed so off-chain code can load it directly.
+The proxy's hash in the blueprint is final. The logic's entry is the
+parameterised code; its hash becomes the logic credential once the proxy
+hash is applied, which the library does. The stake validator's entry is
+the parameterised code too, and its hash only becomes an account's stake
+credential once `owner` and `proxy_hash` are applied.
 
 The off-chain library under `offchain/` requires Node 22.
 
@@ -603,33 +883,59 @@ in `offchain/src/index.ts` and the modules it re-exports for the full
 surface.
 
 - Parameter application. `stakeScript` applies the owner key hash and the
-  account script hash to the blueprint's stake validator in pure
-  TypeScript (`applyParameters`), byte for byte what `aiken blueprint
-  apply` produces, and `stakeScriptHash` gives the stake credential.
-  `accountAddress`, `rewardAddress`, `stateNftAssetId` and `grantAssetId`
-  derive the rest.
+  proxy hash to the blueprint's stake validator in pure TypeScript
+  (`applyParameters`), byte for byte what `aiken blueprint apply`
+  produces, and `stakeScriptHash` gives the stake credential.
+  `logicScript` applies the proxy hash to a logic version the same way;
+  `currentLogicHash` is the version the library pins, the one a new
+  account runs unless its creator names another, and `logicCatalog`
+  holds every version the blueprint carries plus any given alongside,
+  keyed by hash. `accountAddress`, `rewardAddress`, `stateNftAssetId`
+  and `grantAssetId` derive the rest.
 - Discovery. `accountByOwner` computes the record of an account from the
   owner key hash alone; `accountExists` confirms the control UTxO on chain
-  and returns the current state; `grantsOf` lists the grant UTxOs of an
-  account and `deadGrantsOf` those the owner can sweep;
-  `classifyAccountUtxos` sorts the UTxOs at the address into the control
-  UTxO, grant UTxOs, reserves and funds. Every builder takes either `owner`
-  or a persisted `AccountRecord`.
+  and returns the current state and the logic hash the control datum
+  names, read from its first field; `grantsOf` lists the grant UTxOs of
+  an account, each by its stable prefix and, when its datum has the
+  shape the current logic issues, the whole grant, and `deadGrantsOf`
+  those the owner can sweep; `classifyAccountUtxos` sorts the UTxOs at
+  the address into the control UTxO, grant UTxOs, reserves and funds.
+  Every builder takes either `owner` or a persisted `AccountRecord`.
 - Builders. `createAccount`, `deposit`, `spendWithDevice`, `rewriteState`,
-  `addDevice`, `removeDevice`, `issueGrant`, `revokeGrant`,
-  `revokeAllGrants`, `sweepGrant`, `withdrawRewards`, `delegateStake` and
-  `spendWithGrant`, with the datum, redeemer and token name encoders in
-  `data.ts` and `address.ts` and the state helpers in `state.ts`.
-  `issueGrant` takes a list of grantee and scope pairs, assigns the next
-  slots and mints one grant token per grant into its own grant UTxO at its
-  minimum lovelace, paid by the account; `sweepGrant` burns the tokens of
-  dead grants and frees their lovelace; both take at most `MAX_GRANT_BATCH`
-  (8) grants per transaction. `revokeGrant` appends the slot to the revoked
-  list until the list holds `MAX_REVOKED` (32) slots, then bumps the
-  generation instead; after a bump the owner sweeps the dead grants and
-  issues the survivors again, each its own transaction, with
-  `survivingGrantRequests` listing them. Every builder on an existing
-  account takes `validUntilSlot`. There is no delete.
+  `upgradeLogic`, `addDevice`, `removeDevice`, `issueGrant`,
+  `revokeGrant`, `revokeAllGrants`, `sweepGrant`, `withdrawRewards`,
+  `delegateStake` and `spendWithGrant`, with the datum, redeemer and
+  token name encoders in `data.ts` and `address.ts` and the state helpers
+  in `state.ts`. Every builder but `deposit` runs the logic the control
+  UTxO names through a zero withdrawal with the `Run` redeemer, and an
+  upgrade runs the old and the new logic. `issueGrant` takes a list of
+  grantee and scope pairs, assigns the next slots and mints one grant
+  token per grant into its own grant UTxO at its minimum lovelace, paid
+  by the account; `sweepGrant` burns the tokens of dead grants and frees
+  their lovelace, reading only the stable prefix of each grant, so a
+  grant whose datum has another shape is swept once its generation or
+  its slot is dead; both take
+  at most `MAX_GRANT_BATCH` (8) grants per transaction. `revokeGrant`
+  appends the slot to the revoked list until the list holds
+  `MAX_REVOKED` (32) slots, then bumps the generation instead; after a
+  bump, by a revoke or by an upgrade, the owner sweeps the dead grants
+  and issues the survivors again, each its own transaction, with
+  `survivingGrantRequests` listing them. `upgradeLogic` writes the new
+  logic into the state with the generation bumped and the revoked list
+  cleared, refuses the logic the account already runs and any hash the
+  catalog does not hold, and leaves a downgrade to the signing device.
+  Every builder on an existing account takes `validUntilSlot`. There is
+  no delete.
+- Reference scripts. `loadNetworkScripts(network)` reads
+  `offchain/networks/<network>.json`, one record per script hash with
+  the transaction id, the index, the address and the lovelace of the
+  UTxO holding the script, in the form
+  `{"network":"preprod","references":[{"scriptHash","txId","index","address","lovelace":"<string>"}]}`.
+  A builder given it references the proxy and the logic from those
+  UTxOs instead of embedding them, and embeds them when the network
+  records none; a file that names another network or holds a malformed
+  record is refused. `createAccount` needs the logic credential
+  registered on the network.
 - Sponsor. Every builder of an owner operation, and `createAccount`, accepts an optional
   `sponsor` wallet that pays the fee, the collateral, the growth of the
   control output and, at creation, the control UTxO and the registration
@@ -657,7 +963,7 @@ surface.
   does for a wallet that holds no ADA of its own; the two cannot be given
   together, and the grant path takes `collateral` only.
 - Reserves. `deposit` with `reserve: true` writes the reserve datum on the
-  deposit; the validator lets a deposit under any datum be spent only with
+  deposit; the proxy lets a deposit under any datum be spent only with
   the control UTxO, so reserves are the owner's alone. `findAccountUtxos`
   treats every UTxO at the address with a datum and no account token as a
   reserve, never as a fund, and draws reserves for outputs only when the
@@ -673,21 +979,35 @@ surface.
 - Fee bound. A grant spend cannot write the exact caps left after the fee
   before the fee is known, so it reduces the remaining caps by the outputs
   plus `DEFAULT_GRANT_FEE_BOUND` (1.5 tADA, overridable through
-  `feeBound`), lets the provider evaluate the scripts, and the validator
+  `feeBound`), lets the provider evaluate the scripts, and the logic
   accepts caps anywhere between zero and the exact reduction; the fee ends
   at or below the bound, the difference returns to the account as change,
-  and a fee above the bound is refused before submission. The fee counts
-  against the grant's caps alongside the payout, bound included: a
+  and a fee above the bound is refused before submission. The fee of a
+  grant spend over a handful of fund UTxOs measures about 0.76 tADA with
+  the proxy and the logic referenced from their parked UTxOs and about
+  1.05 tADA with both embedded, most of it the size of the logic. The fee
+  counts against the grant's caps alongside the payout, bound included: a
   lovelace grant is charged on `per_call_cap` and `cap`, a token grant on
   the lovelace caps, so a token grant can only spend while its lovelace
   caps cover the lovelace of its outputs plus the bound, and never when
   they are below the bound. The preprod run's 8 tADA spends fit under a
   10 tADA per call cap with the bound included.
+- Fund inputs. A checked `spendWithGrant` takes at most `MAX_FUND_INPUTS`
+  (12) fund UTxOs, since on chain every script execution pays to decode
+  the whole transaction context and each fund input adds a proxy run; a
+  spend needing more is refused with the bound named, and `fundBatches`
+  splits the funds into sweeps of at most that many, largest first, the
+  change of each being a fund UTxO the next may take.
 - Account only funding. On the agent path `accountOnlyCoinSelector` spends
   nothing beyond the account's own UTxOs, so a spend the account cannot
   cover fails instead of reaching into the agent's wallet. A spend built
-  `unchecked`, to show the validator refusing it, carries
-  `UNCHECKED_EXECUTION_UNITS` instead of an evaluation.
+  `unchecked`, to show the logic refusing it, carries
+  `UNCHECKED_EXECUTION_UNITS` instead of an evaluation
+  (`fixedBudgetEvaluator`): the logic's withdrawal gets the logic budget
+  and every other redeemer the proxy budget. A checked build that fails
+  is built again with fixed budgets and evaluated through the provider,
+  so that the validator's refusal is reported rather than a bare build
+  failure (`buildChecked`).
 - Control output lovelace. The control output's lovelace rises
   automatically with the size of the state it carries
   (`minimumUtxoLovelace`), staying at or above the network's minimum UTxO
@@ -697,7 +1017,8 @@ surface.
   given, it refuses to build while a UTxO holding the account's state NFT
   already exists. It also refuses an initial state that does not list the
   owner among its devices, since the stake script refuses that
-  registration. `findAccountUtxos` treats a UTxO holding the state NFT
+  registration, one whose counters are not zero, and a logic the catalog
+  does not hold. `findAccountUtxos` treats a UTxO holding the state NFT
   as the control UTxO, one holding a grant token as a grant UTxO, one
   carrying any datum as a reserve and the rest as funds; a deposit with a
   datum is owner only.
@@ -714,43 +1035,43 @@ the repository root `.env`; see `.env.example` for the variable names. On
 its first run, with no funding mnemonic set, it generates one, stores it in
 `.env`, prints the funding address and exits: fund that address with tADA
 from the preprod faucet and rerun. The funding wallet is account 0 of the
-mnemonic and the agent wallet account 1. Because an account is permanent,
-every run creates a fresh one: the owner wallet is the first account index
-from 2 upwards whose stake credential is not yet registered on preprod.
+mnemonic. Because an account is permanent, every run creates a fresh one:
+the owner wallet is the first account index from 15 upwards, in strides
+of ten, whose stake credential is not yet registered on preprod, and the
+agent, the recipient and the rotation keys take the indexes that follow
+it, at offsets one, two and three to nine, so that no run shares a key
+with another.
 
 The owner wallet holds nothing but one collateral UTxO; the funding wallet
 sponsors the creation and the final sweep, and every other owner operation
-is paid from the account itself. Every run exercises the full set of
-flows, owner, stake and agent, happy path and refused, against the live
-network, and rewrites `docs/preprod-evidence.md` with the resulting
-transactions.
+is paid from the account itself. `offchain/scripts/flow-plan.ts` lists
+the setup of a network, the logic credential registration and the parking
+of the proxy and the logic as reference scripts, and the flows of a run,
+owner, stake and agent, happy path and refused, up to the largest state,
+a batched agent sweep of many deposits and an upgrade to a second logic.
+The script reads the network file, runs the flows through the largest
+state and the agent sweep against the live network, reads the execution
+units of every confirmed transaction back from the chain and rewrites
+`docs/preprod-evidence.md` with the result; the setup and the upgrade
+steps of the plan are not run by the script as it stands.
 
 ## Security review and preprod evidence
 
-`docs/security-review.md` is an adversarial review of both validators,
-organised by vulnerability class, with each attack reproduced as a
-transaction in `validators/attacks.test.ak` that the validators are shown
-to refuse. It records the findings that needed a code change and how each
-was closed, the registration gated creation check that prevents a second
-control UTxO, the budget of every path over the largest well formed state
-measured with `aiken check`, and the residual risks, the pre registration
-of a credential by a third party among them.
+`docs/security-review.md` is an adversarial review of the three
+validators, organised by vulnerability class, with each attack reproduced
+as a transaction in `validators/attacks.test.ak` that the validators are
+shown to refuse. It records the findings that needed a code change and
+how each was closed, the properties the proxy holds whatever logic an
+account runs, the attacks specific to the logic split and the upgrade
+path, the budget of every path over the largest well formed state
+measured with `aiken check` and on preprod, the residual risks, and what
+an audit covers.
 
-`docs/preprod-evidence.md` records a full run of the script above against
-the Cardano preprod network through Blockfrost. The run covers a sponsored
-account creation that registers the stake credential and mints the state
-NFT, a plain deposit and a reserve deposit, an owner spend paid from the
-reserve, a reward withdrawal and a pool delegation signed by the owner
-device, and issuing a grant into its own grant UTxO and spending it with
-the control UTxO referenced. It then covers grant spends refused for
-exceeding the remaining cap, for paying outside the recipients and after
-revocation, each first by the builder and then, built unchecked, by the
-node in phase two, a sweep of the revoked grant, and a grant left to
-expire, refused and swept. It ends with adding a second device that then
-spends and withdraws rewards from the persisted account record alone,
-removing it, revoking every grant by bumping the generation, and a final
-sweep of funds and reserves that leaves only the control UTxO in place.
-The document carries the transaction links and the ledger errors.
+`docs/preprod-evidence.md` records the run of the script above against
+the Cardano preprod network through Blockfrost on the date it states,
+with the transaction links, the refusals and the ledger errors. The
+recorded run predates the per grant model; the execution units the
+figures above quote come from a later run of the script.
 
 ## Prior art
 
@@ -786,46 +1107,55 @@ for that reason.
   [Permanence](#permanence).
 - The stake credential squat. Until the Dijkstra era, anyone can register
   a stake credential with the legacy certificate, which needs no witness
-  (`eras/conway/impl/src/Cardano/Ledger/Conway/TxCert.hs`,
-  `getScriptWitnessConwayTxCert`, and `eras/conway/impl/cddl/data/conway.cddl`,
-  `account_registration_cert`, in the cardano-ledger repository); the
-  ledger runs no script on it
-  (`eras/shelley/impl/src/Cardano/Ledger/Shelley/UTxO.hs` and
-  `eras/conway/impl/src/Cardano/Ledger/Conway/UTxO.hs`) and keeps no mark
-  of which form registered a credential
-  (`eras/conway/impl/src/Cardano/Ledger/Conway/Rules/Deleg.hs`). Whoever
-  registers an account's credential first blocks its creation at that
-  address for good: the owner's registration fails as already registered,
-  and deregistration, which always needs the script witness, is refused by
-  the stake script. The owner then moves to the next account index, which
-  gives a new owner key and a new address. The Dijkstra era removes the
-  legacy certificates and makes every registration witnessed
-  (`eras/dijkstra/impl/src/Cardano/Ledger/Dijkstra/TxCert.hs`,
-  `DijkstraRegCert` with a mandatory deposit and the decoder refusing tags
-  0 and 1; `eras/dijkstra/impl/cddl/data/dijkstra.cddl`), after which only
-  the stake script itself can register its credential; squats placed
-  before the fork remain. Until then the squat is prevented at the key
-  layer: the owner key of a custody account is derived on a path that
-  differs per network class, mainnet and testnets using distinct account
-  index ranges by convention of the signer and the SDK, so a key used on a
-  testnet never corresponds to a mainnet credential, signers refuse
-  custody operations outside their network class, and the stake script
-  hash of an account becomes public only in the creation transaction that
-  registers it. Nobody can learn a credential before its registration, so
-  a squat requires guessing an owner key, which is not feasible. The
-  residual case is a user who exposes their custody owner key elsewhere
-  before creating the account, which the signer prevents by refusing to
-  use the custody key for anything else.
+  and runs no script, and whoever registers an account's credential first
+  blocks its creation at that address for good; the owner then moves to
+  the next account index, which gives a new owner key and a new address.
+  Until then the squat is prevented at the key layer: the owner key of a
+  custody account is derived on a path that differs per network class,
+  mainnet and testnets using distinct account index ranges by convention
+  of the signer and the SDK, so a key used on a testnet never corresponds
+  to a mainnet credential, signers refuse custody operations outside
+  their network class, and the stake script hash of an account becomes
+  public only in the creation transaction that registers it. The ledger
+  references and the residual case are in the
+  [security review](docs/security-review.md).
 - A grant spend reduces the grant's caps by a fee bound of 1.5 tADA by
   default before the fee is known; the bound, not the fee, is what the
   caps lose on each spend, so caps must be sized with that margin; see
   [Off-chain library](#off-chain-library).
 - The state is bounded at 8 devices, 16 outstanding grants, 32 revoked
   slots and 8 recipients per grant; the bounds are constants in
-  `state.ak`. Issuing or sweeping 16 grants in one transaction exceeds the
-  14,000,000 memory unit limit, at about 15.0 M and 16.1 M net over the
-  largest state, while batches of 8 fit at 49 and 59 percent, so the
-  builder batches at most 8 grant issues or sweeps per transaction.
+  `state.ak`. Issuing sixteen grants in one transaction costs about
+  16.4 M memory units net over the largest state in the test runner and
+  sweeping sixteen about 19.3 M, both over the 14 M limit, while batches
+  of eight cost about 7.7 M and 8.1 M; on preprod an eight grant issue
+  measured 47 to 51 percent of the limit and an eight grant sweep 50 to
+  70 percent depending on input order, so the builder batches at most 8
+  grant issues or sweeps per transaction. A device rewrite or revoke over
+  the largest state measured 7 to 9 percent on preprod.
+- Every script execution on chain pays to decode the whole transaction
+  context, which the test runner does not charge, so each fund input of
+  an agent spend costs more on chain than the runner measures. On preprod
+  a grant spend over one fund input measured about 1.13 M memory units,
+  over thirteen about 7.28 M, and over twenty five about 20.6 M, which
+  the node refused; a checked grant spend therefore takes at most 12 fund
+  inputs, and `fundBatches` splits a larger sweep.
+- One account per logic version per transaction: a logic refuses two
+  control UTxOs naming it, and two accounts under different logics cannot
+  share a transaction when either mints. The builders operate one account
+  per transaction.
+- The control UTxO can be spent or referenced in a transaction, never
+  both.
+- Every transaction but a plain deposit carries the proxy and a logic, an
+  upgrade two logics. Without the reference scripts a network's setup
+  parks, the builders embed both scripts and a grant spend's fee rises
+  from about 0.76 to about 1.05 tADA.
+- An upgrade kills every grant, since the generation bumps; grants are
+  issued again under the new logic, never migrated. A downgrade is a
+  change like any other, which only the signing device gates; the proxy
+  admits any registered script credential as a logic, so the signer's
+  list of known logic hashes is what keeps a device from pointing the
+  account at unknown code.
 - The contract has only run on the Cardano preprod testnet and has had no
   independent audit; treat it as unaudited and testnet only.
 
@@ -841,15 +1171,24 @@ to another transaction builder must be able to:
   redeemer.
 - Register a script stake credential with the Conway deposit, delegate it
   and withdraw from its reward account, each with a redeemer and the stake
-  script attached as a witness.
+  script attached as a witness; and register the logic's credential once
+  per network.
+- Withdraw zero from the logic credential with the `Run` redeemer on
+  every transaction but a plain deposit, reading the logic hash from the
+  first field of the control datum rather than from a configured default,
+  and from two credentials on an upgrade.
 - Write inline datums on outputs.
-- Add the control UTxO as a reference input on every grant spend.
+- Add the control UTxO as a reference input on every grant spend, and the
+  UTxOs holding the proxy and the logic as reference inputs on every
+  transaction, or embed the scripts when the network records none.
 - Select and return collateral from a wallet other than the account.
 - Evaluate every transaction through the provider, and set a fixed
   execution budget per redeemer only for an unchecked grant spend built
-  to be refused.
+  to be refused, the logic's withdrawal getting the logic budget and every
+  other redeemer the proxy budget.
 - Apply parameters to the blueprint's stake validator to derive the per
-  user stake script and its hash.
+  user stake script and its hash, and to each logic validator to derive
+  the logic credential.
 - Declare required signers and gather witnesses from more than one wallet,
   the device and the sponsor.
 - Size the control output's and each new grant output's lovelace to the
@@ -860,7 +1199,8 @@ to another transaction builder must be able to:
   fee taken out and nothing else changes.
 - Return change to the account address with no datum.
 - Spend only account UTxOs on the grant path, with the agent's wallet, or
-  a collateral wallet standing in for it, used for collateral alone.
+  a collateral wallet standing in for it, used for collateral alone, and
+  at most 12 fund UTxOs per grant spend.
 - Read the fee of a built transaction back, to check it against the bound
   the caps were reduced by and to settle a reserve's recreated value.
 
