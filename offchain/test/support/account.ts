@@ -17,11 +17,11 @@
 /* IMPORTS ********************************************************************/
 
 import type { PlutusData, UTxO, Value } from '@biglup/cometa';
-import { accountAddress, rewardAddress, stateNftAssetId } from '../../src/address.js';
+import { accountAddress, grantAssetId, rewardAddress, stateNftAssetId } from '../../src/address.js';
 import { accountScript, accountScriptHash } from '../../src/blueprint.js';
 import { Cometa } from '../../src/cometa.js';
 import { transactionBodyParts } from '../../src/body.js';
-import { type AccountState, type Scope, encodeAccountState } from '../../src/data.js';
+import { type AccountState, type Grant, type Scope, encodeAccountState, encodeGrant, encodeReserveDatum } from '../../src/data.js';
 import { stakeScript, stakeScriptHash } from '../../src/stake-script.js';
 import { FakeProvider, FakeWallet, utxo } from './fake.js';
 
@@ -42,6 +42,7 @@ export const TOKEN_ASSET_ID = `${TOKEN_POLICY}${TOKEN_NAME}`;
 export const EXPIRY = 1_800_000_000_000n;
 export const VALID_UNTIL_SLOT = 100_000_000n;
 export const CONTROL_LOVELACE = 2_000_000n;
+export const GRANT_LOVELACE = 2_000_000n;
 
 /** The scripts and derived identifiers of the account under test, whose owner is the owner wallet's payment key. */
 export const script = accountScript();
@@ -53,12 +54,16 @@ export const address = accountAddress(scriptHash, ownerStakeScriptHash).toString
 export const ownerRewardAddress = rewardAddress(ownerStakeScriptHash).toBech32();
 
 /** The state of a freshly created account. */
-export const initialState: AccountState = { devices: [OWNER_PAYMENT_KEY], grants: [], grantGeneration: 0n };
+export const initialState: AccountState = { devices: [OWNER_PAYMENT_KEY], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
 
-/** The transaction ids of the UTxOs each wallet holds in a scenario. */
+/** The transaction ids of the UTxOs each wallet and the account hold in a scenario. */
+export const CONTROL_UTXO_TX = '11'.repeat(32);
+export const FUND_UTXO_TX = '22'.repeat(32);
 export const OWNER_UTXO_TX = '33'.repeat(32);
 export const AGENT_UTXO_TX = '44'.repeat(32);
 export const SPONSOR_UTXO_TX = '55'.repeat(32);
+export const GRANT_UTXO_TX = '66'.repeat(32);
+export const RESERVE_UTXO_TX = '77'.repeat(32);
 
 /* TYPES **********************************************************************/
 
@@ -108,30 +113,49 @@ export const tokenScope = (recipients: string[] = []): Scope => ({
 });
 
 /**
- * A state holding a lovelace grant, a token grant and a restricted lovelace
- * grant, all held by the agent key. Declared here rather than in CONSTANTS
- * because its value calls `lovelaceScope` and `tokenScope` above, which
- * must already be defined when this initialiser runs.
+ * A lovelace grant, a token grant and a restricted lovelace grant, all
+ * held by the agent key and issued under generation zero in slots zero to
+ * two. Declared here rather than in CONSTANTS because its value calls
+ * `lovelaceScope` and `tokenScope` above, which must already be defined
+ * when this initialiser runs.
  */
-export const grantedState: AccountState = {
-  devices: [OWNER_PAYMENT_KEY],
-  grants: [
-    { slot: 0n, grantee: AGENT_PAYMENT_KEY, scope: lovelaceScope() },
-    { slot: 1n, grantee: AGENT_PAYMENT_KEY, scope: tokenScope([recipientAddress]) },
-    { slot: 2n, grantee: AGENT_PAYMENT_KEY, scope: lovelaceScope([recipientAddress]) },
-  ],
-  grantGeneration: 0n,
-};
+export const fixtureGrants: Grant[] = [
+  { slot: 0n, grantee: AGENT_PAYMENT_KEY, generation: 0n, scope: lovelaceScope() },
+  { slot: 1n, grantee: AGENT_PAYMENT_KEY, generation: 0n, scope: tokenScope([recipientAddress]) },
+  { slot: 2n, grantee: AGENT_PAYMENT_KEY, generation: 0n, scope: lovelaceScope([recipientAddress]) },
+];
+
+/** The state of an account that issued the fixture grants and holds them all. */
+export const grantedState: AccountState = { ...initialState, nextSlot: 3n, outstanding: 3n };
+
+/** The asset id of the grant token of a slot of the account under test. */
+export const grantAssetIdOf = (slot: bigint): string => grantAssetId(scriptHash, ownerStakeScriptHash, slot);
 
 /** The control UTxO of the account under test, carrying a state inline. */
 export const controlUtxo = (state: AccountState, index = 0): UTxO =>
-  utxo('11'.repeat(32), index, address, { coins: CONTROL_LOVELACE, assets: { [nftAssetId]: 1n } }, encodeAccountState(state));
+  utxo(CONTROL_UTXO_TX, index, address, { coins: CONTROL_LOVELACE, assets: { [nftAssetId]: 1n } }, encodeAccountState(state));
 
 /** A deposit UTxO at the account address. */
-export const fundUtxo = (index: number, value: Value): UTxO => utxo('22'.repeat(32), index, address, value);
+export const fundUtxo = (index: number, value: Value): UTxO => utxo(FUND_UTXO_TX, index, address, value);
 
-/** A funded owner, agent and sponsor wallet plus the account's UTxOs, served by one fake provider. */
-export const scenario = (state: AccountState | undefined, funds: UTxO[]): Scenario => {
+/** A reserve UTxO at the account address: a deposit carrying the reserve datum. */
+export const reserveUtxo = (index: number, value: Value): UTxO => utxo(RESERVE_UTXO_TX, index, address, value, encodeReserveDatum());
+
+/** A UTxO at the account address carrying only a datum hash, as anyone can park there, which discovery lists as a reserve and no builder spends. */
+export const datumHashUtxo = (index: number, value: Value): UTxO => ({
+  input: { txId: RESERVE_UTXO_TX, index },
+  output: { address, value, datumHash: 'ab'.repeat(32) },
+});
+
+/** The grant UTxO of a grant, holding its token and lovelace at the account address, indexed by its slot. */
+export const grantUtxo = (grant: Grant, coins = GRANT_LOVELACE): UTxO =>
+  utxo(GRANT_UTXO_TX, Number(grant.slot), address, { coins, assets: { [grantAssetIdOf(grant.slot)]: 1n } }, encodeGrant(grant));
+
+/** The grant UTxOs of the fixture grants. */
+export const grantedUtxos = (): UTxO[] => fixtureGrants.map((grant) => grantUtxo(grant));
+
+/** A funded owner, agent and sponsor wallet plus the account's UTxOs beyond its control UTxO, served by one fake provider. */
+export const scenario = (state: AccountState | undefined, utxos: UTxO[]): Scenario => {
   const provider = new FakeProvider();
   const owner = new FakeWallet(provider, OWNER_PAYMENT_KEY, OWNER_STAKE_KEY);
   const agent = new FakeWallet(provider, AGENT_PAYMENT_KEY, AGENT_STAKE_KEY);
@@ -142,8 +166,8 @@ export const scenario = (state: AccountState | undefined, funds: UTxO[]): Scenar
   if (state) {
     provider.addUtxo(controlUtxo(state));
   }
-  for (const fund of funds) {
-    provider.addUtxo(fund);
+  for (const each of utxos) {
+    provider.addUtxo(each);
   }
   return { provider, owner, agent, sponsor };
 };

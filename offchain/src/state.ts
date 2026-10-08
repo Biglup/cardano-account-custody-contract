@@ -16,7 +16,8 @@
 
 /* IMPORTS ********************************************************************/
 
-import type { AccountState, Asset, Grant, Scope } from './data.js';
+import { Cometa } from './cometa.js';
+import { type AccountState, type Asset, type Grant, type Scope, encodeScope } from './data.js';
 import { type Balance, LOVELACE_ASSET_ID, quantityOf } from './value.js';
 
 /* CONSTANTS ******************************************************************/
@@ -29,6 +30,13 @@ export const MAX_DEVICES = 8;
 
 /** The maximum number of outstanding grants an account may hold. */
 export const MAX_GRANTS = 16;
+
+/**
+ * The maximum number of revoked slots the state may list. Once the list
+ * is full the owner revokes by bumping the grant generation instead, which
+ * clears the list and kills every outstanding grant.
+ */
+export const MAX_REVOKED = 32;
 
 /** The maximum number of recipients a grant's scope may list. */
 export const MAX_RECIPIENTS = 8;
@@ -61,6 +69,15 @@ export const scopeDefect = (scope: Scope): string | undefined => {
   return undefined;
 };
 
+/** Throws when a scope is not well formed, naming the defect. */
+export const assertScopeWellFormed = (scope: Scope): Scope => {
+  const defect = scopeDefect(scope);
+  if (defect) {
+    throw new Error(`The scope is not well formed: ${defect}`);
+  }
+  return scope;
+};
+
 /**
  * Why an account state is not well formed, or undefined when it is. The
  * validator refuses to create an account with, or rewrite the state to, a
@@ -76,20 +93,20 @@ export const stateDefect = (state: AccountState): string | undefined => {
   if (hasDuplicates(state.devices)) {
     return 'devices must be distinct';
   }
-  if (state.grants.length > MAX_GRANTS) {
-    return `an account may hold at most ${MAX_GRANTS} grants`;
-  }
-  if (hasDuplicates(state.grants.map((grant) => grant.slot))) {
-    return 'grant slots must be distinct';
-  }
-  for (const grant of state.grants) {
-    const defect = scopeDefect(grant.scope);
-    if (defect) {
-      return `grant ${grant.slot}: ${defect}`;
-    }
-  }
   if (state.grantGeneration < 0n) {
     return 'the grant generation must not be negative';
+  }
+  if (state.nextSlot < 0n) {
+    return 'the next slot must not be negative';
+  }
+  if (state.outstanding < 0n) {
+    return 'the outstanding count must not be negative';
+  }
+  if (state.outstanding > MAX_GRANTS) {
+    return `an account may hold at most ${MAX_GRANTS} outstanding grants`;
+  }
+  if (state.revoked.length > MAX_REVOKED) {
+    return `the state may list at most ${MAX_REVOKED} revoked slots`;
   }
   return undefined;
 };
@@ -106,9 +123,12 @@ export const assertWellFormed = (state: AccountState): AccountState => {
   return state;
 };
 
-/** The grant occupying a slot, if any. */
-export const findGrant = (state: AccountState, slot: bigint): Grant | undefined =>
-  state.grants.find((grant) => grant.slot === slot);
+/** Whether a state has issued nothing yet: zero counters and no revoked slot, as every account starts. */
+export const hasZeroCounters = (state: AccountState): boolean =>
+  state.nextSlot === 0n && state.revoked.length === 0 && state.outstanding === 0n;
+
+/** Whether the revoked list is full, so that the next revoke must bump the generation. */
+export const isRevokedListFull = (state: AccountState): boolean => state.revoked.length >= MAX_REVOKED;
 
 /** The state with a device added. */
 export const stateWithDevice = (state: AccountState, device: string): AccountState => ({
@@ -122,24 +142,53 @@ export const stateWithoutDevice = (state: AccountState, device: string): Account
   devices: state.devices.filter((existing) => existing !== device),
 });
 
-/** The state with a grant issued. */
-export const stateWithGrant = (state: AccountState, grant: Grant): AccountState => ({
+/** The state after issuing a number of grants: the next slot and the outstanding count move by that many. */
+export const stateAfterIssue = (state: AccountState, count: number): AccountState => ({
   ...state,
-  grants: [...state.grants, grant],
+  nextSlot: state.nextSlot + BigInt(count),
+  outstanding: state.outstanding + BigInt(count),
 });
 
-/** The state with the grant in a slot revoked. */
-export const stateWithoutGrant = (state: AccountState, slot: bigint): AccountState => ({
+/** The state after sweeping a number of dead grants: the outstanding count drops by that many. */
+export const stateAfterSweep = (state: AccountState, count: number): AccountState => ({
   ...state,
-  grants: state.grants.filter((grant) => grant.slot !== slot),
+  outstanding: state.outstanding - BigInt(count),
 });
 
-/** The state with every grant revoked and the grant generation bumped. */
-export const stateWithoutGrants = (state: AccountState): AccountState => ({
+/** The state with a slot appended to the revoked list. */
+export const stateWithRevokedSlot = (state: AccountState, slot: bigint): AccountState => ({
   ...state,
-  grants: [],
+  revoked: [...state.revoked, slot],
+});
+
+/** The state with the grant generation bumped and the revoked list cleared, which kills every outstanding grant. */
+export const stateWithNextGeneration = (state: AccountState): AccountState => ({
+  ...state,
   grantGeneration: state.grantGeneration + 1n,
+  revoked: [],
 });
+
+/** Whether a grant is current against a state: issued under its generation and not revoked by slot. */
+export const isGrantCurrent = (grant: Grant, state: AccountState): boolean =>
+  grant.generation === state.grantGeneration && !state.revoked.includes(grant.slot);
+
+/**
+ * Why a grant can no longer be spent against a state, or undefined while
+ * it is live: issued under an older generation, revoked by slot, or
+ * expired before the time a validity range starts at, when one is given.
+ */
+export const grantDeathReason = (grant: Grant, state: AccountState, validityStart?: bigint): string | undefined => {
+  if (grant.generation < state.grantGeneration) {
+    return `grant ${grant.slot} was issued under generation ${grant.generation} and the account is at ${state.grantGeneration}`;
+  }
+  if (state.revoked.includes(grant.slot)) {
+    return `slot ${grant.slot} is revoked`;
+  }
+  if (validityStart !== undefined && validityStart > grant.scope.expiresAt) {
+    return `grant ${grant.slot} expired at ${grant.scope.expiresAt}, before the validity range starts`;
+  }
+  return undefined;
+};
 
 /** The outflow a quantity stands for: itself when positive, nothing on an inflow. */
 const clampedOutflow = (quantity: bigint): bigint => (quantity > 0n ? quantity : 0n);
@@ -158,15 +207,10 @@ export const scopeAfterSpend = (scope: Scope, leaving: Balance): Scope => ({
     : scope.lovelaceCap - clampedOutflow(quantityOf(leaving, LOVELACE_ASSET_ID)),
 });
 
-/**
- * The state the account must carry after a grant spend: the same state
- * with the used grant's remaining caps reduced by what left.
- */
-export const stateAfterSpend = (state: AccountState, slot: bigint, leaving: Balance): AccountState => ({
-  ...state,
-  grants: state.grants.map((grant) =>
-    grant.slot === slot ? { ...grant, scope: scopeAfterSpend(grant.scope, leaving) } : grant,
-  ),
+/** The grant a spend must write back: the same grant with its remaining caps reduced by what left. */
+export const grantAfterSpend = (grant: Grant, leaving: Balance): Grant => ({
+  ...grant,
+  scope: scopeAfterSpend(grant.scope, leaving),
 });
 
 /**
@@ -196,6 +240,35 @@ export const scopeViolation = (scope: Scope, leaving: Balance): string | undefin
     if (leavingAssetId !== assetId && leavingAssetId !== LOVELACE_ASSET_ID && quantity > 0n) {
       return `${quantity} of ${leavingAssetId} would leave, which the scope does not cover`;
     }
+  }
+  return undefined;
+};
+
+/**
+ * Why the grant a spend writes back is not an accepted reduction of the
+ * grant expected after that spend, or undefined when it is: the remaining
+ * caps may sit anywhere between zero and the expected value, since the
+ * spender reduces them ahead of a fee it only bounds, while the per call
+ * caps and every other field must stay as they were.
+ */
+export const grantOutputViolation = (expected: Grant, actual: Grant): string | undefined => {
+  if (actual.scope.cap < 0n || actual.scope.lovelaceCap < 0n) {
+    return 'a remaining cap is below zero';
+  }
+  if (actual.scope.cap > expected.scope.cap) {
+    return `the remaining cap ${actual.scope.cap} exceeds the ${expected.scope.cap} the spend leaves`;
+  }
+  if (actual.scope.lovelaceCap > expected.scope.lovelaceCap) {
+    return `the remaining lovelace cap ${actual.scope.lovelaceCap} exceeds the ${expected.scope.lovelaceCap} the spend leaves`;
+  }
+  const aligned: Scope = { ...actual.scope, cap: expected.scope.cap, lovelaceCap: expected.scope.lovelaceCap };
+  if (
+    actual.slot !== expected.slot ||
+    actual.grantee !== expected.grantee ||
+    actual.generation !== expected.generation ||
+    !Cometa.deepEqualsPlutusData(encodeScope(aligned), encodeScope(expected.scope))
+  ) {
+    return 'a field other than the remaining caps changed';
   }
   return undefined;
 };

@@ -48,7 +48,7 @@ describe('validity range', () => {
 });
 
 describe('transaction body parts', () => {
-  it('reads the inputs, outputs, fee, validity interval and mint of a built transaction', async () => {
+  it('reads the inputs, outputs, fee, validity interval, mint and required signers of a built transaction', async () => {
     const { owner } = scenario(undefined, []);
     const tx = await createAccount({ wallet: owner, owner: OWNER_PAYMENT_KEY, state: initialState, script });
     const parts = transactionBodyParts(tx);
@@ -59,20 +59,27 @@ describe('transaction body parts', () => {
     expect(parts.outputs).toHaveLength(inspected.body.outputs.length);
     expect(parts.fee).toBe(BigInt(inspected.body.fee));
     expect(parts.mint).toEqual({ [nftAssetId]: 1n });
+    expect(parts.requiredSigners).toEqual([OWNER_PAYMENT_KEY]);
+    expect(parts.referenceInputs).toEqual([]);
     expect(parts.validityRange).toEqual(validityRangeFromSlots({}));
     const control = parts.outputs.find((output) => output.datum !== undefined);
     expect(control?.value.assets).toEqual({ [nftAssetId]: 1n });
     expect(Cometa.plutusDataToCbor(withoutCborCache(control!.datum!))).toBe(Cometa.plutusDataToCbor(encodeAccountState(initialState)));
   });
 
-  it('sorts inputs by transaction id and index', () => {
+  it('sorts inputs and reference inputs by transaction id and index', () => {
     const tx =
-      '84a300d9010283825820' + 'bb'.repeat(32) + '00825820' + 'aa'.repeat(32) + '01825820' + 'aa'.repeat(32) + '00' +
-      '0180021a000f4240a0f5f6';
-    expect(transactionBodyParts(tx).inputs).toEqual([
+      '84a400d9010283825820' + 'bb'.repeat(32) + '00825820' + 'aa'.repeat(32) + '01825820' + 'aa'.repeat(32) + '00' +
+      '0180021a000f424012d9010282825820' + 'dd'.repeat(32) + '01825820' + 'cc'.repeat(32) + '00a0f5f6';
+    const parts = transactionBodyParts(tx);
+    expect(parts.inputs).toEqual([
       { txId: 'aa'.repeat(32), index: 0 },
       { txId: 'aa'.repeat(32), index: 1 },
       { txId: 'bb'.repeat(32), index: 0 },
+    ]);
+    expect(parts.referenceInputs).toEqual([
+      { txId: 'cc'.repeat(32), index: 0 },
+      { txId: 'dd'.repeat(32), index: 1 },
     ]);
   });
 });

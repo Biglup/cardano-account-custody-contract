@@ -17,7 +17,19 @@
 /* IMPORTS ********************************************************************/
 
 import { describe, expect, it } from 'vitest';
-import { accountAddress, isAccountAddress, paymentKeyHashOf, rewardAddress, stateNftAssetId } from '../src/address.js';
+import {
+  accountAddress,
+  accountOfTokenName,
+  grantAssetId,
+  grantTokenName,
+  grantTokenNamesOf,
+  isAccountAddress,
+  isGrantTokenName,
+  paymentKeyHashOf,
+  rewardAddress,
+  slotOfGrantTokenName,
+  stateNftAssetId,
+} from '../src/address.js';
 import { accountScript, accountScriptHash, accountValidator, loadBlueprint } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
 import { OWNER_PAYMENT_KEY, OWNER_STAKE_KEY, enterpriseAddress, ownerStakeScriptHash } from './support/account.js';
@@ -77,6 +89,37 @@ describe('account address', () => {
     expect(assetId).toBe(`${scriptHash}${ownerStakeScriptHash}`);
     expect(Cometa.policyIdFromAssetId(assetId)).toBe(scriptHash);
     expect(Cometa.assetNameFromAssetId(assetId)).toBe(ownerStakeScriptHash);
+  });
+
+  it('names a grant token after the stake script hash and the slot as four big endian bytes', () => {
+    expect(grantTokenName(ownerStakeScriptHash, 0n)).toBe(`${ownerStakeScriptHash}00000000`);
+    expect(grantTokenName(ownerStakeScriptHash, 258n)).toBe(`${ownerStakeScriptHash}00000102`);
+    expect(grantTokenName(ownerStakeScriptHash, 4_294_967_295n)).toBe(`${ownerStakeScriptHash}ffffffff`);
+    expect(() => grantTokenName(ownerStakeScriptHash, 4_294_967_296n)).toThrow(/four bytes/);
+    expect(() => grantTokenName(ownerStakeScriptHash, -1n)).toThrow(/four bytes/);
+    expect(grantAssetId(scriptHash, ownerStakeScriptHash, 7n)).toBe(`${scriptHash}${ownerStakeScriptHash}00000007`);
+    expect(Cometa.assetNameFromAssetId(grantAssetId(scriptHash, ownerStakeScriptHash, 7n))).toHaveLength(64);
+  });
+
+  it('reads the account and the slot back from a token name', () => {
+    const name = grantTokenName(ownerStakeScriptHash, 258n);
+    expect(isGrantTokenName(name)).toBe(true);
+    expect(isGrantTokenName(ownerStakeScriptHash)).toBe(false);
+    expect(accountOfTokenName(name)).toBe(ownerStakeScriptHash);
+    expect(accountOfTokenName(ownerStakeScriptHash)).toBe(ownerStakeScriptHash);
+    expect(slotOfGrantTokenName(name)).toBe(258n);
+    expect(() => slotOfGrantTokenName(ownerStakeScriptHash)).toThrow(/not a grant token name/);
+    const value = {
+      coins: 1n,
+      assets: {
+        [grantAssetId(scriptHash, ownerStakeScriptHash, 3n)]: 1n,
+        [stateNftAssetId(scriptHash, ownerStakeScriptHash)]: 1n,
+        [grantAssetId(scriptHash, OWNER_STAKE_KEY, 4n)]: 1n,
+        [`${OWNER_PAYMENT_KEY}${grantTokenName(ownerStakeScriptHash, 5n)}`]: 1n,
+      },
+    };
+    expect(grantTokenNamesOf(value, scriptHash, ownerStakeScriptHash)).toEqual([grantTokenName(ownerStakeScriptHash, 3n)]);
+    expect(grantTokenNamesOf({ coins: 1n }, scriptHash, ownerStakeScriptHash)).toEqual([]);
   });
 
   it('reads the keys of a wallet address', () => {

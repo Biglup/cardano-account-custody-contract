@@ -43,25 +43,41 @@ export interface Scope {
   recipients: string[];
 }
 
-/** A revocable permission held by a grantee, the hash of the Ed25519 key that must sign to use it, identified by its slot. */
+/**
+ * A revocable permission living in its own grant UTxO under the grant
+ * token of its slot. The grantee is the hash of the Ed25519 key that must
+ * sign to use it; the generation is the account's grant generation at
+ * issuance, and the grant dies when the account moves past it or revokes
+ * its slot.
+ */
 export interface Grant {
   slot: bigint;
   grantee: string;
+  generation: bigint;
   scope: Scope;
 }
 
-/** The account's on-chain state. */
+/**
+ * The account's on-chain state in the control UTxO: its devices and the
+ * grant bookkeeping. The generation only ever grows and kills every grant
+ * issued under an older value; the next slot is the one the next issued
+ * grant takes; the revoked list names the slots of the current generation
+ * revoked one by one; outstanding counts grant tokens minted and not yet
+ * burned.
+ */
 export interface AccountState {
   devices: string[];
-  grants: Grant[];
   grantGeneration: bigint;
+  nextSlot: bigint;
+  revoked: bigint[];
+  outstanding: bigint;
 }
 
 /** The redeemer of the account validator's spend handler. */
-export type AccountRedeemer = { kind: 'device' } | { kind: 'spendWithGrant'; slot: bigint } | { kind: 'fund' };
+export type AccountRedeemer = { kind: 'device' } | { kind: 'spendWithGrant' } | { kind: 'sweepGrant' } | { kind: 'fund' };
 
-/** The redeemer of the account validator's mint handler, whose only action is creating an account. */
-export type MintRedeemer = { kind: 'createAccount' };
+/** The redeemer of the account validator's mint handler. */
+export type MintRedeemer = { kind: 'createAccount' } | { kind: 'issueGrants' } | { kind: 'burnGrants' };
 
 /* FUNCTIONS ******************************************************************/
 
@@ -229,66 +245,84 @@ export const decodeScope = (data: PlutusData, networkId?: NetworkId): Scope => {
   };
 };
 
-/** A grant as Plutus data: the slot, the grantee key hash and the scope. */
-export const encodeGrant = (grant: Grant): ConstrPlutusData => constr(0, [grant.slot, bytes(grant.grantee), encodeScope(grant.scope)]);
+/** A grant as Plutus data: the slot, the grantee key hash, the generation and the scope. */
+export const encodeGrant = (grant: Grant): ConstrPlutusData =>
+  constr(0, [grant.slot, bytes(grant.grantee), grant.generation, encodeScope(grant.scope)]);
 
 /** The grant a Plutus data value stands for. */
 export const decodeGrant = (data: PlutusData, networkId?: NetworkId): Grant => {
-  const fields = expectConstr(data, 0, 3, 'a grant');
+  const fields = expectConstr(data, 0, 4, 'a grant');
   return {
     slot: expectInt(field(fields, 0), 'a slot'),
     grantee: expectBytes(field(fields, 1), 'a grantee key hash'),
-    scope: decodeScope(field(fields, 2), networkId),
+    generation: expectInt(field(fields, 2), 'a generation'),
+    scope: decodeScope(field(fields, 3), networkId),
   };
 };
 
-/** An account state as the inline datum of the control UTxO. */
+/** An account state as the inline datum of the control UTxO, with its fields in declaration order. */
 export const encodeAccountState = (state: AccountState): ConstrPlutusData =>
   constr(0, [
     { items: state.devices.map((device) => bytes(device)) },
-    { items: state.grants.map((grant) => encodeGrant(grant)) },
     state.grantGeneration,
+    state.nextSlot,
+    { items: [...state.revoked] },
+    state.outstanding,
   ]);
 
 /** The account state a Plutus data value stands for. */
-export const decodeAccountState = (data: PlutusData, networkId?: NetworkId): AccountState => {
-  const fields = expectConstr(data, 0, 3, 'an account state');
+export const decodeAccountState = (data: PlutusData): AccountState => {
+  const fields = expectConstr(data, 0, 5, 'an account state');
   return {
     devices: expectList(field(fields, 0), 'devices').map((device) => expectBytes(device, 'a device key hash')),
-    grants: expectList(field(fields, 1), 'grants').map((grant) => decodeGrant(grant, networkId)),
-    grantGeneration: expectInt(field(fields, 2), 'a grant generation'),
+    grantGeneration: expectInt(field(fields, 1), 'a grant generation'),
+    nextSlot: expectInt(field(fields, 2), 'a next slot'),
+    revoked: expectList(field(fields, 3), 'revoked slots').map((slot) => expectInt(slot, 'a revoked slot')),
+    outstanding: expectInt(field(fields, 4), 'an outstanding count'),
   };
 };
 
-/** A spend redeemer as Plutus data: `Device` is 0, `SpendWithGrant` is 1 with the slot as its only field and `Fund` is 2. */
-export const encodeAccountRedeemer = (redeemer: AccountRedeemer): ConstrPlutusData => {
-  switch (redeemer.kind) {
-    case 'device':
-      return constr(0);
-    case 'spendWithGrant':
-      return constr(1, [redeemer.slot]);
-    case 'fund':
-      return constr(2);
-  }
-};
+/** The kinds of the spend redeemer in constructor order. */
+const ACCOUNT_REDEEMER_KINDS: AccountRedeemer['kind'][] = ['device', 'spendWithGrant', 'sweepGrant', 'fund'];
+
+/** The kinds of the mint redeemer in constructor order. */
+const MINT_REDEEMER_KINDS: MintRedeemer['kind'][] = ['createAccount', 'issueGrants', 'burnGrants'];
+
+/** A spend redeemer as Plutus data: `Device` is 0, `SpendWithGrant` 1, `SweepGrant` 2 and `Fund` 3, none with fields. */
+export const encodeAccountRedeemer = (redeemer: AccountRedeemer): ConstrPlutusData => constr(ACCOUNT_REDEEMER_KINDS.indexOf(redeemer.kind));
 
 /** The spend redeemer a Plutus data value stands for. */
 export const decodeAccountRedeemer = (data: PlutusData): AccountRedeemer => {
   const index = constructorIndex(data, 'an account redeemer');
-  if (index === 0) {
-    expectConstr(data, 0, 0, 'the device redeemer');
-    return { kind: 'device' };
-  }
-  if (index === 2) {
-    expectConstr(data, 2, 0, 'the fund redeemer');
-    return { kind: 'fund' };
-  }
-  if (index !== 1) {
+  const kind = ACCOUNT_REDEEMER_KINDS[index];
+  if (kind === undefined) {
     throw new Error(`Unknown account redeemer constructor ${index}`);
   }
-  const fields = expectConstr(data, 1, 1, 'the spend with grant redeemer');
-  return { kind: 'spendWithGrant', slot: expectInt(field(fields, 0), 'a slot') };
+  expectConstr(data, index, 0, `the ${kind} redeemer`);
+  return { kind };
 };
+
+/** A mint redeemer as Plutus data: `CreateAccount` is 0, `IssueGrants` 1 and `BurnGrants` 2, none with fields. */
+export const encodeMintRedeemer = (redeemer: MintRedeemer): ConstrPlutusData => constr(MINT_REDEEMER_KINDS.indexOf(redeemer.kind));
+
+/** The mint redeemer a Plutus data value stands for. */
+export const decodeMintRedeemer = (data: PlutusData): MintRedeemer => {
+  const index = constructorIndex(data, 'a mint redeemer');
+  const kind = MINT_REDEEMER_KINDS[index];
+  if (kind === undefined) {
+    throw new Error(`Unknown mint redeemer constructor ${index}`);
+  }
+  expectConstr(data, index, 0, `the ${kind} redeemer`);
+  return { kind };
+};
+
+/**
+ * The datum the library writes on a reserve UTxO: constructor 0 with no
+ * fields. The validator treats a deposit under any datum as a reserve the
+ * owner alone can spend, so the datum carries no information and other
+ * reserves may carry any other.
+ */
+export const encodeReserveDatum = (): ConstrPlutusData => constr(0);
 
 /**
  * Plutus data without the serialisation cache cometa keeps on decoded
@@ -306,15 +340,6 @@ export const withoutCborCache = (data: PlutusData): PlutusData => {
     return { entries: data.entries.map(({ key, value }) => ({ key: withoutCborCache(key), value: withoutCborCache(value) })) };
   }
   return data;
-};
-
-/** A mint redeemer as Plutus data: `CreateAccount` is constructor 0 with no fields. */
-export const encodeMintRedeemer = (): ConstrPlutusData => constr(0);
-
-/** The mint redeemer a Plutus data value stands for. */
-export const decodeMintRedeemer = (data: PlutusData): MintRedeemer => {
-  expectConstr(data, 0, 0, 'the create account redeemer');
-  return { kind: 'createAccount' };
 };
 
 /**

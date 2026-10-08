@@ -30,11 +30,11 @@ import { OWNER_PAYMENT_KEY } from './support/account.js';
 /**
  * The fixture was produced once with the Aiken CLI from the committed
  * blueprint, applying the owner key hash `aa` repeated 28 times and then
- * the account script hash `0524f57b785cf3a45b7ed6029b387dc39ffb2411bd1cb4300c58c2c3`,
+ * the account script hash `6f275cca0cc4433e6a798d78a2db2934df60dc4fd989274a2d9bb434`,
  * each given as the CBOR of its bytes:
  *
  *   aiken blueprint apply -m account_stake -o step1.json 581caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
- *   aiken blueprint apply -i step1.json -m account_stake -o step2.json 581c0524f57b785cf3a45b7ed6029b387dc39ffb2411bd1cb4300c58c2c3
+ *   aiken blueprint apply -i step1.json -m account_stake -o step2.json 581c6f275cca0cc4433e6a798d78a2db2934df60dc4fd989274a2d9bb434
  *   aiken blueprint hash -i step2.json -m account_stake
  *
  * The hash printed for step2.json is `APPLIED_HASH`, the hash step1.json
@@ -42,10 +42,10 @@ import { OWNER_PAYMENT_KEY } from './support/account.js';
  * SHA-256 digest of the compiled code step2.json carries, which pins
  * the applied bytes without embedding them.
  */
-const ACCOUNT_HASH = '0524f57b785cf3a45b7ed6029b387dc39ffb2411bd1cb4300c58c2c3';
-const OWNER_APPLIED_HASH = 'b945854c0c29fdd5dbb953792b7ef095a42a546892ad450f0ec8a223';
-const APPLIED_HASH = '24b19db325b612942292f5cb144e5eed1335aeb5c39ec45ac588cb4e';
-const APPLIED_CODE_DIGEST = '9d3aa8f1c880ebf5c0f2fb32c4b28f7f05ff9839911bce2e272a577d1c7c502a';
+const ACCOUNT_HASH = '6f275cca0cc4433e6a798d78a2db2934df60dc4fd989274a2d9bb434';
+const OWNER_APPLIED_HASH = '9dd1e39d6530b018cca0f773e46332c35a2b59a060bcb41924772157';
+const APPLIED_HASH = '6d3dcfd41caf993158118689d8196c3401eb8244070335d2e3bd6b5d';
+const APPLIED_CODE_DIGEST = 'b49c09920f866a051c5414f14d35a9413f20a9b0c9b6db0623daf2c91041b5a0';
 
 /* FUNCTIONS ******************************************************************/
 

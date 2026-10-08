@@ -17,6 +17,7 @@
 /* IMPORTS ********************************************************************/
 
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_GRANT_FEE_BOUND } from '../src/transactions.js';
 import {
   CAP,
   FLOW_PLAN,
@@ -72,44 +73,55 @@ const SUBMIT_ERROR =
 /* TESTS **********************************************************************/
 
 describe('FLOW_PLAN', () => {
-  it('lists the twenty flows in order', () => {
-    expect(FLOW_PLAN.map((flow) => flow.step)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+  it('lists the twenty four flows in order', () => {
+    expect(FLOW_PLAN.map((flow) => flow.step)).toEqual(Array.from({ length: 24 }, (_, index) => index + 1));
     expect(FLOW_PLAN.some((flow) => /secp256k1/.test(flow.description))).toBe(false);
   });
 
   it('registers at creation, operates the stake credential through both devices and ends with a sweep that keeps the control UTxO', () => {
     expect(FLOW_PLAN[0]!.description).toContain('registers the stake credential');
-    expect(FLOW_PLAN.filter((flow) => /withdrawRewards|delegateStake/.test(flow.description)).map((flow) => flow.step)).toEqual([4, 5, 17]);
-    expect(FLOW_PLAN[16]!.description).toContain('signed by the new device');
-    expect(FLOW_PLAN[15]!.description).toContain('addDevice');
-    expect(FLOW_PLAN[19]!.description).toContain('leaving only the control UTxO');
+    expect(FLOW_PLAN.filter((flow) => /withdrawRewards|delegateStake/.test(flow.description)).map((flow) => flow.step)).toEqual([5, 6, 21]);
+    expect(FLOW_PLAN[19]!.description).toContain('addDevice');
+    expect(FLOW_PLAN[19]!.description).toContain('signed by the new device');
+    expect(FLOW_PLAN[23]!.description).toContain('leaving only the control UTxO');
     expect(FLOW_PLAN.some((flow) => /deleteAccount|deregister/.test(flow.description))).toBe(false);
-    for (const step of [4, 5, 17]) {
+    for (const step of [5, 6, 21]) {
       expect(FLOW_PLAN[step - 1]!.outcome).toBe('confirmed');
     }
   });
 
-  it('expects the builder to refuse the cap, recipient, revoked grant and expiry spends', () => {
-    expect(FLOW_PLAN.filter((flow) => flow.outcome === 'refused by the builder').map((flow) => flow.step)).toEqual([8, 10, 13, 14]);
+  it('funds a reserve, pays the owner steps from it, keeps each grant in its own UTxO and sweeps both dead grants', () => {
+    expect(FLOW_PLAN[2]!.description).toContain('as a reserve');
+    expect(FLOW_PLAN[3]!.description).toContain('fee drawn from the reserve');
+    expect(FLOW_PLAN[6]!.description).toContain('its own grant UTxO');
+    expect(FLOW_PLAN[7]!.description).toContain('referencing the control UTxO');
+    expect(FLOW_PLAN.filter((flow) => /sweepGrant/.test(flow.description)).map((flow) => flow.step)).toEqual([16, 19]);
+    expect(FLOW_PLAN[12]!.description).toContain('revokeGrant slot 0');
+    expect(FLOW_PLAN[22]!.description).toContain('revokeAllGrants');
+    expect(FLOW_PLAN[23]!.description).toContain('fund and reserve UTxO');
   });
 
-  it('expects the node to refuse the unchecked cap, recipient and expiry spends', () => {
-    expect(FLOW_PLAN.filter((flow) => flow.outcome === 'refused by the node').map((flow) => flow.step)).toEqual([9, 11, 15]);
+  it('expects the builder to refuse the cap, recipient, revoked grant and expiry spends', () => {
+    expect(FLOW_PLAN.filter((flow) => flow.outcome === 'refused by the builder').map((flow) => flow.step)).toEqual([9, 11, 14, 17]);
+  });
+
+  it('expects the node to refuse the unchecked cap, recipient, revoked and expiry spends', () => {
+    expect(FLOW_PLAN.filter((flow) => flow.outcome === 'refused by the node').map((flow) => flow.step)).toEqual([10, 12, 15, 18]);
   });
 
   it('follows every builder refusal the node can also show with the unchecked submission', () => {
-    for (const step of [8, 10, 14]) {
+    for (const step of [9, 11, 14, 17]) {
       expect(FLOW_PLAN[step]!.outcome).toBe('refused by the node');
       expect(FLOW_PLAN[step]!.description).toContain('unchecked');
     }
   });
 
-  it('matches each builder refusal against the message recorded in the preprod evidence, and not against an unrelated builder error', () => {
+  it('matches each builder refusal against the message the builder produces, and not against an unrelated builder error', () => {
     const evidenceMessages: Record<number, string> = {
-      8: 'Grant 0 refuses the spend: 8000000 of the scoped asset exceeds the remaining cap of 6156805',
-      10: 'addr_test1qpq5gz7gyn39a0jh7sln54yrx7a72mgtmsm0zckkhve03zgkyqa8k48398gsyllkypnjqhavl6ghmejkwudrka28g8cqkygz08 is not a recipient of grant 0',
-      13: 'The account has no grant in slot 0',
-      14: 'Slot 135678122 starts after grant 1 expires',
+      9: 'Grant 0 refuses the spend: 9500000 of the scoped asset exceeds the remaining cap of 5500000',
+      11: 'addr_test1qpq5gz7gyn39a0jh7sln54yrx7a72mgtmsm0zckkhve03zgkyqa8k48398gsyllkypnjqhavl6ghmejkwudrka28g8cqkygz08 is not a recipient of grant 0',
+      14: 'Grant 0 is dead: slot 0 is revoked',
+      17: 'Slot 135678122 starts after grant 1 expires',
     };
     const unrelatedBuilderError = 'Grant 0 refuses the spend: the agent does not hold enough funds';
     for (const [step, message] of Object.entries(evidenceMessages)) {
@@ -123,18 +135,17 @@ describe('FLOW_PLAN', () => {
     const nodeRefusalMessage =
       'ConwayUtxowFailure (UtxoFailure (UtxosFailure (ValidationTagMismatch Phase2Valid (FailedUnexpectedly (PlutusFailure "boom")))))';
     const unrelatedSubmissionError = 'BadInputsUTxO';
-    for (const step of [9, 11, 15]) {
+    for (const step of [10, 12, 15, 18]) {
       const flow = FLOW_PLAN[step - 1]!;
       expect(flow.expectedMessage?.test(nodeRefusalMessage)).toBe(true);
       expect(flow.expectedMessage?.test(unrelatedSubmissionError)).toBe(false);
     }
   });
 
-  it('sizes the grant spends so that the first fits and the second breaks the remaining cap', () => {
-    const feeAndAllowance = 1_500_000n;
-    expect(GRANT_SPEND_LOVELACE + feeAndAllowance).toBeLessThanOrEqual(PER_CALL_CAP);
-    expect(GRANT_SPEND_LOVELACE + feeAndAllowance).toBeLessThanOrEqual(CAP);
-    expect(2n * GRANT_SPEND_LOVELACE).toBeGreaterThan(CAP - GRANT_SPEND_LOVELACE);
+  it('sizes the grant spends so that the first fits with the fee bound and the second breaks the remaining cap', () => {
+    expect(GRANT_SPEND_LOVELACE + DEFAULT_GRANT_FEE_BOUND).toBeLessThanOrEqual(PER_CALL_CAP);
+    expect(GRANT_SPEND_LOVELACE + DEFAULT_GRANT_FEE_BOUND).toBeLessThanOrEqual(CAP);
+    expect(2n * GRANT_SPEND_LOVELACE).toBeGreaterThan(CAP - GRANT_SPEND_LOVELACE - DEFAULT_GRANT_FEE_BOUND);
   });
 });
 
@@ -142,7 +153,8 @@ describe('classifyFailure', () => {
   it('recognises the builder applying the grant rules', () => {
     expect(classifyFailure(new Error('Grant 0 refuses the spend: 9 exceeds the remaining cap of 6'))).toBe('refusal');
     expect(classifyFailure(new Error('addr_test1 is not a recipient of grant 0'))).toBe('refusal');
-    expect(classifyFailure(new Error('The account has no grant in slot 0'))).toBe('refusal');
+    expect(classifyFailure(new Error('The account has no grant UTxO in slot 0'))).toBe('refusal');
+    expect(classifyFailure(new Error('Grant 0 is dead: slot 0 is revoked'))).toBe('refusal');
     expect(classifyFailure(new Error('Slot 100 starts after grant 2 expires'))).toBe('refusal');
   });
 
@@ -212,11 +224,11 @@ describe('evidence', () => {
   });
 
   it('quotes the refusal of a refused flow, naming who refused and escaping pipes', () => {
-    expect(evidenceRow({ flow: FLOW_PLAN[7]!, txIds: [], refusal: 'Grant 0 refuses the spend' })).toBe(
-      `| 8 | ${FLOW_PLAN[7]!.description} | none | refused by the builder: "Grant 0 refuses the spend" |`,
+    expect(evidenceRow({ flow: FLOW_PLAN[8]!, txIds: [], refusal: 'Grant 0 refuses the spend' })).toBe(
+      `| 9 | ${FLOW_PLAN[8]!.description} | none | refused by the builder: "Grant 0 refuses the spend" |`,
     );
-    expect(evidenceRow({ flow: FLOW_PLAN[8]!, txIds: [], refusal: 'PlutusFailure :| []' })).toBe(
-      `| 9 | ${FLOW_PLAN[8]!.description} | none | refused by the node: "PlutusFailure :\\| []" |`,
+    expect(evidenceRow({ flow: FLOW_PLAN[9]!, txIds: [], refusal: 'PlutusFailure :| []' })).toBe(
+      `| 10 | ${FLOW_PLAN[9]!.description} | none | refused by the node: "PlutusFailure :\\| []" |`,
     );
   });
 
@@ -243,5 +255,7 @@ describe('evidence', () => {
     expect(document).toContain('| 1 | createAccount');
     expect(document).toContain('| fund the agent wallet |');
     expect(document).toContain('no\ncollateral is consumed');
+    expect(document).toContain('references the control UTxO');
+    expect(document).toContain('steps 4 to 7, 13, 16, 17 and 19 to 23, is\npaid from the account, its fee drawn from a reserve UTxO');
   });
 });

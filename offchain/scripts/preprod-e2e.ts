@@ -26,7 +26,7 @@ import { accountAddress, paymentKeyHashOf, rewardAddress } from '../src/address.
 import { accountScript, accountScriptHash } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
 import { posixTimeToSlot, transactionBodyParts } from '../src/body.js';
-import type { AccountState, Grant, Scope } from '../src/data.js';
+import type { AccountState, Scope } from '../src/data.js';
 import { type AccountRecord, accountByOwner, accountExists } from '../src/discovery.js';
 import { stakeScript, stakeScriptHash } from '../src/stake-script.js';
 import { LOVELACE } from '../src/state.js';
@@ -42,6 +42,7 @@ import {
   revokeGrant,
   spendWithDevice,
   spendWithGrant,
+  sweepGrant,
   withdrawRewards,
 } from '../src/transactions.js';
 import {
@@ -59,6 +60,7 @@ import {
   NEW_DEVICE_SPEND_LOVELACE,
   OWNER_COLLATERAL_LOVELACE,
   PER_CALL_CAP,
+  RESERVE_LOVELACE,
   REVOKED_SPEND_LOVELACE,
   SHORT_GRANT_LIFETIME_MS,
   SHORT_GRANT_SLOT,
@@ -526,21 +528,21 @@ class Run {
   }
 
   /**
-   * An owner spend paying every fund UTxO of the account to the funding
-   * wallet, which sponsors the fee so that nothing returns to the account
-   * and only the control UTxO stays.
+   * An owner spend paying every fund and reserve UTxO of the account to
+   * the funding wallet, which sponsors the fee so that nothing returns to
+   * the account and only the control UTxO stays.
    */
   private async sweepAccount(): Promise<string> {
     const { provider, funding, fundingAddress } = this.actors;
-    const { funds } = await findAccountUtxos(provider, this.ownerParams);
-    const lovelace = funds.reduce((total, utxo) => total + utxo.output.value.coins, 0n);
+    const { funds, reserves } = await findAccountUtxos(provider, this.ownerParams);
+    const lovelace = [...funds, ...reserves].reduce((total, utxo) => total + utxo.output.value.coins, 0n);
     return spendWithDevice({ ...this.ownerParams, sponsor: funding, outputs: [{ address: fundingAddress, value: { coins: lovelace } }] });
   }
 
   /** Executes the flows of the plan in order. */
   async flows(): Promise<void> {
     const { funding, owner, agent, ownerAddress, agentAddress, ownerKeyHash, agentKeyHash, poolId } = this.actors;
-    const initialState: AccountState = { devices: [ownerKeyHash], grants: [], grantGeneration: 0n };
+    const initialState: AccountState = { devices: [ownerKeyHash], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
 
     await this.confirm(1, 'createAccount sponsored by the funding wallet', [owner, funding], () =>
       createAccount({ ...this.ownerParams, sponsor: funding, state: initialState }),
@@ -548,63 +550,74 @@ class Run {
     await this.confirm(2, `deposit ${DEPOSIT_LOVELACE} lovelace from the funding wallet`, [funding], () =>
       deposit({ ...this.ownerParams, wallet: funding, value: { coins: DEPOSIT_LOVELACE } }),
     );
-    await this.confirm(3, `spendWithDevice ${DEVICE_SPEND_LOVELACE} lovelace to the owner`, [owner], () =>
+    await this.confirm(3, `deposit ${RESERVE_LOVELACE} lovelace as a reserve from the funding wallet`, [funding], () =>
+      deposit({ ...this.ownerParams, wallet: funding, value: { coins: RESERVE_LOVELACE }, reserve: true }),
+    );
+    await this.confirm(4, `spendWithDevice ${DEVICE_SPEND_LOVELACE} lovelace to the owner`, [owner], () =>
       spendWithDevice({ ...this.ownerParams, outputs: [{ address: ownerAddress, value: { coins: DEVICE_SPEND_LOVELACE } }] }),
     );
-    await this.confirm(4, `withdrawRewards ${WITHDRAWN_LOVELACE} lovelace signed by the owner device`, [owner], () =>
+    await this.confirm(5, `withdrawRewards ${WITHDRAWN_LOVELACE} lovelace signed by the owner device`, [owner], () =>
       withdrawRewards({ ...this.ownerParams, amount: WITHDRAWN_LOVELACE }),
     );
-    await this.confirm(5, `delegateStake to ${poolId} signed by the owner device`, [owner], () => delegateStake({ ...this.ownerParams, poolId }));
+    await this.confirm(6, `delegateStake to ${poolId} signed by the owner device`, [owner], () => delegateStake({ ...this.ownerParams, poolId }));
 
-    const agentGrant: Grant = { slot: AGENT_GRANT_SLOT, grantee: agentKeyHash, scope: this.scope(GRANT_LIFETIME_MS) };
-    await this.confirm(6, `issueGrant slot ${AGENT_GRANT_SLOT} to the agent`, [owner], () => issueGrant({ ...this.ownerParams, grant: agentGrant }));
-    await this.confirm(7, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace to the owner`, [agent], () =>
+    await this.confirm(7, `issueGrant slot ${AGENT_GRANT_SLOT} to the agent`, [owner], () =>
+      issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: this.scope(GRANT_LIFETIME_MS) }] }),
+    );
+    await this.confirm(8, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace to the owner`, [agent], () =>
       this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
     );
-    await this.refuseInBuilder(8, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace beyond the remaining cap`, () =>
+    await this.refuseInBuilder(9, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace beyond the remaining cap`, () =>
       this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
     );
-    await this.refuseAtNode(9, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace beyond the remaining cap, unchecked`, [agent], () =>
+    await this.refuseAtNode(10, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace beyond the remaining cap, unchecked`, [agent], () =>
       this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
     );
-    await this.refuseInBuilder(10, `spendWithGrant ${STRANGER_SPEND_LOVELACE} lovelace to an address outside the recipients`, () =>
+    await this.refuseInBuilder(11, `spendWithGrant ${STRANGER_SPEND_LOVELACE} lovelace to an address outside the recipients`, () =>
       this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, agentAddress, STRANGER_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
     );
-    await this.refuseAtNode(11, `spendWithGrant ${STRANGER_SPEND_LOVELACE} lovelace to an address outside the recipients, unchecked`, [agent], () =>
+    await this.refuseAtNode(12, `spendWithGrant ${STRANGER_SPEND_LOVELACE} lovelace to an address outside the recipients, unchecked`, [agent], () =>
       this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, agentAddress, STRANGER_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
     );
-    await this.confirm(12, `revokeGrant slot ${AGENT_GRANT_SLOT}`, [owner], () => revokeGrant({ ...this.ownerParams, slot: AGENT_GRANT_SLOT }));
-    await this.refuseInBuilder(13, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant`, () =>
+    await this.confirm(13, `revokeGrant slot ${AGENT_GRANT_SLOT}`, [owner], () => revokeGrant({ ...this.ownerParams, slot: AGENT_GRANT_SLOT }));
+    await this.refuseInBuilder(14, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant`, () =>
       this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
     );
-
-    const shortGrant: Grant = { slot: SHORT_GRANT_SLOT, grantee: agentKeyHash, scope: this.scope(SHORT_GRANT_LIFETIME_MS) };
-    await this.confirm(14, `issueGrant slot ${SHORT_GRANT_SLOT} expiring in ${SHORT_GRANT_LIFETIME_MS / 1000n} seconds`, [owner], () =>
-      issueGrant({ ...this.ownerParams, grant: shortGrant }),
+    await this.refuseAtNode(15, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant, unchecked`, [agent], () =>
+      this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
     );
-    const resumeAt = Number(shortGrant.scope.expiresAt) + EXPIRY_MARGIN_MS;
+    await this.confirm(16, `sweepGrant slot ${AGENT_GRANT_SLOT}`, [owner], () => sweepGrant({ ...this.ownerParams, slots: [AGENT_GRANT_SLOT] }));
+
+    const shortScope = this.scope(SHORT_GRANT_LIFETIME_MS);
+    await this.confirm(17, `issueGrant slot ${SHORT_GRANT_SLOT} expiring in ${SHORT_GRANT_LIFETIME_MS / 1000n} seconds`, [owner], () =>
+      issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: shortScope }] }),
+    );
+    const resumeAt = Number(shortScope.expiresAt) + EXPIRY_MARGIN_MS;
     const waitMs = resumeAt - Date.now();
     if (waitMs > 0) {
       console.log(`  waiting ${Math.ceil(waitMs / 1000)} seconds for grant ${SHORT_GRANT_SLOT} to expire`);
       await sleep(waitMs);
     }
-    await this.refuseInBuilder(14, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant`, () =>
+    await this.refuseInBuilder(17, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant`, () =>
       this.grantSpend(SHORT_GRANT_SLOT, agentKeyHash, ownerAddress, REVOKED_SPEND_LOVELACE, EXPIRED_WINDOW_SLOTS),
     );
-    await this.refuseAtNode(15, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant, unchecked`, [agent], () =>
+    await this.refuseAtNode(18, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant, unchecked`, [agent], () =>
       this.grantSpend(SHORT_GRANT_SLOT, agentKeyHash, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
     );
+    await this.confirm(19, `sweepGrant slot ${SHORT_GRANT_SLOT} after its expiry`, [owner], () =>
+      sweepGrant({ ...this.ownerParams, slots: [SHORT_GRANT_SLOT], validFromSlot: posixTimeToSlot(shortScope.expiresAt) + 1n }),
+    );
 
-    await this.confirm(16, 'addDevice the agent wallet key', [owner], () => addDevice({ ...this.ownerParams, device: agentKeyHash }));
-    await this.confirm(16, `spendWithDevice ${NEW_DEVICE_SPEND_LOVELACE} lovelace signed by the new device`, [agent], () =>
+    await this.confirm(20, 'addDevice the agent wallet key', [owner], () => addDevice({ ...this.ownerParams, device: agentKeyHash }));
+    await this.confirm(20, `spendWithDevice ${NEW_DEVICE_SPEND_LOVELACE} lovelace signed by the new device`, [agent], () =>
       spendWithDevice({ ...this.agentParams, outputs: [{ address: ownerAddress, value: { coins: NEW_DEVICE_SPEND_LOVELACE } }] }),
     );
-    await this.confirm(17, `withdrawRewards ${WITHDRAWN_LOVELACE} lovelace signed by the new device`, [agent], () =>
+    await this.confirm(21, `withdrawRewards ${WITHDRAWN_LOVELACE} lovelace signed by the new device`, [agent], () =>
       withdrawRewards({ ...this.agentParams, amount: WITHDRAWN_LOVELACE }),
     );
-    await this.confirm(18, 'removeDevice the agent wallet key', [owner], () => removeDevice({ ...this.ownerParams, device: agentKeyHash }));
-    await this.confirm(19, 'revokeAllGrants', [owner], () => revokeAllGrants(this.ownerParams));
-    await this.confirm(20, 'spendWithDevice sweeping every fund UTxO to the funding wallet, sponsored by it', [owner, funding], () =>
+    await this.confirm(22, 'removeDevice the agent wallet key', [owner], () => removeDevice({ ...this.ownerParams, device: agentKeyHash }));
+    await this.confirm(23, 'revokeAllGrants', [owner], () => revokeAllGrants(this.ownerParams));
+    await this.confirm(24, 'spendWithDevice sweeping every fund and reserve UTxO to the funding wallet, sponsored by it', [owner, funding], () =>
       this.sweepAccount(),
     );
   }

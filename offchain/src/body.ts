@@ -32,8 +32,10 @@ const BODY_INPUTS = 0n;
 const BODY_OUTPUTS = 1n;
 const BODY_FEE = 2n;
 const BODY_TTL = 3n;
-const BODY_MINT = 9n;
 const BODY_VALIDITY_START = 8n;
+const BODY_MINT = 9n;
+const BODY_REQUIRED_SIGNERS = 14n;
+const BODY_REFERENCE_INPUTS = 18n;
 
 /* TYPES **********************************************************************/
 
@@ -59,6 +61,8 @@ export interface TransactionBodyParts {
   fee: bigint;
   validityRange: ValidityRange;
   mint: AssetAmounts;
+  requiredSigners: string[];
+  referenceInputs: TxIn[];
 }
 
 /* FUNCTIONS ******************************************************************/
@@ -133,13 +137,19 @@ const readInput = (reader: CborReader): TxIn => {
   return { txId: txId as string, index: index as number };
 };
 
-/** Reads the input set, which may be tagged as a set. */
-const readInputs = (reader: CborReader): TxIn[] => {
+/** Reads an array that may be tagged as a set. */
+const readSet = <T>(reader: CborReader, readItem: () => T): T[] => {
   if (reader.peekState() === Cometa.CborReaderState.Tag) {
     reader.readTag();
   }
-  return readItems(reader, () => readInput(reader));
+  return readItems(reader, readItem);
 };
+
+/** Reads the input set, which may be tagged as a set. */
+const readInputs = (reader: CborReader): TxIn[] => readSet(reader, () => readInput(reader));
+
+/** Reads the required signers, key hashes in an array that may be tagged as a set. */
+const readRequiredSigners = (reader: CborReader): string[] => readSet(reader, () => Cometa.uint8ArrayToHex(reader.readByteString()));
 
 /** Reads the mint field as asset ids mapped to their quantities. */
 const readMint = (reader: CborReader): AssetAmounts => {
@@ -163,9 +173,10 @@ const readMint = (reader: CborReader): AssetAmounts => {
 };
 
 /**
- * The inputs, outputs, fee, validity interval and mint of a transaction,
- * read from its CBOR. Inputs are returned in the order the ledger presents
- * them, sorted by transaction id and index, and the validity interval is
+ * The inputs, outputs, fee, validity interval, mint, required signers and
+ * reference inputs of a transaction, read from its CBOR. Inputs and
+ * reference inputs are returned in the order the ledger presents them,
+ * sorted by transaction id and index, and the validity interval is
  * converted to the POSIX time range the script context shows.
  */
 export const transactionBodyParts = (
@@ -180,6 +191,8 @@ export const transactionBodyParts = (
     fee: 0n,
     validityRange: UNBOUNDED_VALIDITY_RANGE,
     mint: {},
+    requiredSigners: [],
+    referenceInputs: [],
   };
   let invalidBefore: bigint | undefined;
   let invalidHereafter: bigint | undefined;
@@ -205,6 +218,12 @@ export const transactionBodyParts = (
           break;
         case BODY_MINT:
           parts.mint = readMint(reader);
+          break;
+        case BODY_REQUIRED_SIGNERS:
+          parts.requiredSigners = readRequiredSigners(reader);
+          break;
+        case BODY_REFERENCE_INPUTS:
+          parts.referenceInputs = readInputs(reader).sort(compareInputs);
           break;
         default:
           reader.skipValue();
