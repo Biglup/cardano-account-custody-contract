@@ -21,11 +21,13 @@ use cardano/address.{Inline, Script}
 use cardano/assets
 use cardano/certificate.{RegisterCredential}
 use cardano/transaction.{InlineDatum, NoDatum, Publish}
+use cardano_account_custody_contract/account
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
-  grant_output, grant_token, grant_value, input, other_stake_script_hash,
-  output_reference, publishing, referencing, registration, script_hash,
-  stake_script_hash, state_nft, stranger_key,
+  grant_output, grant_token, grant_value, input, other_account_address,
+  other_control_output, other_fund_output, other_grant_output,
+  other_stake_script_hash, output_reference, publishing, referencing,
+  registration, script_hash, stake_script_hash, state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, Grant, Operate, Scope,
@@ -124,6 +126,43 @@ test grant_output_carries_the_grant_token_and_the_inline_grant() {
 test fund_output_carries_no_datum() {
   let fund = fund_output(assets.from_lovelace(5))
   fund.address == account_address() && fund.datum == NoDatum
+}
+
+test other_control_output_sits_at_the_other_account_under_its_own_nft() {
+  let control = other_control_output(state(), 2_000_000)
+  let data: Data = state()
+  and {
+    control.address == other_account_address(),
+    control.value == control_value(other_stake_script_hash, 2_000_000),
+    assets.quantity_of(control.value, script_hash, stake_script_hash) == 0,
+    control.datum == InlineDatum(data),
+    control.reference_script == None,
+  }
+}
+
+test other_grant_output_sits_at_the_other_account_under_its_own_token() {
+  let built = other_grant_output(grant(), 2_000_000)
+  let data: Data = grant()
+  and {
+    built.address == other_account_address(),
+    built.value == grant_value(other_stake_script_hash, 3, 2_000_000),
+    assets.quantity_of(
+      built.value,
+      script_hash,
+      account.grant_token_name(stake_script_hash, 3),
+    ) == 0,
+    built.datum == InlineDatum(data),
+    built.reference_script == None,
+  }
+}
+
+test other_fund_output_sits_at_the_other_account_without_a_datum() {
+  let fund = other_fund_output(assets.from_lovelace(5))
+  and {
+    fund.address == other_account_address(),
+    fund.value == assets.from_lovelace(5),
+    fund.datum == NoDatum,
+  }
 }
 
 test transaction_carries_the_given_parts() {

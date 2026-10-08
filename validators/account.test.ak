@@ -28,7 +28,8 @@ use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
   grant_datum, grant_output, grant_token, grant_value, input,
-  other_account_address, other_device_key, other_stake_script_hash, output,
+  other_account_address, other_control_output, other_device_key,
+  other_fund_output, other_grant_output, other_stake_script_hash, output,
   output_reference, publishing, recipient_address, referencing, registration,
   script_hash, stake_script_hash, state_datum, state_nft, stranger_key,
 }
@@ -2138,20 +2139,75 @@ test spend_with_grant_rejects_one_lovelace_above_the_per_call_cap() {
   )
 }
 
-test spend_with_grant_rejects_spending_above_the_remaining_cap() {
-  let nearly_spent = with_caps(lovelace_grant(), 1_000_000, 0)
-  !spend_grant_within(
+/// Whether the lovelace grant with `cap` remaining pays `lovelace` to the
+/// recipient, handing back a grant output whose cap is reduced by it.
+fn spend_remaining_lovelace(cap: Int, lovelace: Int) -> Bool {
+  let nearly_spent = with_caps(lovelace_grant(), cap, 0)
+  spend_grant_within(
     interval.before(expiry - 1),
     nearly_spent,
     [grant_input(nearly_spent), fund_input()],
     [control_reference()],
     [
-      grant_output(with_caps(lovelace_grant(), -1_000_000, 0), 2_000_000),
-      change(assets.from_lovelace(8_000_000)),
-      payout(2_000_000),
+      grant_output(with_caps(lovelace_grant(), cap - lovelace, 0), 2_000_000),
+      change(assets.from_lovelace(10_000_000 - lovelace)),
+      payout(lovelace),
     ],
     assets.zero,
     [stranger_key],
+  )
+}
+
+test spend_with_grant_accepts_spending_exactly_the_remaining_cap() {
+  spend_remaining_lovelace(2_000_000, 2_000_000)
+}
+
+test spend_with_grant_rejects_one_lovelace_above_the_remaining_cap() {
+  !spend_remaining_lovelace(2_000_000, 2_000_001)
+}
+
+test spend_with_grant_rejects_spending_above_the_remaining_cap() {
+  !spend_remaining_lovelace(1_000_000, 2_000_000)
+}
+
+/// Whether the lovelace grant pays `lovelace` to the recipient while the
+/// account pays `fee`, handing back a grant output carrying `after`.
+fn spend_lovelace_with_fee(fee: Int, lovelace: Int, after: Grant) -> Bool {
+  let tx = test_helpers.transaction(
+    [grant_input(lovelace_grant()), fund_input()],
+    [
+      grant_output(after, 2_000_000),
+      change(assets.from_lovelace(10_000_000 - lovelace - fee)),
+      payout(lovelace),
+    ],
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing([control_reference()])
+  account.account.spend(
+    grant_data(Some(lovelace_grant())),
+    SpendWithGrant,
+    output_reference(0),
+    Transaction { ..tx, fee },
+  )
+}
+
+/// The fee the account pays leaves it like a payout, so the cap decrement
+/// is the payout plus the fee.
+test spend_with_grant_charges_a_fee_paid_by_the_account_against_the_cap() {
+  spend_lovelace_with_fee(
+    1_000_000,
+    2_000_000,
+    with_caps(lovelace_grant(), 2_000_000, 0),
+  )
+}
+
+test spend_with_grant_rejects_a_cap_decrement_that_leaves_out_the_fee() {
+  !spend_lovelace_with_fee(
+    1_000_000,
+    2_000_000,
+    with_caps(lovelace_grant(), 3_000_000, 0),
   )
 }
 
@@ -2167,9 +2223,100 @@ test spend_with_grant_rejects_one_lovelace_above_the_lovelace_per_call_cap() {
   !spend_token_lovelace_from(metered_grant(), 1_000_001, 999_999)
 }
 
+test spend_with_grant_accepts_lovelace_exactly_at_the_remaining_lovelace_cap() {
+  let nearly_spent = with_caps(token_grant(), 50, 1_000_000)
+  spend_token_lovelace_from(nearly_spent, 1_000_000, 0)
+}
+
 test spend_with_grant_rejects_lovelace_above_the_remaining_lovelace_cap_on_a_token_grant() {
   let nearly_spent = with_caps(token_grant(), 50, 1_000_000)
   !spend_token_lovelace_from(nearly_spent, 1_000_001, -1)
+}
+
+/// Whether the token grant with `cap` tokens remaining pays `tokens` and
+/// 1 ADA to the recipient, handing back a grant output whose caps are
+/// reduced by both.
+fn spend_remaining_tokens(cap: Int, tokens: Int) -> Bool {
+  let nearly_spent = with_caps(token_grant(), cap, 2_000_000)
+  spend_token_from(
+    nearly_spent,
+    [
+      grant_output(with_caps(token_grant(), cap - tokens, 1_000_000), 2_000_000),
+      change(assets.merge(assets.from_lovelace(9_000_000), token(20 - tokens))),
+      output(
+        recipient_address(),
+        assets.merge(assets.from_lovelace(1_000_000), token(tokens)),
+        NoDatum,
+      ),
+    ],
+  )
+}
+
+test spend_with_grant_accepts_spending_exactly_the_remaining_token_cap() {
+  spend_remaining_tokens(5, 5)
+}
+
+test spend_with_grant_rejects_one_token_above_the_remaining_token_cap() {
+  !spend_remaining_tokens(5, 6)
+}
+
+test spend_with_grant_accepts_spending_exactly_the_token_per_call_cap() {
+  spend_remaining_tokens(50, 10)
+}
+
+test spend_with_grant_rejects_one_token_above_the_per_call_cap() {
+  !spend_remaining_tokens(50, 11)
+}
+
+/// Whether the token grant pays 10 tokens and `lovelace` to the recipient
+/// while the account pays `fee`, handing back a grant output carrying
+/// `after`.
+fn spend_token_with_fee(fee: Int, lovelace: Int, after: Grant) -> Bool {
+  let tx = test_helpers.transaction(
+    [grant_input(token_grant()), treasury_input()],
+    [
+      grant_output(after, 2_000_000),
+      change(
+        assets.merge(
+          assets.from_lovelace(10_000_000 - lovelace - fee),
+          token(10),
+        ),
+      ),
+      output(
+        recipient_address(),
+        assets.merge(assets.from_lovelace(lovelace), token(10)),
+        NoDatum,
+      ),
+    ],
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing([control_reference()])
+  account.account.spend(
+    grant_data(Some(token_grant())),
+    SpendWithGrant,
+    output_reference(0),
+    Transaction { ..tx, fee },
+  )
+}
+
+/// On a token grant the fee counts against the lovelace cap, so its
+/// decrement is the lovelace payout plus the fee.
+test spend_with_grant_charges_a_fee_paid_by_the_account_against_the_lovelace_cap() {
+  spend_token_with_fee(
+    500_000,
+    1_000_000,
+    with_caps(token_grant(), 40, 500_000),
+  )
+}
+
+test spend_with_grant_rejects_a_lovelace_cap_decrement_that_leaves_out_the_fee() {
+  !spend_token_with_fee(
+    500_000,
+    1_000_000,
+    with_caps(token_grant(), 40, 1_000_000),
+  )
 }
 
 test spend_with_grant_rejects_a_foreign_asset_leaving() {
@@ -2826,4 +2973,58 @@ test spend_with_grant_rejects_another_accounts_token_minted() {
     state_nft(other_stake_script_hash),
     [stranger_key],
   )
+}
+
+/// A transaction in which the agent granted by both accounts spends through
+/// the lovelace grant of each at once, from a 10 ADA deposit of each, into
+/// `outputs`, referencing both control UTxOs.
+fn two_account_transaction(outputs: List<Output>) -> Transaction {
+  let other = AccountState { ..granted_state(), devices: [other_device_key] }
+  test_helpers.transaction(
+    [
+      grant_input(lovelace_grant()),
+      fund_input(),
+      input(2, other_grant_output(lovelace_grant(), 2_000_000)),
+      input(3, other_fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    outputs,
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing(
+        [
+          control_reference(),
+          input(101, other_control_output(other, 2_000_000)),
+        ],
+      )
+}
+
+/// Each account's handler nets its own address, so two agent spends in one
+/// transaction each record their own payout and pass side by side.
+test spend_with_grant_accepts_two_accounts_each_paying_their_own_recipient_output() {
+  let tx = two_account_transaction(
+    [
+      grant_output(spent_lovelace_grant(), 2_000_000),
+      change(assets.from_lovelace(8_000_000)),
+      payout(2_000_000),
+      other_grant_output(spent_lovelace_grant(), 2_000_000),
+      other_fund_output(assets.from_lovelace(8_000_000)),
+      payout(2_000_000),
+    ],
+  )
+  and {
+    account.account.spend(
+      grant_data(Some(lovelace_grant())),
+      SpendWithGrant,
+      output_reference(0),
+      tx,
+    ),
+    account.account.spend(
+      grant_data(Some(lovelace_grant())),
+      SpendWithGrant,
+      output_reference(2),
+      tx,
+    ),
+  }
 }

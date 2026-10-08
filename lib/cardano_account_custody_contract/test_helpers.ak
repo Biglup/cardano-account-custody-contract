@@ -169,6 +169,31 @@ pub fn fund_output(value: Assets) -> Output {
   output(account_address(), value, NoDatum)
 }
 
+/// The control UTxO of the other account: lovelace, its state NFT and
+/// `state` inline.
+pub fn other_control_output(state: AccountState, lovelace: Int) -> Output {
+  output(
+    other_account_address(),
+    control_value(other_stake_script_hash, lovelace),
+    state_datum(state),
+  )
+}
+
+/// A grant UTxO of the other account: lovelace, the grant token of the
+/// grant's slot and the grant inline.
+pub fn other_grant_output(grant: Grant, lovelace: Int) -> Output {
+  output(
+    other_account_address(),
+    grant_value(other_stake_script_hash, grant.slot, lovelace),
+    grant_datum(grant),
+  )
+}
+
+/// A deposit UTxO at the other account's address: a value and no datum.
+pub fn other_fund_output(value: Assets) -> Output {
+  output(other_account_address(), value, NoDatum)
+}
+
 /// A transaction made of the given parts, with every other field left at
 /// its placeholder value.
 pub fn transaction(

@@ -15,6 +15,7 @@
 
 // USINGS **********************************************************************
 
+use aiken/fuzz
 use aiken/primitive/bytearray
 use cardano/address.{Address, Inline, Pointer, Script, VerificationKey}
 use cardano/assets
@@ -96,6 +97,27 @@ fn other_token() -> assets.Assets {
     "token",
     1,
   )
+}
+
+/// A slot anywhere in the four byte range a grant token name encodes.
+fn slot_fuzzer() -> Fuzzer<Int> {
+  fuzz.int_between(0, 4_294_967_295)
+}
+
+/// Two slots, the same one half of the time and two drawn apart
+/// otherwise.
+fn slot_pair_fuzzer() -> Fuzzer<(Int, Int)> {
+  fuzz.either(
+    fuzz.map(slot_fuzzer(), fn(slot) { (slot, slot) }),
+    fuzz.both(slot_fuzzer(), slot_fuzzer()),
+  )
+}
+
+/// A slot and a strictly later one within the four byte range.
+fn ordered_slots_fuzzer() -> Fuzzer<(Int, Int)> {
+  let earlier <- fuzz.and_then(fuzz.int_between(0, 4_294_967_294))
+  let later <- fuzz.map(fuzz.int_between(earlier + 1, 4_294_967_295))
+  (earlier, later)
 }
 
 // TESTS ***********************************************************************
@@ -180,6 +202,40 @@ test grant_token_name_fails_for_a_slot_beyond_four_bytes() fail {
 
 test grant_token_name_fails_for_a_negative_slot() fail {
   grant_token_name(stake_script_hash, -1) == stake_script_hash
+}
+
+test grant_token_names_differ_exactly_when_the_slots_differ(
+  slots via slot_pair_fuzzer(),
+) {
+  let (first, second) = slots
+  fuzz.label_when(first == second, @"same slot", @"different slots")
+  grant_token_name(stake_script_hash, first) == grant_token_name(
+    stake_script_hash,
+    second,
+  ) == ( first == second )
+}
+
+/// Names sort like their slots, so the names of grants issued in turn only
+/// ever grow.
+test grant_token_names_grow_with_the_slot(slots via ordered_slots_fuzzer()) {
+  let (earlier, later) = slots
+  bytearray.compare(
+    grant_token_name(stake_script_hash, earlier),
+    grant_token_name(stake_script_hash, later),
+  ) == Less
+}
+
+test grant_token_names_keep_the_account_as_their_prefix(
+  case via fuzz.both(fuzz.bytearray_fixed(28), slot_fuzzer()),
+) {
+  let (account, slot) = case
+  let name = grant_token_name(account, slot)
+  and {
+    account_of_name(name) == account,
+    is_grant_name(name),
+    !is_state_nft_name(name),
+    name != grant_token_name(other_stake_script_hash, slot) || account == other_stake_script_hash,
+  }
 }
 
 test account_of_name_is_the_name_of_a_state_nft() {

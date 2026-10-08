@@ -15,6 +15,8 @@
 
 // USINGS **********************************************************************
 
+use aiken/collection/list
+use aiken/fuzz
 use aiken/interval
 use cardano/address
 use cardano/assets.{Assets}
@@ -26,9 +28,10 @@ use cardano_account_custody_contract/grant.{
   referenced_control, spends_one_account_token, starts_after_expiry,
   stays_within_scope,
 }
+use cardano_account_custody_contract/state
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
-  grant_output, grant_value, input, other_account_address,
+  grant_output, grant_value, input, other_account_address, other_fund_output,
   other_stake_script_hash, output, recipient_address, script_hash,
   stake_script_hash, state_datum, stranger_key,
 }
@@ -119,6 +122,126 @@ fn token_grant() -> Grant {
 /// A leaving value of `lovelace` and `tokens` units of the native asset.
 fn leaving(lovelace: Int, tokens: Int) -> Assets {
   assets.merge(assets.from_lovelace(lovelace), token(tokens))
+}
+
+/// A well formed scope over lovelace or the native asset with every cap
+/// drawn from 0 to 100, so that random outflows fall on either side.
+fn scope_fuzzer() -> Fuzzer<Scope> {
+  let over_lovelace <- fuzz.and_then(fuzz.bool())
+  let per_call_cap <- fuzz.and_then(fuzz.int_between(0, 100))
+  let cap <- fuzz.and_then(fuzz.int_between(0, 100))
+  let lovelace_per_call_cap <- fuzz.and_then(fuzz.int_between(0, 100))
+  let lovelace_cap <- fuzz.map(fuzz.int_between(0, 100))
+  if over_lovelace {
+    Scope {
+      ..lovelace_scope(),
+      per_call_cap,
+      cap,
+      lovelace_per_call_cap: 0,
+      lovelace_cap: 0,
+    }
+  } else {
+    Scope {
+      ..token_scope(),
+      per_call_cap,
+      cap,
+      lovelace_per_call_cap,
+      lovelace_cap,
+    }
+  }
+}
+
+/// A leaving value of lovelace and native asset quantities drawn from
+/// -150 to 150, so that deposits, outflows within the caps and outflows
+/// beyond them all occur.
+fn leaving_fuzzer() -> Fuzzer<Assets> {
+  let lovelace <- fuzz.and_then(fuzz.int_between(-150, 150))
+  let tokens <- fuzz.map(fuzz.int_between(-150, 150))
+  leaving(lovelace, tokens)
+}
+
+/// A scope, an outflow and a second outflow with no more of either asset
+/// leaving than the first.
+fn smaller_outflow_fuzzer() -> Fuzzer<(Scope, Assets, Assets)> {
+  let scope <- fuzz.and_then(scope_fuzzer())
+  let lovelace <- fuzz.and_then(fuzz.int_between(-150, 150))
+  let tokens <- fuzz.and_then(fuzz.int_between(-150, 150))
+  let less_lovelace <- fuzz.and_then(fuzz.int_between(0, 50))
+  let less_tokens <- fuzz.map(fuzz.int_between(0, 50))
+  (
+    scope,
+    leaving(lovelace, tokens),
+    leaving(lovelace - less_lovelace, tokens - less_tokens),
+  )
+}
+
+/// A value of some lovelace and up to five tokens under random policies
+/// and names.
+fn value_fuzzer() -> Fuzzer<Assets> {
+  let lovelace <- fuzz.and_then(fuzz.int_between(1, 1_000_000))
+  let tokens <- fuzz.map(
+    fuzz.list_between(
+      fuzz.tuple3(
+        fuzz.bytearray_fixed(28),
+        fuzz.bytearray_between(0, 32),
+        fuzz.int_between(1, 1_000),
+      ),
+      0,
+      5,
+    ),
+  )
+  list.foldl(
+    tokens,
+    assets.from_lovelace(lovelace),
+    fn(entry, value) {
+      let (policy_id, asset_name, quantity) = entry
+      assets.add(value, policy_id, asset_name, quantity)
+    },
+  )
+}
+
+/// A state of a random generation with one to `max_revoked` distinct
+/// revoked slots below 40, and a grant of one of those slots issued under
+/// that generation or an older one.
+fn revoked_grant_fuzzer() -> Fuzzer<(AccountState, Grant)> {
+  let grant_generation <- fuzz.and_then(fuzz.int_between(0, 5))
+  let revoked <- fuzz.and_then(
+    fuzz.set_between(fuzz.int_between(0, 39), 1, state.max_revoked),
+  )
+  let picked <- fuzz.and_then(fuzz.pick(revoked))
+  let generation <- fuzz.map(fuzz.int_between(0, grant_generation))
+  let (_, slot) = picked
+  (
+    AccountState {
+      ..state(),
+      grant_generation,
+      next_slot: 40,
+      revoked,
+      outstanding: 16,
+    },
+    Grant { ..lovelace_grant(), slot, generation },
+  )
+}
+
+/// A state of a random generation with up to `max_revoked` distinct
+/// revoked slots below 40, and a grant of a slot from 40 up issued under
+/// that generation, so that nothing makes it dead but time.
+fn live_grant_fuzzer() -> Fuzzer<(AccountState, Grant)> {
+  let grant_generation <- fuzz.and_then(fuzz.int_between(0, 5))
+  let revoked <- fuzz.and_then(
+    fuzz.set_between(fuzz.int_between(0, 39), 0, state.max_revoked),
+  )
+  let slot <- fuzz.map(fuzz.int_between(40, 60))
+  (
+    AccountState {
+      ..state(),
+      grant_generation,
+      next_slot: 61,
+      revoked,
+      outstanding: 16,
+    },
+    Grant { ..lovelace_grant(), slot, generation: grant_generation },
+  )
 }
 
 // TESTS ***********************************************************************
@@ -218,6 +341,42 @@ test is_dead_rejects_a_range_starting_at_the_expiry() {
   !is_dead(lovelace_grant(), state(), interval.after(1_000))
 }
 
+test a_revoked_slot_is_never_current(case via revoked_grant_fuzzer()) {
+  let (state, grant) = case
+  fuzz.label_when(
+    grant.generation == state.grant_generation,
+    @"current generation",
+    @"older generation",
+  )
+  !is_current(grant, state)
+}
+
+test a_revoked_slot_is_dead_whatever_the_range(case via revoked_grant_fuzzer()) {
+  let (state, grant) = case
+  and {
+    is_dead(grant, state, interval.everything),
+    is_dead(grant, state, interval.before(grant.scope.expires_at)),
+  }
+}
+
+test an_unrevoked_slot_of_the_generation_is_current(
+  case via live_grant_fuzzer(),
+) {
+  let (state, grant) = case
+  is_current(grant, state) && !is_dead(grant, state, interval.everything)
+}
+
+test a_grant_of_an_older_generation_is_never_current(
+  case via live_grant_fuzzer(),
+) {
+  let (state, grant) = case
+  let older = AccountState {
+    ..state,
+    grant_generation: state.grant_generation + 1,
+  }
+  !is_current(grant, older) && is_dead(grant, older, interval.everything)
+}
+
 test referenced_control_returns_the_single_referenced_control() {
   let control = control_output(state(), 2_000_000)
   referenced_control(
@@ -279,6 +438,63 @@ test leaving_value_ignores_the_other_accounts_address() {
   leaving_value(inputs, [], account_address()) == assets.zero
 }
 
+/// What the account pays as fee comes back to no output, so it leaves
+/// like a payout.
+test leaving_value_counts_the_fee_the_account_pays() {
+  let inputs = [
+    input(0, grant_output(lovelace_grant(), 2_000_000)),
+    input(1, fund_output(assets.from_lovelace(10_000_000))),
+  ]
+  let outputs = [
+    grant_output(lovelace_grant(), 2_000_000),
+    fund_output(assets.from_lovelace(7_000_000)),
+    output(recipient_address(), assets.from_lovelace(2_000_000), NoDatum),
+  ]
+  leaving_value(inputs, outputs, account_address()) == assets.from_lovelace(
+    3_000_000,
+  )
+}
+
+/// Two accounts in one transaction are netted apart: the other account's
+/// deposit and change never offset what leaves this one.
+test leaving_value_nets_each_account_address_on_its_own() {
+  let inputs = [
+    input(1, fund_output(assets.from_lovelace(10_000_000))),
+    input(3, other_fund_output(assets.from_lovelace(10_000_000))),
+    input(
+      4,
+      output(recipient_address(), assets.from_lovelace(2_000_000), NoDatum),
+    ),
+  ]
+  let outputs = [
+    fund_output(assets.from_lovelace(8_000_000)),
+    other_fund_output(assets.from_lovelace(12_000_000)),
+    output(recipient_address(), assets.from_lovelace(2_000_000), NoDatum),
+  ]
+  and {
+    leaving_value(inputs, outputs, account_address()) == assets.from_lovelace(
+      2_000_000,
+    ),
+    leaving_value(inputs, outputs, other_account_address()) == assets.from_lovelace(
+      -2_000_000,
+    ),
+  }
+}
+
+test leaving_value_nets_to_zero_for_a_value_returned_unchanged(
+  value via value_fuzzer(),
+) {
+  let inputs = [
+    input(0, fund_output(value)),
+    input(1, output(recipient_address(), value, NoDatum)),
+  ]
+  let outputs = [
+    fund_output(value),
+    output(recipient_address(), assets.from_lovelace(1), NoDatum),
+  ]
+  leaving_value(inputs, outputs, account_address()) == assets.zero
+}
+
 test quantity_of_asset_reads_lovelace_and_tokens() {
   let value = leaving(7, 3)
   quantity_of_asset(value, lovelace_asset()) == 7 && quantity_of_asset(
@@ -295,9 +511,24 @@ test stays_within_scope_rejects_one_above_the_per_call_cap() {
   !stays_within_scope(token_scope(), leaving(0, 11))
 }
 
+test stays_within_scope_accepts_the_remaining_cap_exactly() {
+  let nearly_spent = Scope { ..token_scope(), cap: 5 }
+  stays_within_scope(nearly_spent, leaving(0, 5))
+}
+
 test stays_within_scope_rejects_more_than_the_remaining_cap() {
   let nearly_spent = Scope { ..token_scope(), cap: 5 }
   !stays_within_scope(nearly_spent, leaving(0, 6))
+}
+
+test stays_within_scope_accepts_the_remaining_cap_of_a_lovelace_scope_exactly() {
+  let nearly_spent = Scope { ..lovelace_scope(), cap: 2_000_000 }
+  stays_within_scope(nearly_spent, assets.from_lovelace(2_000_000))
+}
+
+test stays_within_scope_rejects_one_above_the_remaining_cap_of_a_lovelace_scope() {
+  let nearly_spent = Scope { ..lovelace_scope(), cap: 2_000_000 }
+  !stays_within_scope(nearly_spent, assets.from_lovelace(2_000_001))
 }
 
 test stays_within_scope_accepts_the_lovelace_per_call_cap_exactly() {
@@ -306,6 +537,11 @@ test stays_within_scope_accepts_the_lovelace_per_call_cap_exactly() {
 
 test stays_within_scope_rejects_one_above_the_lovelace_per_call_cap() {
   !stays_within_scope(token_scope(), leaving(1_000_001, 0))
+}
+
+test stays_within_scope_accepts_the_remaining_lovelace_cap_exactly() {
+  let nearly_spent = Scope { ..token_scope(), lovelace_cap: 500_000 }
+  stays_within_scope(nearly_spent, leaving(500_000, 0))
 }
 
 test stays_within_scope_rejects_lovelace_above_the_remaining_lovelace_cap() {
@@ -333,6 +569,35 @@ test stays_within_scope_accepts_a_foreign_asset_entering() {
 
 test stays_within_scope_accepts_a_deposit() {
   stays_within_scope(token_scope(), leaving(-1, -1))
+}
+
+/// Whatever passes a scope still passes when less of each asset leaves.
+test stays_within_scope_is_monotone_in_the_outflow(
+  case via smaller_outflow_fuzzer(),
+) {
+  let (scope, outflow, smaller) = case
+  let within = stays_within_scope(scope, outflow)
+  fuzz.label_when(within, @"within scope", @"beyond scope")
+  !within || stays_within_scope(scope, smaller)
+}
+
+/// A scope with zero caps admits nothing but deposits.
+test stays_within_scope_with_zero_caps_admits_only_deposits(
+  outflow via leaving_fuzzer(),
+) {
+  let empty = Scope {
+    ..token_scope(),
+    per_call_cap: 0,
+    cap: 0,
+    lovelace_per_call_cap: 0,
+    lovelace_cap: 0,
+  }
+  stays_within_scope(empty, outflow) == (
+    assets.lovelace_of(outflow) <= 0 && quantity_of_asset(
+      outflow,
+      token_asset(),
+    ) <= 0
+  )
 }
 
 test pays_only_recipients_allows_any_destination_when_empty() {
@@ -526,6 +791,58 @@ test grant_after_spend_ignores_a_lovelace_deposit_beside_a_token_withdrawal() {
     ..token_grant(),
     scope: Scope { ..token_scope(), cap: 43, lovelace_cap: 2_000_000 },
   }
+}
+
+test grant_after_spend_reduces_the_caps_to_zero_on_an_exact_spend() {
+  grant_after_spend(token_grant(), leaving(2_000_000, 50)) == Grant {
+    ..token_grant(),
+    scope: Scope { ..token_scope(), cap: 0, lovelace_cap: 0 },
+  }
+}
+
+test grant_after_spend_never_raises_a_cap(
+  case via fuzz.both(scope_fuzzer(), leaving_fuzzer()),
+) {
+  let (scope, outflow) = case
+  let grant = Grant { ..token_grant(), scope }
+  let after = grant_after_spend(grant, outflow)
+  fuzz.label_when(
+    after.scope.cap == scope.cap && after.scope.lovelace_cap == scope.lovelace_cap,
+    @"caps unchanged",
+    @"a cap reduced",
+  )
+  and {
+    after.scope.cap <= scope.cap,
+    after.scope.lovelace_cap <= scope.lovelace_cap,
+  }
+}
+
+test grant_after_spend_changes_nothing_but_the_remaining_caps(
+  case via fuzz.both(scope_fuzzer(), leaving_fuzzer()),
+) {
+  let (scope, outflow) = case
+  let grant = Grant { ..token_grant(), scope }
+  let after = grant_after_spend(grant, outflow)
+  Grant {
+    ..after,
+    scope: Scope {
+      ..after.scope,
+      cap: scope.cap,
+      lovelace_cap: scope.lovelace_cap,
+    },
+  } == grant
+}
+
+/// A spend the scope admits leaves the remaining caps non negative, so a
+/// grant never carries a negative cap.
+test grant_after_spend_keeps_the_caps_non_negative_within_scope(
+  case via fuzz.both(scope_fuzzer(), leaving_fuzzer()),
+) {
+  let (scope, outflow) = case
+  let within = stays_within_scope(scope, outflow)
+  fuzz.label_when(within, @"within scope", @"beyond scope")
+  let after = grant_after_spend(Grant { ..token_grant(), scope }, outflow)
+  !within || after.scope.cap >= 0 && after.scope.lovelace_cap >= 0
 }
 
 test carries_grant_accepts_the_matching_inline_datum() {

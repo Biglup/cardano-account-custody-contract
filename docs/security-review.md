@@ -588,70 +588,144 @@ Tests. `attack_dust_attack_grant_spend_keeps_one_unit_of_dust` (`!`),
 
 ## Resource exhaustion
 
-The `budget_` tests build the largest well formed state (eight devices,
-sixteen grants, eight recipients each, every key 28 bytes), which
-serialises to 6620 bytes of CBOR
-(`budget_largest_state_datum_stays_within_the_transaction_size_limit`
-asserts it stays under 16 KiB), and run the heaviest handlers over it.
-`aiken check -D` reports the execution units below. Each figure includes
-the cost of building the fixture, which the `budget_baseline_` tests
-measure on their own, and excludes the on-chain cost of decoding the
-script context, which the `aiken check` runner does not charge. The net
-figures are therefore indicative and must be confirmed on preprod with
-the real transaction builder. The mainnet limit per transaction is
-14,000,000 memory units and 10,000,000,000 CPU steps.
+The `budget_` tests in `validators/attacks.test.ak` build the largest
+state the validators admit and run every handler of every path over it.
+The largest control state has eight devices, thirty two revoked slots,
+sixteen outstanding grants and a generation past zero; the largest grant
+lists eight recipients; every key is 28 bytes. The largest control datum
+serialises to 293 bytes of CBOR and the largest grant datum to 398, and
+`budget_largest_state_datums_stay_within_the_transaction_size_limit`
+asserts that the two together stay under 2 KiB, far inside the 16 KiB
+transaction size limit.
 
-| Test | mem | cpu | baseline mem | net mem |
-| --- | --- | --- | --- | --- |
-| `budget_largest_state_grant_spend_lovelace_scope` (9 inputs) | 6,823,833 | 2,217,481,794 | 1,062,640 | 5.8 M |
-| `budget_largest_state_grant_spend_token_scope` (2 inputs) | 6,173,354 | 2,001,155,221 | 942,748 | 5.2 M |
-| `budget_largest_state_device_rewrite` | 10,835,901 | 3,281,429,472 | 743,749 | 10.1 M |
-| `budget_largest_state_account_creation` | 6,160,095 | 1,881,670,968 | 412,846 | 5.7 M |
-| `budget_largest_state_fund_spend_among_eight_deposits` | 1,168,860 | 352,495,091 | 1,062,640 | 0.1 M |
-| `budget_grant_spend_over_forty_deposits` (small state) | 5,646,839 | 1,853,829,111 | 1,143,594 | 4.5 M |
-| `budget_fund_spend_among_forty_deposits` | 1,362,658 | 436,406,794 | 1,143,594 | 0.2 M |
+Method. `aiken check -D` reports the execution units of every test as
+the memory units and CPU steps its evaluator charged. Each `budget_`
+figure includes the cost of building the fixture; the `budget_baseline_`
+test of the same fixture builds it without running a handler, and the
+net column subtracts it. The runner does not charge the ledger's decoding
+of the script context, so the net figures understate the on-chain cost
+by that amount and must be confirmed on preprod with the real
+transaction builder. The mainnet limits are 14,000,000 memory units and
+10,000,000,000 CPU steps per transaction and 62,000,000 memory units and
+20,000,000,000 steps per block; a transaction pays the sum over every
+handler it runs, one per script input, mint policy, certificate and
+withdrawal. The last column repeats the net memory with `max_revoked`
+set to 64 and the fixture's revoked list filled to 64; the committed
+bound is 32.
 
-The baselines are `budget_baseline_largest_state_grant_transaction`,
-`budget_baseline_largest_state_token_grant_transaction`,
-`budget_baseline_largest_state_device_rewrite_transaction`,
-`budget_baseline_largest_state_creation_transaction` and
-`budget_baseline_forty_deposit_transaction`. The stake script's handlers
-are not measured separately: the device rule decodes one state and scans
-its device list, a fraction of a `Fund` execution, and a withdrawal or
-delegation rides on a device spend whose cost the table already shows.
+| Test | mem | cpu | baseline mem | net mem | net cpu | net mem, 64 revoked |
+| --- | --- | --- | --- | --- | --- | --- |
+| `budget_largest_state_account_creation` | 792,442 | 234,571,371 | 298,294 | 0.49 M | 0.15 G | 0.49 M |
+| `budget_largest_state_registration` | 441,442 | 126,807,016 | 298,294 | 0.14 M | 0.04 G | 0.14 M |
+| `budget_largest_state_device_revoke` | 1,644,107 | 469,350,024 | 545,997 | 1.10 M | 0.32 G | 1.49 M |
+| `budget_largest_state_device_rewrite` | 1,550,890 | 441,568,196 | 447,680 | 1.10 M | 0.32 G | 1.50 M |
+| `budget_largest_state_fund_spend_of_a_reserve_beside_the_control` | 487,144 | 141,069,515 | 410,269 | 0.08 M | 0.03 G | 0.06 M |
+| `budget_largest_state_withdrawal` | 540,842 | 148,502,543 | 232,903 | 0.31 M | 0.08 G | 0.44 M |
+| `budget_largest_state_delegation` | 550,260 | 152,566,332 | 230,083 | 0.32 M | 0.09 G | 0.46 M |
+| `budget_largest_state_device_issue` | 1,584,317 | 459,062,657 | 387,566 | 1.20 M | 0.35 G | 1.60 M |
+| `budget_largest_state_issue_grants` | 1,378,357 | 403,077,891 | 387,566 | 0.99 M | 0.29 G | 1.26 M |
+| `budget_largest_state_device_issue_eight_grants` | 3,457,317 | 1,042,223,505 | 1,768,883 | 1.69 M | 0.52 G | 2.09 M |
+| `budget_largest_state_issue_eight_grants` | 6,985,885 | 2,136,542,565 | 1,768,883 | 5.22 M | 1.61 G | 5.48 M |
+| `budget_largest_state_device_issue_sixteen_grants` | 5,857,181 | 1,784,958,697 | 3,606,595 | 2.25 M | 0.71 G | 2.66 M |
+| `budget_largest_state_issue_sixteen_grants` | 16,327,261 | 4,936,209,161 | 3,606,595 | 12.72 M | 3.86 G | 12.99 M |
+| `budget_largest_state_device_sweep` | 1,739,068 | 501,311,896 | 546,324 | 1.19 M | 0.35 G | 1.59 M |
+| `budget_largest_state_sweep_grant` | 1,285,677 | 375,979,490 | 546,324 | 0.74 M | 0.22 G | 0.86 M |
+| `budget_largest_state_burn_grants` | 863,536 | 241,290,260 | 546,324 | 0.32 M | 0.09 G | 0.44 M |
+| `budget_largest_state_device_sweep_eight_grants` | 3,433,764 | 1,024,119,304 | 1,948,809 | 1.48 M | 0.45 G | 1.88 M |
+| `budget_largest_state_sweep_grant_among_eight` | 2,750,050 | 825,062,830 | 1,948,809 | 0.80 M | 0.25 G | 0.92 M |
+| `budget_largest_state_burn_eight_grants` | 2,290,615 | 670,883,547 | 1,948,809 | 0.34 M | 0.10 G | 0.47 M |
+| `budget_largest_state_device_sweep_sixteen_grants` | 5,629,852 | 1,697,879,136 | 3,810,713 | 1.82 M | 0.57 G | 2.22 M |
+| `budget_largest_state_sweep_grant_among_sixteen` | 4,679,826 | 1,414,072,870 | 3,810,713 | 0.87 M | 0.28 G | 0.99 M |
+| `budget_largest_state_burn_sixteen_grants` | 4,180,855 | 1,238,112,955 | 3,810,713 | 0.37 M | 0.11 G | 0.49 M |
+| `budget_largest_state_grant_spend_lovelace_scope` (9 inputs) | 2,815,579 | 921,672,816 | 721,596 | 2.09 M | 0.72 G | 2.32 M |
+| `budget_largest_state_fund_spend_among_eight_deposits` | 823,582 | 249,524,248 | 721,596 | 0.10 M | 0.04 G | 0.10 M |
+| `budget_largest_state_grant_spend_token_scope` (2 inputs) | 2,190,801 | 712,019,064 | 599,416 | 1.59 M | 0.54 G | 1.82 M |
+| `budget_grant_spend_over_forty_deposits` | 6,435,355 | 2,115,891,952 | 1,502,780 | 4.93 M | 1.69 G | 5.16 M |
+| `budget_fund_spend_among_forty_deposits` | 1,706,910 | 535,780,216 | 1,502,780 | 0.20 M | 0.11 G | 0.20 M |
+
+The baselines are the `budget_baseline_` tests named after the fixture
+each row builds: `largest_state_creation_transaction` for the creation
+and the registration, `largest_state_device_revoke_transaction`,
+`largest_state_rewrite_transaction`,
+`largest_state_reserve_transaction`,
+`largest_state_withdrawal_transaction`,
+`largest_state_delegation_transaction`,
+`largest_state_issue_transaction` and the `eight_grant_issue` and
+`sixteen_grant_issue` variants for the issuances, the
+`sweep_transaction` and its `eight_grant_sweep` and
+`sixteen_grant_sweep` variants for the sweeps,
+`largest_state_grant_transaction` for the lovelace grant spend and the
+`Fund` beside it, `largest_state_token_grant_transaction` and
+`forty_deposit_transaction`. The sweep rows measure the handler of the
+last grant UTxO, which scans every input before it. The stake script
+rows measure its device rule on its own, decoding the largest state once
+from the referenced control UTxO.
+
+Per transaction, summing the handlers each path runs, in net memory
+units at 32 revoked slots, with the 64 figure in brackets:
+
+- Creation: the mint handler and the registration, 0.64 M (0.63 M).
+- Revoke, revoke all or device rewrite: one `Device` execution, 1.10 M
+  (1.50 M).
+- Issuance of one grant: `Device` and `IssueGrants`, 2.19 M (2.86 M).
+  Eight grants with eight recipients each: 6.91 M (7.58 M), 49 percent of
+  the limit. Sixteen at once: 14.97 M (15.64 M), over the limit, since
+  `IssueGrants` costs about 0.65 M to 0.80 M per grant on top of its
+  base. The off-chain builder must issue at most eight largest grants
+  per transaction; grants with fewer recipients are cheaper.
+- Sweep of one dead grant: `Device`, `SweepGrant` and `BurnGrants`,
+  2.25 M (2.89 M). Eight at once: 8.24 M (9.75 M), 59 percent. Sixteen at
+  once: 16.10 M (18.59 M), over the limit, because every `SweepGrant`
+  execution decodes the control state again, about 0.80 M to 0.87 M
+  each. The builder must sweep at most eight per transaction.
+- Agent spend over eight deposits: `SpendWithGrant` and eight `Fund`
+  executions, 2.91 M (3.09 M); over the token scope with one deposit,
+  1.69 M. Over forty deposits: 4.93 M plus forty `Fund` executions of
+  0.20 M, 13.10 M (13.07 M), 94 percent of the limit, so around thirty
+  deposits per grant spend is the provisional batch size pending on-chain
+  measurement; with its default fixed budgets the builder stops at about
+  fourteen.
+- Reserve spend, withdrawal and delegation: 0.08 M, 0.31 M and 0.32 M
+  beside the owner spend that carries them.
 
 Observations.
 
-- The device rewrite over the largest state is the heaviest single
-  execution at about 10.1 M memory units net, 72 percent of the
-  transaction limit, driven by decoding the largest state twice (the
-  spent datum and the recreated one) and checking well formedness. It
-  fits, so the owner can always rewrite or shrink such a state, but
-  only a few `Fund` executions fit beside it. This is the one budget
-  concern found; the parameters `max_grants` and `max_recipients` in
-  `state.ak` are the levers if on-chain measurement shows it too tight.
-- A grant spend with 40 deposits costs about 4.5 M memory units for the
-  control UTxO's handler plus about 0.2 M for each of the 40 `Fund`
-  executions, about 12.5 M in total, which is close to the limit. Around
-  30 deposits per grant spend is a provisional batch size pending
-  on-chain measurement; the off-chain builder must batch larger sweeps,
-  and with its default fixed budgets it stops at about 14.
+- Raising `max_revoked` to 64 adds between 0.1 M and 0.4 M to every
+  handler that decodes or scans the control state and about 1.5 M to the
+  eight grant sweep, the heaviest transaction that fits. Every path that
+  fits at 32 still fits at 64, but with a smaller margin, so the bound
+  stays at 32; the owner bumps the generation once thirty two slots are
+  revoked.
+- The heaviest single execution is `IssueGrants` over eight largest
+  grants at 5.22 M, 37 percent of the limit; the heaviest owner execution
+  over the largest state is a `Device` spend at 1.10 M to 2.25 M. No path
+  of the owner is near the limit at the committed bounds, and the levers
+  if on-chain measurement shows otherwise are `max_grants`,
+  `max_recipients` and `max_revoked` in `state.ak`.
 - Complexity. `grant.leaving_value` folds `assets.merge` over the
   inputs and outputs at the address; each merge is linear in the number
   of asset entries of both operands, so the whole fold is linear in the
-  total number of entries, not quadratic. `account.own_input` and
-  `account.has_control_input` are linear scans of the inputs run once
-  per `Fund` execution, so the total work of a transaction with n
-  deposits grows with n squared; the measured growth is from 0.1 M to
-  0.2 M memory units per `Fund` execution between 9 and 41 inputs.
+  total number of entries, not quadratic. `account.own_input`,
+  `account.has_account_token_input` and `account.has_control_input` are
+  linear scans of the inputs run once per `Fund` execution, so the total
+  work of a transaction with n deposits grows with n squared; the
+  measured growth is from 0.10 M to 0.20 M memory units per `Fund`
+  execution between 9 and 41 inputs. `SpendWithGrant` and `SweepGrant`
+  each decode the control state once, from the reference input or the
+  spent input. `IssueGrants` runs `account.find_token_output` over the
+  outputs once per minted token and `recreates_control_output` reads the
+  mint once, so an issuance of k grants grows with k squared in the
+  output scans and linearly in the grant datums decoded.
   `state.is_well_formed` uses `list.unique`, which is quadratic, over
-  lists bounded at 8 and 16. `grant.pays_only_recipients` is linear in
+  the device list bounded at 8, and `list.length` over the revoked list
+  bounded at `max_revoked`. `grant.is_current` and `grant.is_dead` scan
+  the revoked list once. `grant.pays_only_recipients` is linear in
   outputs times at most 8 recipients.
-  `account.state_nfts_sit_at_their_own_addresses` is one dictionary
-  lookup per input or output. `account.registers_stake_credential` is a
-  linear scan of the redeemers. No helper is unbounded in anything the
-  attacker controls except the number of inputs, outputs and redeemers,
-  which the transaction size limit bounds and the submitter pays for.
+  `account.tokens_sit_at_their_own_addresses` is one dictionary lookup
+  per input or output. `account.registers_stake_credential` is a linear
+  scan of the redeemers. No helper is unbounded in anything the attacker
+  controls except the number of inputs, outputs and redeemers, which the
+  transaction size limit bounds and the submitter pays for.
 
 Reference scripts. Every transaction that spends a UTxO pays a fee for
 the size of the reference script the UTxO holds. A grantee could attach

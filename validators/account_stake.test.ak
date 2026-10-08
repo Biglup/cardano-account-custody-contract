@@ -15,6 +15,7 @@
 
 // USINGS **********************************************************************
 
+use account
 use account_stake
 use aiken/interval
 use cardano/address.{Script, VerificationKey}
@@ -26,7 +27,7 @@ use cardano/certificate.{
 }
 use cardano/governance.{StakePool}
 use cardano/script_context.{ScriptContext, Voting}
-use cardano/transaction.{Input, NoDatum, Output, Transaction}
+use cardano/transaction.{DatumHash, Input, NoDatum, Output, Transaction}
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
   grant_datum, grant_output, input, other_account_address, other_device_key,
@@ -34,7 +35,7 @@ use cardano_account_custody_contract/test_helpers.{
   stake_script_hash, state_datum, state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, Grant, Operate, Scope,
+  AccountState, Asset, CreateAccount, Grant, Operate, Scope,
 }
 
 // FUNCTIONS *******************************************************************
@@ -340,6 +341,18 @@ test publish_rejects_a_registration_with_a_control_output_without_an_inline_stat
   )
 }
 
+test publish_rejects_a_registration_with_a_control_output_under_a_datum_hash() fail {
+  register(
+    creation_with_control(
+      output(
+        account_address(),
+        control_value(stake_script_hash, 2_000_000),
+        DatumHash(stranger_key),
+      ),
+    ),
+  )
+}
+
 test publish_rejects_a_registration_with_a_control_output_carrying_a_grant() fail {
   register(
     creation_with_control(
@@ -350,6 +363,21 @@ test publish_rejects_a_registration_with_a_control_output_carrying_a_grant() fai
       ),
     ),
   )
+}
+
+/// The stake script only counts the state NFT of its own credential, so a
+/// second account's NFT minted beside it passes the registration; the
+/// account mint handler, which runs in the same transaction, refuses a
+/// mint of two names, and both must pass for the creation to apply.
+test publish_accepts_a_second_nft_beside_the_mint_that_the_mint_handler_refuses() {
+  let tx = Transaction {
+    ..creation(registration(stake_script_hash), [device_key], [device_key]),
+    mint: assets.merge(
+      state_nft(stake_script_hash),
+      state_nft(other_stake_script_hash),
+    ),
+  }
+  register(tx) && !account.account.mint(CreateAccount, script_hash, tx)
 }
 
 test publish_rejects_a_registration_of_a_key_credential() {

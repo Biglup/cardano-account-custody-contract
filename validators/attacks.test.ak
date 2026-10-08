@@ -32,6 +32,7 @@ use aiken/interval.{Interval, IntervalBound, NegativeInfinity}
 use aiken/primitive/bytearray
 use cardano/address.{Address, Script}
 use cardano/assets.{Assets}
+use cardano/certificate.{DelegateBlockProduction, DelegateCredential}
 use cardano/transaction.{
   DatumHash, InlineDatum, Input, NoDatum, Output, Transaction,
 }
@@ -39,7 +40,8 @@ use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
   grant_datum, grant_output, grant_token, grant_value, input,
-  other_account_address, other_device_key, other_stake_script_hash, output,
+  other_account_address, other_control_output, other_device_key,
+  other_fund_output, other_grant_output, other_stake_script_hash, output,
   output_reference, publishing, recipient_address, referencing, registration,
   script_hash, stake_script_hash, state_datum, state_nft, stranger_key,
 }
@@ -154,31 +156,6 @@ fn restricted_grant() -> Grant {
 /// The grant with its remaining asset and lovelace caps replaced.
 fn with_caps(grant: Grant, cap: Int, lovelace_cap: Int) -> Grant {
   Grant { ..grant, scope: Scope { ..grant.scope, cap, lovelace_cap } }
-}
-
-/// The control UTxO of the other account: lovelace, its state NFT and
-/// `state` inline.
-fn other_control_output(state: AccountState, lovelace: Int) -> Output {
-  output(
-    other_account_address(),
-    control_value(other_stake_script_hash, lovelace),
-    state_datum(state),
-  )
-}
-
-/// A grant UTxO of the other account: lovelace, the grant token of the
-/// grant's slot and the grant inline.
-fn other_grant_output(grant: Grant, lovelace: Int) -> Output {
-  output(
-    other_account_address(),
-    grant_value(other_stake_script_hash, grant.slot, lovelace),
-    grant_datum(grant),
-  )
-}
-
-/// A deposit UTxO at the other account's address: a value and no datum.
-fn other_fund_output(value: Assets) -> Output {
-  output(other_account_address(), value, NoDatum)
 }
 
 /// An output paying `lovelace` to the recipient outside the account.
@@ -309,6 +286,26 @@ fn withdraw(tx: Transaction) -> Bool {
   )
 }
 
+/// A certificate delegating the account's stake credential to a pool.
+fn delegation() -> certificate.Certificate {
+  DelegateCredential {
+    credential: Script(stake_script_hash),
+    delegate: DelegateBlockProduction { stake_pool: stranger_key },
+  }
+}
+
+/// Whether the stake script of the account under test accepts publishing
+/// the delegation of its credential over `tx`.
+fn delegate(tx: Transaction) -> Bool {
+  account_stake.account_stake.publish(
+    device_key,
+    script_hash,
+    Operate,
+    delegation(),
+    tx,
+  )
+}
+
 /// The control UTxO of `state` as a reference input, at an index no spent
 /// input uses.
 fn control_reference(state: AccountState) -> Input {
@@ -348,6 +345,38 @@ fn spend_lovelace_grant(grant: Grant, outputs: List<Output>) -> Bool {
   spend_grant(grant, SpendWithGrant, 0, grant_transaction(grant, outputs))
 }
 
+/// A transaction in which the agent granted by both accounts spends
+/// through the lovelace grant of each at once, under open recipient lists,
+/// from a 10 ADA deposit of each, with `extra_inputs` beside them, into
+/// `outputs`, referencing both control UTxOs.
+fn two_account_grant_transaction(
+  extra_inputs: List<Input>,
+  outputs: List<Output>,
+) -> Transaction {
+  let other = AccountState { ..granted_state(), devices: [other_device_key] }
+  transaction(
+    list.concat(
+      [
+        input(0, grant_output(lovelace_grant(), 2_000_000)),
+        input(1, fund_output(assets.from_lovelace(10_000_000))),
+        input(2, other_grant_output(lovelace_grant(), 2_000_000)),
+        input(3, other_fund_output(assets.from_lovelace(10_000_000))),
+      ],
+      extra_inputs,
+    ),
+    outputs,
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing(
+        [
+          control_reference(granted_state()),
+          input(101, other_control_output(other, 2_000_000)),
+        ],
+      )
+}
+
 /// A deposit of 10 ADA and 20 tokens at the account address, spent at
 /// index 1.
 fn treasury_input() -> Input {
@@ -376,41 +405,57 @@ fn owner_transaction(
 
 // TESTS ***********************************************************************
 
-/// Two accounts grant the same agent, each restricted to the same
-/// recipient. One 2 ADA output to that recipient is offered as the payout
-/// of both grants and the other 2 ADA go to the attacker. Each handler
-/// computes its own net outflow and sees the attacker's output, so both
-/// refuse; without the stray output the surplus could only become fee.
+/// Two accounts grant the same agent under open recipient lists and the
+/// agent spends through both at once, returning each deposit 2 ADA short.
+/// One 2 ADA output to the recipient is offered as the payout of both
+/// spends and recorded against the first account's grant only, the other
+/// 2 ADA riding out to the attacker, which an open list allows. Each
+/// handler nets its own address: the first account's grant records what
+/// left it and passes, the second's sees 2 ADA leaving that its unchanged
+/// grant does not record, and that rule alone refuses the transaction.
 test attack_double_satisfaction_one_recipient_output_for_two_accounts() {
-  let other = AccountState { ..granted_state(), devices: [other_device_key] }
-  let tx = transaction(
+  let tx = two_account_grant_transaction(
+    [],
     [
-      input(0, grant_output(restricted_grant(), 2_000_000)),
-      input(1, fund_output(assets.from_lovelace(10_000_000))),
-      input(2, other_grant_output(restricted_grant(), 2_000_000)),
-      input(3, other_fund_output(assets.from_lovelace(10_000_000))),
-    ],
-    [
-      grant_output(with_caps(restricted_grant(), 3_000_000, 0), 2_000_000),
+      grant_output(with_caps(lovelace_grant(), 3_000_000, 0), 2_000_000),
       change(8_000_000),
-      other_grant_output(with_caps(restricted_grant(), 3_000_000, 0), 2_000_000),
+      other_grant_output(lovelace_grant(), 2_000_000),
       other_fund_output(assets.from_lovelace(8_000_000)),
       payout(2_000_000),
       output(attacker_address(), assets.from_lovelace(2_000_000), NoDatum),
     ],
-    assets.zero,
-    [stranger_key],
-    interval.before(expiry - 1),
   )
-    |> referencing(
-        [
-          control_reference(granted_state()),
-          input(101, other_control_output(other, 2_000_000)),
-        ],
-      )
   and {
-    !spend_grant(restricted_grant(), SpendWithGrant, 0, tx),
-    !spend_grant(restricted_grant(), SpendWithGrant, 2, tx),
+    spend_grant(lovelace_grant(), SpendWithGrant, 0, tx),
+    !spend_grant(lovelace_grant(), SpendWithGrant, 2, tx),
+  }
+}
+
+/// The agent takes 2 ADA out of the first account for the recipient and
+/// puts 2 ADA of its own into the second, so that across the two accounts,
+/// which share the payment script, nothing leaves, and hands both grants
+/// back unchanged. The netting runs per account address, stake part
+/// included: the second account's handler sees a deposit and passes, the
+/// first's sees 2 ADA leaving unrecorded and refuses.
+test attack_double_satisfaction_a_deposit_into_another_account_offsets_the_outflow() {
+  let tx = two_account_grant_transaction(
+    [
+      input(
+        4,
+        output(attacker_address(), assets.from_lovelace(2_000_000), NoDatum),
+      ),
+    ],
+    [
+      grant_output(lovelace_grant(), 2_000_000),
+      change(8_000_000),
+      other_grant_output(lovelace_grant(), 2_000_000),
+      other_fund_output(assets.from_lovelace(12_000_000)),
+      payout(2_000_000),
+    ],
+  )
+  and {
+    spend_grant(lovelace_grant(), SpendWithGrant, 2, tx),
+    !spend_grant(lovelace_grant(), SpendWithGrant, 0, tx),
   }
 }
 
@@ -2178,6 +2223,39 @@ test budget_baseline_largest_state_creation_transaction() {
   list.length(largest_state_creation_transaction().outputs) == 1
 }
 
+test budget_baseline_largest_state_rewrite_transaction() {
+  let tx = largest_state_rewrite_transaction()
+  list.length(tx.inputs) == 1 && list.length(tx.outputs) == 1
+}
+
+test budget_baseline_largest_state_reserve_transaction() {
+  list.length(largest_state_reserve_transaction().inputs) == 2
+}
+
+test budget_baseline_largest_state_withdrawal_transaction() {
+  list.length(largest_state_withdrawal_transaction().reference_inputs) == 1
+}
+
+test budget_baseline_largest_state_delegation_transaction() {
+  list.length(largest_state_delegation_transaction().certificates) == 1
+}
+
+test budget_baseline_largest_state_eight_grant_issue_transaction() {
+  list.length(largest_state_grant_issue_transaction(8).outputs) == 9
+}
+
+test budget_baseline_largest_state_sixteen_grant_issue_transaction() {
+  list.length(largest_state_grant_issue_transaction(16).outputs) == 17
+}
+
+test budget_baseline_largest_state_eight_grant_sweep_transaction() {
+  list.length(largest_state_grant_sweep_transaction(8).inputs) == 9
+}
+
+test budget_baseline_largest_state_sixteen_grant_sweep_transaction() {
+  list.length(largest_state_grant_sweep_transaction(16).inputs) == 17
+}
+
 /// The largest control datum and the largest grant datum travel together
 /// in every issuance and sweep, and a transaction must stay under the
 /// 16 KiB size limit. The bound asserted is 2 KiB, far tighter, so that
@@ -2228,6 +2306,98 @@ test budget_largest_state_device_revoke() {
   )
 }
 
+/// A device rewrite over the largest state: the last device replaced by
+/// the owner, the full revoked list kept and the generation bumped.
+fn largest_state_rewrite_transaction() -> Transaction {
+  let next = AccountState {
+    ..largest_state(),
+    devices: list.concat(keys(7), [device_key]),
+    grant_generation: 2,
+  }
+  transaction(
+    [input(0, control_output(largest_state(), 2_000_000))],
+    [control_output(next, 2_000_000)],
+    assets.zero,
+    [key(8)],
+    interval.everything,
+  )
+}
+
+test budget_largest_state_device_rewrite() {
+  spend(Some(largest_state()), Device, 0, largest_state_rewrite_transaction())
+}
+
+/// An owner spend of a reserve, a deposit carrying a datum, beside the
+/// largest control UTxO.
+fn largest_state_reserve_transaction() -> Transaction {
+  let marker: Data = 1
+  transaction(
+    [
+      input(0, control_output(largest_state(), 2_000_000)),
+      input(
+        1,
+        output(
+          account_address(),
+          assets.from_lovelace(10_000_000),
+          InlineDatum(marker),
+        ),
+      ),
+    ],
+    [control_output(largest_state(), 2_000_000), payout(10_000_000)],
+    assets.zero,
+    [key(8)],
+    interval.everything,
+  )
+}
+
+test budget_largest_state_fund_spend_of_a_reserve_beside_the_control() {
+  let marker: Data = 1
+  account.account.spend(
+    Some(marker),
+    Fund,
+    output_reference(1),
+    largest_state_reserve_transaction(),
+  )
+}
+
+/// A withdrawal of 1 ADA from the reward account, signed by the last
+/// device, over the largest control UTxO referenced.
+fn largest_state_withdrawal_transaction() -> Transaction {
+  let tx = transaction(
+    [
+      input(
+        5,
+        output(attacker_address(), assets.from_lovelace(3_000_000), NoDatum),
+      ),
+    ],
+    [payout(4_000_000)],
+    assets.zero,
+    [key(8)],
+    interval.everything,
+  )
+  Transaction {
+    ..tx,
+    reference_inputs: [control_reference(largest_state())],
+    withdrawals: [Pair(Script(stake_script_hash), 1_000_000)],
+  }
+}
+
+test budget_largest_state_withdrawal() {
+  withdraw(largest_state_withdrawal_transaction())
+}
+
+/// A delegation of the stake credential, signed by the last device, over
+/// the largest control UTxO referenced.
+fn largest_state_delegation_transaction() -> Transaction {
+  let tx = transaction([], [], assets.zero, [key(8)], interval.everything)
+    |> publishing(delegation())
+  Transaction { ..tx, reference_inputs: [control_reference(largest_state())] }
+}
+
+test budget_largest_state_delegation() {
+  delegate(largest_state_delegation_transaction())
+}
+
 /// An issuance at the largest state once one grant has been swept, so
 /// that a sixteenth may be issued: the control UTxO in and out and one
 /// grant UTxO with eight recipients.
@@ -2255,6 +2425,66 @@ test budget_largest_state_device_issue() {
 
 test budget_largest_state_issue_grants() {
   mint(IssueGrants, largest_state_issue_transaction())
+}
+
+/// An issuance of `count` grants at once over the largest state with no
+/// grant outstanding: the control UTxO in and out and `count` grant UTxOs
+/// of slots 40 up with eight recipients each.
+fn largest_state_grant_issue_transaction(count: Int) -> Transaction {
+  let slots = list.range(40, 39 + count)
+  let current = AccountState { ..largest_state(), outstanding: 0 }
+  let next = AccountState {
+    ..current,
+    next_slot: 40 + count,
+    outstanding: count,
+  }
+  transaction(
+    [input(0, control_output(current, 2_000_000))],
+    [
+      control_output(next, 2_000_000),
+      ..list.map(
+        slots,
+        fn(slot) {
+          grant_output(Grant { ..largest_lovelace_grant(), slot }, 2_000_000)
+        },
+      )
+    ],
+    list.foldl(
+      slots,
+      assets.zero,
+      fn(slot, minted) {
+        assets.merge(minted, grant_token(stake_script_hash, slot))
+      },
+    ),
+    [key(8)],
+    interval.everything,
+  )
+}
+
+test budget_largest_state_device_issue_eight_grants() {
+  spend(
+    Some(AccountState { ..largest_state(), outstanding: 0 }),
+    Device,
+    0,
+    largest_state_grant_issue_transaction(8),
+  )
+}
+
+test budget_largest_state_issue_eight_grants() {
+  mint(IssueGrants, largest_state_grant_issue_transaction(8))
+}
+
+test budget_largest_state_device_issue_sixteen_grants() {
+  spend(
+    Some(AccountState { ..largest_state(), outstanding: 0 }),
+    Device,
+    0,
+    largest_state_grant_issue_transaction(16),
+  )
+}
+
+test budget_largest_state_issue_sixteen_grants() {
+  mint(IssueGrants, largest_state_grant_issue_transaction(16))
 }
 
 /// A sweep of the revoked slot 1 at the largest state: the control UTxO
@@ -2289,6 +2519,84 @@ test budget_largest_state_sweep_grant() {
 
 test budget_largest_state_burn_grants() {
   mint(BurnGrants, largest_state_sweep_transaction())
+}
+
+/// A sweep of the `count` revoked grants of slots 1 up at once over the
+/// largest state: the control UTxO and the dead grant UTxOs in, their
+/// tokens burned and their lovelace returned as one deposit.
+fn largest_state_grant_sweep_transaction(count: Int) -> Transaction {
+  let slots = list.range(1, count)
+  let next = AccountState { ..largest_state(), outstanding: 16 - count }
+  transaction(
+    [
+      input(0, control_output(largest_state(), 2_000_000)),
+      ..list.map(
+        slots,
+        fn(slot) {
+          input(
+            slot,
+            grant_output(Grant { ..largest_lovelace_grant(), slot }, 2_000_000),
+          )
+        },
+      )
+    ],
+    [control_output(next, 2_000_000), change(2_000_000 * count)],
+    list.foldl(
+      slots,
+      assets.zero,
+      fn(slot, burned) { assets.merge(burned, grant_burn(slot)) },
+    ),
+    [key(8)],
+    interval.everything,
+  )
+}
+
+test budget_largest_state_device_sweep_eight_grants() {
+  spend(
+    Some(largest_state()),
+    Device,
+    0,
+    largest_state_grant_sweep_transaction(8),
+  )
+}
+
+/// The last of the eight swept grants, whose input the handler finds after
+/// scanning the eight before it.
+test budget_largest_state_sweep_grant_among_eight() {
+  spend_grant(
+    Grant { ..largest_lovelace_grant(), slot: 8 },
+    SweepGrant,
+    8,
+    largest_state_grant_sweep_transaction(8),
+  )
+}
+
+test budget_largest_state_burn_eight_grants() {
+  mint(BurnGrants, largest_state_grant_sweep_transaction(8))
+}
+
+test budget_largest_state_device_sweep_sixteen_grants() {
+  spend(
+    Some(largest_state()),
+    Device,
+    0,
+    largest_state_grant_sweep_transaction(16),
+  )
+}
+
+/// The last of the sixteen swept grants, whose input the handler finds
+/// after scanning the sixteen before it.
+test budget_largest_state_sweep_grant_among_sixteen() {
+  spend_grant(
+    Grant { ..largest_lovelace_grant(), slot: 16 },
+    SweepGrant,
+    16,
+    largest_state_grant_sweep_transaction(16),
+  )
+}
+
+test budget_largest_state_burn_sixteen_grants() {
+  mint(BurnGrants, largest_state_grant_sweep_transaction(16))
 }
 
 /// A creation whose control output carries the largest state with its
