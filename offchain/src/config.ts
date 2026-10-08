@@ -25,7 +25,7 @@ import { Cometa } from './cometa.js';
 /* CONSTANTS ******************************************************************/
 
 /** The package directory, the repository root and the devnet harness directory. */
-export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const REPO_ROOT = resolve(PACKAGE_ROOT, '..');
 export const DEVNET_DIRECTORY = resolve(PACKAGE_ROOT, 'devnet');
 
@@ -33,15 +33,15 @@ export const DEVNET_DIRECTORY = resolve(PACKAGE_ROOT, 'devnet');
 export const ENV_PATH = resolve(REPO_ROOT, '.env');
 
 /** Where the devnet harness copies what a run needs from the cluster it created. */
-export const DEVNET_RUN_DIRECTORY = resolve(DEVNET_DIRECTORY, 'run');
-export const DEVNET_GENESIS_PATH = resolve(DEVNET_RUN_DIRECTORY, 'shelley-genesis.json');
+const DEVNET_RUN_DIRECTORY = resolve(DEVNET_DIRECTORY, 'run');
+const DEVNET_GENESIS_PATH = resolve(DEVNET_RUN_DIRECTORY, 'shelley-genesis.json');
 
 /** The environment of a devnet run, which is committed since the devnet keys are not secret. */
-export const DEVNET_ENV_PATH = resolve(DEVNET_DIRECTORY, 'devnet.env');
+const DEVNET_ENV_PATH = resolve(DEVNET_DIRECTORY, 'devnet.env');
 
 /** The Blockfrost endpoints the runs talk to: the hosted preprod one and the local devnet one. */
 export const PREPROD_BASE_URL = 'https://cardano-preprod.blockfrost.io/api/v0';
-export const DEVNET_BASE_URL = 'http://localhost:8080/api/v1';
+const DEVNET_BASE_URL = 'http://localhost:8080/api/v1';
 
 /** The networks a run can target, as the `CARDANO_NETWORK` variable names them. */
 export const PREPROD_NETWORK = 'preprod';
@@ -57,7 +57,7 @@ export const DEVNET_NETWORK = 'devnet';
  * run replaces with the one read from the devnet genesis. The magic goes
  * through the node on submission, which checks nothing against it.
  */
-export const DEVNET_NETWORK_MAGIC = Cometa.NetworkMagic.Preprod;
+const DEVNET_NETWORK_MAGIC = Cometa.NetworkMagic.Preprod;
 
 /* TYPES **********************************************************************/
 
@@ -78,7 +78,7 @@ export interface ProviderConfiguration {
 /* FUNCTIONS ******************************************************************/
 
 /** The slot configuration of a chain whose Shelley genesis starts at a time and runs slots of a length. */
-export const slotConfigOf = (systemStart: string, slotLength: number): SlotConfig => {
+const slotConfigOf = (systemStart: string, slotLength: number): SlotConfig => {
   const zeroTime = Date.parse(systemStart);
   if (Number.isNaN(zeroTime)) {
     throw new Error(`${systemStart} is not a system start time`);
@@ -94,7 +94,7 @@ export const slotConfigOf = (systemStart: string, slotLength: number): SlotConfi
  * genesis the harness copied out of the cluster it created. A devnet is
  * created fresh, so its system start is only known once it runs.
  */
-export const devnetSlotConfig = (path: string = DEVNET_GENESIS_PATH): SlotConfig => {
+const devnetSlotConfig = (path: string = DEVNET_GENESIS_PATH): SlotConfig => {
   if (!existsSync(path)) {
     throw new Error(`${path} does not exist; start the devnet with "npm run devnet:start" before running against it`);
   }
@@ -115,6 +115,7 @@ export const devnetSlotConfig = (path: string = DEVNET_GENESIS_PATH): SlotConfig
  * when that file names the devnet.
  */
 export const loadRunEnvironment = (load: (options: { path: string; override?: boolean }) => unknown, env: NodeJS.ProcessEnv = process.env): string => {
+  /** The network the environment names, preprod when it names none. */
   const named = (): string => env['CARDANO_NETWORK']?.trim() || PREPROD_NETWORK;
   if (named() === DEVNET_NETWORK) {
     load({ path: DEVNET_ENV_PATH, override: true });

@@ -95,7 +95,7 @@ export const DEFAULT_CONTROL_LOVELACE = 2_000_000n;
 /**
  * The most grants one issuance or one sweep handles. Each grant adds its
  * own script run to the transaction, and sixteen of either exceed the
- * transaction's memory limit while eight stay well under it.
+ * transaction's memory limit while eight use about half of it.
  */
 export const MAX_GRANT_BATCH = 8;
 
@@ -103,11 +103,13 @@ export const MAX_GRANT_BATCH = 8;
  * The most fund UTxOs one checked grant spend takes. On chain every script
  * execution pays to decode the whole transaction context on top of its
  * own work, so each fund input adds a proxy run whose cost grows with the
- * transaction: a spend over twenty five deposits at the largest control
- * state measured about twenty million memory units, above preprod's
- * limit of seventeen and a half million, while twelve stay under half of
- * it. A spend needing more is refused with this bound named, and
- * `fundBatches` splits the funds into sweeps of at most this many.
+ * transaction: a spend over twelve deposits measured about six million
+ * two hundred thousand memory units on chain, a little over a third of
+ * the limit of seventeen and a half million, each fund input between a
+ * quarter and four tenths of a million against the sixth of a million
+ * the test runner charges, so a spend over many more would not fit. A
+ * spend needing more is refused with this bound named, and `fundBatches`
+ * splits the funds into sweeps of at most this many.
  */
 export const MAX_FUND_INPUTS = 12;
 
@@ -577,6 +579,7 @@ const isSoundChange = (remainder: Balance, minimumChange: bigint): boolean =>
 /** UTxOs holding an asset the spend needs come first, then larger lovelace amounts first. */
 const sortFunds = (funds: UTxO[], required: Balance): UTxO[] => {
   const neededAssets = Object.keys(required).filter((assetId) => assetId !== LOVELACE_ASSET_ID);
+  /** One when a UTxO holds an asset the spend needs, zero otherwise. */
   const usefulness = (utxo: UTxO): number =>
     neededAssets.some((assetId) => (utxo.output.value.assets?.[assetId] ?? 0n) > 0n) ? 1 : 0;
   return [...funds].sort((a, b) => usefulness(b) - usefulness(a) || Number(b.output.value.coins - a.output.value.coins));
@@ -762,6 +765,7 @@ export const createAccount = async (params: CreateAccountParams): Promise<string
   }
   const coins = controlLovelace(account, params.lovelace ?? DEFAULT_CONTROL_LOVELACE, state, adaPerUtxoByte);
   const sources = await resolveSources(account, [state.logic], params.provider);
+  /** Assembles the creation: the registration, the mint, the control output and the logic. */
   const make = async (): Promise<TransactionBuilder> => {
     const builder = await (params.sponsor ?? params.wallet).createTransactionBuilder();
     builder.registerStakeAddress({ rewardAddress: account.rewardAddress, redeemer: operateRedeemer });
@@ -980,9 +984,11 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   const freed = addBalances(...swept.map(({ utxo, assetId }) => toBalance({ ...utxo.output.value, assets: { ...utxo.output.value.assets, [assetId]: 0n } })));
   const requested = addBalances(sumOutputs(operation.outputs), { [LOVELACE_ASSET_ID]: issued.reduce((total, issue) => total + issue.coins, 0n) });
   const floor = changeFloor(params, account, adaPerUtxoByte);
+  /** Builds an assembled transaction, with a fixed budget per redeemer when the caller asked for no checks. */
   const build = (make: () => Promise<TransactionBuilder>): Promise<string> =>
     params.unchecked ? make().then((builder) => builder.setTxEvaluator(fixedBudgetEvaluator(UNCHECKED_EXECUTION_UNITS)).build()) : buildChecked(params.provider, make);
 
+  /** Adds the control spend, the selected funds, the reserve, the sweeps, the new state and the issuances to a builder. */
   const assemble = (builder: TransactionBuilder, selected: UTxO[], feeReserve: UTxO | undefined, reserveCoins: bigint): TransactionBuilder => {
     builder.addInput({ utxo: control, redeemer: deviceRedeemer });
     for (const utxo of selected) {
@@ -1197,6 +1203,7 @@ export const sweepGrant = async (params: SweepGrantParams): Promise<string> => {
   assertBatchSize(params.slots.length, 'swept');
   const slotConfig = params.slotConfig ?? Cometa.CARDANO_PREPROD_SLOT_CONFIG;
   const validityStart = params.validFromSlot === undefined ? undefined : slotToPosixTime(params.validFromSlot, slotConfig);
+  /** The grant UTxOs of the named slots, each checked dead before it is swept. */
   const swept = ({ state, grants }: AccountUtxos): GrantUtxo[] =>
     params.slots.map((slot) => {
       const found = grants.find(({ prefix }) => prefix.slot === slot);
@@ -1376,6 +1383,7 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
   if (!params.unchecked && selected.length > MAX_FUND_INPUTS) {
     throw new Error(`The spend needs ${selected.length} fund UTxOs, more than the ${MAX_FUND_INPUTS} one grant spend may take; sweep the funds in batches of fundBatches first`);
   }
+  /** Assembles the grant spend: the referenced control, the grant UTxO, the funds, the recreated grant and the outputs. */
   const make = async (): Promise<TransactionBuilder> => {
     const builder = await accountPaidBuilder(params, account);
     if (params.unchecked) {

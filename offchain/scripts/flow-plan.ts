@@ -153,11 +153,12 @@ export const SWEEP_FEE_BOUND = 2n * TADA;
 /**
  * The most fund UTxOs one agent sweep spends: the bound the library
  * applies to a checked grant spend. On chain every script execution pays
- * a fixed cost for the transaction context on top of the handler's own
- * work, so each Fund execution of a spend over twenty five deposits costs
- * about 0.7 M memory units and the whole spend about 20.6 M on preprod,
- * above its limit of 17.5 M; twelve deposits beside the grant spend stay
- * well inside it.
+ * a fixed cost for the transaction context and, under the split, the
+ * proxy execution of its own input, on top of the handler's own work, so
+ * each Fund execution of a spend over twelve deposits costs between
+ * 0.26 M and 0.40 M memory units and the whole spend about 6.20 M
+ * against the limit of 17.5 M, leaving the margin that bound is sized
+ * for; the builder refuses a spend over more.
  */
 export const SWEEP_BATCH = MAX_FUND_INPUTS;
 
@@ -232,7 +233,7 @@ export const SETUP_PLAN: Flow[] = [
 ];
 
 /**
- * The flows of the preprod run in order. Each flow either confirms a
+ * The flows of the end to end run in order. Each flow either confirms a
  * transaction on chain, is refused by the builder before anything reaches
  * the chain, is built without the builder's checks, signed and submitted
  * so that the node refuses it with the validator's own failure, or is
@@ -249,7 +250,7 @@ export const FLOW_PLAN: Flow[] = [
   { step: 3, description: 'deposit 60 tADA into the account as a reserve from the funding wallet, under the reserve datum the owner alone can spend', outcome: 'confirmed' },
   { step: 4, description: 'spendWithDevice 5 tADA to the owner address, fee drawn from the reserve and the reserve recreated', outcome: 'confirmed' },
   { step: 5, description: 'withdrawRewards of zero from the reward account signed by the owner device', outcome: 'confirmed' },
-  { step: 6, description: 'delegateStake to an active preprod pool signed by the owner device', outcome: 'confirmed' },
+  { step: 6, description: 'delegateStake to an active pool of the network signed by the owner device', outcome: 'confirmed' },
   { step: 7, description: 'issueGrant slot 0 to the agent key: 10 tADA per call, 15 tADA in total, owner as the only recipient, minted into its own grant UTxO paid by the account', outcome: 'confirmed' },
   { step: 8, description: 'spendWithGrant 8 tADA to the owner address signed by the agent, spending the grant UTxO, referencing the control UTxO and running logic v1 through its zero withdrawal', outcome: 'confirmed' },
   { step: 9, description: 'spendWithGrant 8 tADA again, beyond the remaining cap', outcome: 'refused by the builder', expectedMessage: /exceeds the remaining cap/ },
@@ -420,7 +421,7 @@ const REFUSAL = /refuses the spend|is not a recipient of grant|has no grant UTxO
 /* TYPES **********************************************************************/
 
 /**
- * What a flow of the preprod run is expected to end in: a confirmed
+ * What a flow of the end to end run is expected to end in: a confirmed
  * transaction, a refusal by the builder applying the contract's rules
  * before anything reaches the chain, a refusal by the node running the
  * validator over a transaction built without those rules, or a refusal
@@ -443,7 +444,7 @@ export interface BudgetReference {
 }
 
 /**
- * One flow of the preprod run: its number, a one line description and the
+ * One flow of the end to end run: its number, a one line description and the
  * outcome it must end in. A flow refused by the builder or the node also
  * carries the pattern its refusal message must match, so that an unrelated
  * error at the same step is never recorded as the expected refusal. A
@@ -631,8 +632,15 @@ const cell = (text: string): string => text.replace(/\|/g, '\\|');
 /** A quantity with thousands separators. */
 const grouped = (quantity: bigint): string => quantity.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
-/** A share of a limit as a percentage with one decimal. */
-const percent = (quantity: bigint, limit: bigint): string => `${(Number((quantity * 1000n) / limit) / 10).toFixed(1)}%`;
+/**
+ * A share of a limit as a percentage with one decimal. A share that is
+ * not zero but rounds to it reads as under a tenth of a percent, since no
+ * execution costs nothing.
+ */
+const percent = (quantity: bigint, limit: bigint): string => {
+  const tenths = Number((quantity * 1000n) / limit);
+  return tenths === 0 && quantity > 0n ? '<0.1%' : `${(tenths / 10).toFixed(1)}%`;
+};
 
 /** The memory units a measured transaction used over all its redeemers. */
 export const memoryOf = (transaction: MeasuredTransaction): bigint => transaction.redeemers.reduce((total, redeemer) => total + redeemer.memory, 0n);
@@ -732,23 +740,22 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
           'Every flow of the account custody contract exercised on the local devnet',
           'through its Blockfrost compatible API. The devnet runs Conway at the',
           'protocol version of preprod, with the parameters the COPIED_PARAMETERS',
-          'list of scripts/devnet-parameters.ts names copied from preprod into its',
-          'genesis, the fee, size, deposit, pool, collateral and execution unit',
-          'limit parameters among them, and with the cost models of its own Conway',
-          'genesis, whose memory prices equal preprod and whose CPU prices for',
-          'integer division and byte string equality sit below it, so the memory',
+          'list of offchain/scripts/devnet-parameters.ts names copied from preprod',
+          'into its genesis, the fee, size, deposit, pool, collateral and execution',
+          'unit limit parameters among them, and with the cost models of its own',
+          'Conway genesis, whose memory prices equal preprod and whose CPU prices',
+          'for integer division and byte string equality sit below it, so the memory',
           'budgets below are what preprod charges for the same work and the step',
-          'budgets a little under it; see README, Running the devnet. Its',
-          'chain has one second blocks, so a run costs nothing and confirms in',
-          'about a second. Its transactions are listed by id, since no explorer',
-          'serves the chain.',
+          'budgets a little under it; see README, Running the devnet. Its chain has',
+          'one second blocks, so a run costs nothing and confirms in about a second.',
+          'Its transactions are listed by id, since no explorer serves the chain.',
+          'Flows refused by the builder quote the check that',
         ]
       : [
           'Every flow of the account custody contract exercised on the Cardano preprod',
           'network through Blockfrost. Confirmed flows link to their transactions on',
-          'the preprod explorer.',
+          'the preprod explorer. Flows refused by the builder quote the check that',
         ]),
-    'Flows refused by the builder quote the check that',
     'stopped them before anything reached the chain. Flows refused by the node',
     'were built without those checks, signed and submitted, and quote the',
     'ledger error Blockfrost returned when the validator failed in phase two;',
@@ -758,7 +765,7 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
     'the control UTxO the held transaction references, so the node refused',
     'it as a transaction over a spent input before running any script. The',
     "account stake credential is the hash of the account's own stake script,",
-    'applied to the owner key and the account script hash: creation registers',
+    'applied to the owner key and the proxy hash: creation registers',
     'it with the deposit, and the owner device and later the agent device',
     'operate its reward account. Each grant lives in its own grant UTxO under',
     'its grant token; an agent spend consumes the grant UTxO and plain funds',
@@ -838,7 +845,9 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
     'the real transaction, so they are the ones the limits apply to. The',
     'heaviest agent sweep batch is set against the eight and forty deposit',
     'rows of the review; its input count is in the Redeemers column, one Fund',
-    'execution per deposit beside the SpendWithGrant execution. The forty',
+    'execution per deposit beside the SpendWithGrant execution. Those two rows',
+    'are the one batch measured once, so their transaction and their on-chain',
+    'columns repeat and only the review columns differ. The forty',
     'deposit row is not reachable on chain: the builder takes at most twelve',
     'fund UTxOs in one checked grant spend, as the refusal in the flows table',
     'above shows, so the batch over exactly twelve is the heaviest agent',

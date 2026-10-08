@@ -1,13 +1,13 @@
 # Security review
 
-An adversarial review of the account proxy, the first logic version and
-the account stake validator, organised by the vulnerability classes of
-the Cardano developer portal's smart contract security curriculum, with
-one class added for the split between the proxy and the logic. Every
-class was attacked with concrete transactions written as Aiken tests in
-`validators/attacks.test.ak`; each `attack_` test asserts that a
-validator refuses the transaction. The document only claims what those
-tests and the reasoning below establish.
+An adversarial review of the account proxy, the first and the second
+logic versions and the account stake validator, organised by the
+vulnerability classes of the Cardano developer portal's smart contract
+security curriculum, with one class added for the split between the
+proxy and the logic. Every class was attacked with concrete transactions
+written as Aiken tests in `validators/attacks.test.ak`; each `attack_`
+test asserts that a validator refuses the transaction. The document only
+claims what those tests and the reasoning below establish.
 
 ## Scope and versions
 
@@ -45,12 +45,12 @@ tests and the reasoning below establish.
   script and the logic share.
 - Toolchain: Aiken v1.1.24, Plutus V3, aiken-lang/stdlib v4.0.0,
   aiken-lang/fuzz v3.0.0.
-- Tests: 2386 checks under `aiken check -D`, from 901 tests of which 15
+- Tests: 2388 checks under `aiken check -D`, from 903 tests of which 15
   are property tests run 100 times each. `validators/attacks.test.ak`
-  holds 170 of the tests: 110 `attack_` tests and 60 `budget_` tests, of
+  holds 171 of the tests: 111 `attack_` tests and 60 `budget_` tests, of
   which 16 are baselines and one bounds the datum size.
   `validators/logic_v1.test.ak` holds 218, the functional suite of the
-  logic over the whole transaction; `validators/logic_v2.test.ak` 18,
+  logic over the whole transaction; `validators/logic_v2.test.ak` 19,
   the batch bound against logic v1 and the handover between the two
   versions in both directions; `validators/account.test.ak` 104, the
   proxy's; `validators/account_stake.test.ak` 40, the stake script's;
@@ -85,6 +85,15 @@ therefore prove the handover between two instances of logic v1 under
 different credentials; `validators/logic_v2.test.ak` proves it between
 logic v1 and logic v2, each under its own credential, in both
 directions, and `docs/devnet-evidence.md` records it on a chain.
+
+Documentation of the tests follows the shape of the test. An adversarial
+or scenario test, one that builds a whole transaction and runs a handler
+or a shared rule over it, carries a `///` narration of the transaction it
+mounts and of the rule that refuses it, since the name cannot hold the
+reasoning and the narration is what a reader of the suite needs. A plain
+unit or property test of a library function carries none: its name states
+the claim and a comment restating it adds nothing. The same rule applies
+to the `budget_` tests, whose fixtures are scenarios.
 
 ## Threat model
 
@@ -351,7 +360,8 @@ found) in `validators/account_stake.test.ak`.
 Attack. A grant spend recreates its grant UTxO with a raised cap, a
 later generation, another grantee, or at another account's address, or
 gives the grant by hash; a device rewrite stores a state padded with an
-extra constructor field; an issuance writes a padded grant datum.
+extra constructor field; an issuance writes a padded grant datum; a grant
+spend offers a padded redeemer.
 
 Mitigation. On the agent path `grant.carries_grant_within` decodes the
 grant output's inline datum and compares it with
@@ -370,7 +380,13 @@ therefore dies and is swept like any other and is never spent. The
 proxy reads only the first field of a control datum and the stake
 script only the second, so the shape after the stable prefix is each
 logic's own; a control output naming another logic is that logic's to
-decode (see Logic substitution).
+decode (see Logic substitution). The redeemer is read twice, once by the
+ledger into the proxy's typed parameter and once by the logic's
+`logic.validates_spends` through a soft cast that leaves a value it
+cannot read alone, so the proxy's cast must be no laxer than the soft
+cast or a padded redeemer would carry a spend past the grant rule. It is
+not: the cast the ledger applies to the typed parameter refuses a
+constructor with an extra field before the handler runs.
 
 Tests. `attack_datum_hijacking_grant_spend_raises_its_own_cap` (`!`),
 `attack_datum_hijacking_grant_spend_advances_its_own_generation` (`!`),
@@ -379,6 +395,7 @@ Tests. `attack_datum_hijacking_grant_spend_raises_its_own_cap` (`!`),
 (`!`), `attack_datum_hijacking_grant_spend_grant_datum_given_by_hash`
 (`!`), `attack_datum_hijacking_padded_state_datum_on_a_device_rewrite`
 (`fail`), `attack_datum_hijacking_padded_grant_datum_at_issuance`
+(`fail`), `attack_datum_hijacking_padded_grant_redeemer_on_a_grant_spend`
 (`fail`). Functional companions in `validators/logic_v1.test.ak`:
 `spend_with_grant_rejects_a_changed_generation`,
 `spend_with_grant_rejects_a_changed_grantee`,
@@ -1191,11 +1208,12 @@ decoding of the script context, which every script execution pays on
 chain in proportion to the size of the transaction, so the net figures
 understate the on-chain cost of every execution, and the more so the
 more inputs the transaction has; the on-chain figures below come from
-the preprod run and are the ones to size by. Every share of a limit
-below is a share of preprod's limits, the ones the runs read back from
-the chain: 17,500,000 memory units and 10,000,000,000 CPU steps per
-transaction and 77,500,000 memory units and 20,000,000,000 steps per
-block. A transaction pays the sum over every handler it runs, one per
+the devnet run and are the ones to size by. Every share of a limit
+below is a share of the per transaction limits the runs read back from
+the chain, which the devnet copies from preprod's parameters: 17,500,000
+memory units and 10,000,000,000 CPU steps per transaction and 77,500,000
+memory units and 20,000,000,000 steps per block.
+A transaction pays the sum over every handler it runs, one per
 script input, mint policy, certificate and withdrawal. Under the split
 a transaction runs the proxy once per script input and once for the
 mint, and the logic once through its withdrawal, twice on an upgrade.
@@ -1264,32 +1282,40 @@ units:
 - Reserve spend, withdrawal and delegation: 0.08 M, 0.15 M and 0.16 M
   beside the owner spend that carries them.
 
-On chain. The preprod run of `offchain/scripts/preprod-e2e.ts` read the
-execution units of every confirmed transaction back from the chain. The
-differences from the figures above are the context decoding: an eight
-grant issue measured 38 to 41 percent of the memory limit, an eight
-grant sweep 40 to 56 percent depending on the order of its inputs, and a
-device rewrite or revoke over the largest state 6 to 7 percent. The
-agent spend over many deposits is where the method matters most, since
-every `Fund` execution decodes the whole transaction: a grant spend over
-one fund input measured about 1.13 M memory units, over thirteen about
-7.28 M, and over twenty five about 20.6 M, which the node refused, so
-the per input cost on chain is roughly 0.5 M more than the local rows on
-a transaction of that size. The library bounds a checked grant spend at
+On chain. The devnet run of `offchain/scripts/preprod-e2e.ts`, recorded
+in `docs/devnet-evidence.md`, read the execution units of every confirmed
+transaction back from the chain over the proxy and logic split. The
+differences from the figures above are the proxy execution and the
+context decoding that every input now pays: an eight grant issue
+measured 45.2 and 47.5 percent of the memory limit, an eight grant sweep
+49.5 and 52.5 percent, and a device rewrite or revoke over the largest
+state 8.7 to 9.9 percent. The agent spend over many deposits is where
+the method matters most, since every `Fund` execution decodes the whole
+transaction: a grant spend over twelve fund UTxOs, the most a checked
+spend takes, measured 6.20 M memory units and 2.12 G steps, 35.4 percent
+of the memory limit, with each `Fund` execution between 0.26 M and
+0.40 M against the 0.16 M of the local row, so the per input cost on
+chain is roughly 0.1 M to 0.2 M more than the local rows on a
+transaction of that size. The library bounds a checked grant spend at
 `MAX_FUND_INPUTS` (12) fund UTxOs and splits a larger sweep into batches
 (`fundBatches`); the builder evaluates every grant spend through the
-provider, so a spend over the limit is refused before submission. The
-devnet run of the same script, `docs/devnet-evidence.md`, upgrades an
+provider, so a spend over the limit is refused before submission, as the
+run's spend over thirteen fund UTxOs shows. The same run upgrades an
 account from logic v1 to logic v2 after the teardown, over one device,
 no revoked slot and one outstanding grant: the proxy's two spends and
 the two logics measured 1.27 M memory units and 0.43 G steps on chain,
-7 percent of the memory limit, under the 1.62 M of the upgrade row
+7.2 percent of the memory limit, under the 1.62 M of the upgrade row
 above, which was measured over the largest state, since a smaller state
 costs the arriving logic less than the context decoding adds. The
 sizes of the proxy and the logic set the fee of a grant spend over a
 handful of inputs at about 0.76 M lovelace with both referenced from
 their parked UTxOs and about 1.05 M lovelace with both embedded
-(`DEFAULT_GRANT_FEE_BOUND` is 1.5 M lovelace).
+(`DEFAULT_GRANT_FEE_BOUND` is 1.5 M lovelace). The preprod run recorded
+in `docs/preprod-evidence.md` measured the superseded single validator
+contract, whose every figure the split exceeds, since each input now
+pays the proxy execution and a second context decoding on top of what
+one validator charged; none of those figures bounds a path of this
+revision, which has not run on preprod.
 
 Observations.
 
@@ -1456,10 +1482,13 @@ Closed in this revision:
 
 9. The deposit batch bound was wrong. The previous review put the batch
    size of an agent spend at around thirty deposits from the local
-   figures, pending on-chain measurement. On preprod a spend over twenty
-   five deposits cost about 20.6 M memory units and was refused, since
-   every `Fund` execution pays to decode the whole transaction context,
-   which the local runner does not charge. Closed in the library by
+   figures. Every `Fund` execution pays to decode the whole transaction
+   context and now the proxy execution beside it, neither of which the
+   local runner charges: the devnet run measured a grant spend over
+   twelve fund UTxOs at 6.20 M memory units, 35.4 percent of the limit,
+   each `Fund` execution between 0.26 M and 0.40 M against the 0.16 M of
+   the local row, and the builder refused a spend over thirteen before
+   anything was evaluated or submitted. Closed in the library by
    `MAX_FUND_INPUTS` (12), which a checked `spendWithGrant` enforces, and
    `fundBatches`, which splits a larger sweep; no validator change. The
    method difference is recorded under Resource exhaustion.
@@ -1529,7 +1558,7 @@ No other attack succeeded.
   before ever sharing the address, never deposit to an address whose
   control UTxO does not exist, and when creation fails with an already
   registered credential use the next account index, which gives a new
-  owner key and a new address. The preprod script applies the last rule
+  owner key and a new address. The end to end script applies the last rule
   by scanning owner indices for an unregistered credential.
 - Unknown logic. The proxy admits any 28 byte hash whose credential
   withdraws as a logic; nothing on chain says which hashes are versions
@@ -1541,7 +1570,16 @@ No other attack succeeded.
   and the list of known hashes is itself something the signer ships and
   must protect. The library attaches only logics from the blueprint or
   those given to it. A downgrade to an earlier version with a known
-  defect is allowed by the mechanism and is the signer's to refuse.
+  defect is allowed by the mechanism and is the signer's to refuse. The
+  credential a device key holder would reach for first is the account's
+  own stake script hash, since it needs no deployment: it is already
+  registered, and its withdraw arm accepts any withdrawal a device
+  signed, so an account whose logic field names it transacts on a device
+  signature and under no rules. That is owner self harm with no
+  escalation from a device key, which already authorises the rewrite, and
+  recovery is clean, since arriving at a real logic re-imposes that
+  version's arrival rule over the state; the signer refusing every hash
+  outside its known list is what keeps a device from writing it.
 - Reference script availability. Accounts transact only while the proxy
   and their logic can be attached. The parked UTxOs sit at an always
   fail script address nobody can spend from; if a network records none,
@@ -1592,14 +1630,14 @@ No other attack succeeded.
   `max_revoked` 32 put the heaviest single execution that fits, the
   logic over eight largest grants, at 38 percent of the memory budget in
   the `aiken check` runner, and the heaviest owner transaction that
-  fits, an eight grant sweep, at 46 percent locally and 40 to 56 percent
-  on preprod. Lower a bound or the batch size if a later measurement
-  approaches the limit; the bounds belong to the logic and move with a
-  version. Grant caps and expiries are the owner's choice; a grant with
-  an empty recipient list lets the grantee send up to its caps anywhere,
-  including unspendable addresses, and a recipient that is a script
-  address makes the funds subject to that script's datum, so prefer key
-  addresses as recipients.
+  fits, an eight grant sweep, at 46 percent locally and 49.5 to 52.5
+  percent on the devnet. Lower a bound or the batch size if a later
+  measurement approaches the limit; the bounds belong to the logic and
+  move with a version. Grant caps and expiries are the owner's choice; a
+  grant with an empty recipient list lets the grantee send up to its caps
+  anywhere, including unspendable addresses, and a recipient that is a
+  script address makes the funds subject to that script's datum, so
+  prefer key addresses as recipients.
 - Fund contention and fragmentation. Every path draws from the same
   plain deposits, so an owner operation paid from a fund UTxO can lose it
   to an agent spend and must be rebuilt; a reserve or a sponsor removes

@@ -111,7 +111,11 @@ export const bytes = (hex: string): Uint8Array => (hex.length === 0 ? new Uint8A
 export const encodeOption = (value: PlutusData | undefined): ConstrPlutusData =>
   value === undefined ? constr(1) : constr(0, [value]);
 
-/** The fields of a constructor, after checking its index and arity. */
+/**
+ * The fields of a constructor, after checking its index and arity. Throws
+ * when the value is of another shape, naming `what` in the message as the
+ * thing that was expected.
+ */
 export const expectConstr = (data: PlutusData, index: number, arity: number, what: string): PlutusData[] => {
   if (!Cometa.isPlutusDataConstr(data) || Number(data.constructor) !== index || data.fields.items.length !== arity) {
     throw new Error(`Expected ${what} as constructor ${index} with ${arity} fields`);
@@ -127,7 +131,7 @@ export const constructorIndex = (data: PlutusData, what: string): number => {
   return Number(data.constructor);
 };
 
-/** A byte string field as hex. */
+/** A byte string field as hex. Throws when it is not bytes, naming `what`. */
 export const expectBytes = (data: PlutusData, what: string): string => {
   if (!Cometa.isPlutusDataByteArray(data)) {
     throw new Error(`Expected ${what} as bytes`);
@@ -135,7 +139,7 @@ export const expectBytes = (data: PlutusData, what: string): string => {
   return Cometa.uint8ArrayToHex(data);
 };
 
-/** An integer field. */
+/** An integer field. Throws when it is not an integer, naming `what`. */
 export const expectInt = (data: PlutusData, what: string): bigint => {
   if (!Cometa.isPlutusDataBigInt(data)) {
     throw new Error(`Expected ${what} as an integer`);
@@ -143,7 +147,7 @@ export const expectInt = (data: PlutusData, what: string): bigint => {
   return data;
 };
 
-/** The items of a list field. */
+/** The items of a list field. Throws when it is not a list, naming `what`. */
 export const expectList = (data: PlutusData, what: string): PlutusData[] => {
   if (!Cometa.isPlutusDataList(data)) {
     throw new Error(`Expected ${what} as a list`);

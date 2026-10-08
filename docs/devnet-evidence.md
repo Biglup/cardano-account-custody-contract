@@ -3,16 +3,15 @@
 Every flow of the account custody contract exercised on the local devnet
 through its Blockfrost compatible API. The devnet runs Conway at the
 protocol version of preprod, with the parameters the COPIED_PARAMETERS
-list of scripts/devnet-parameters.ts names copied from preprod into its
-genesis, the fee, size, deposit, pool, collateral and execution unit
-limit parameters among them, and with the cost models of its own Conway
-genesis, whose memory prices equal preprod and whose CPU prices for
-integer division and byte string equality sit below it, so the memory
+list of offchain/scripts/devnet-parameters.ts names copied from preprod
+into its genesis, the fee, size, deposit, pool, collateral and execution
+unit limit parameters among them, and with the cost models of its own
+Conway genesis, whose memory prices equal preprod and whose CPU prices
+for integer division and byte string equality sit below it, so the memory
 budgets below are what preprod charges for the same work and the step
-budgets a little under it; see README, Running the devnet. Its
-chain has one second blocks, so a run costs nothing and confirms in
-about a second. Its transactions are listed by id, since no explorer
-serves the chain.
+budgets a little under it; see README, Running the devnet. Its chain has
+one second blocks, so a run costs nothing and confirms in about a second.
+Its transactions are listed by id, since no explorer serves the chain.
 Flows refused by the builder quote the check that
 stopped them before anything reached the chain. Flows refused by the node
 were built without those checks, signed and submitted, and quote the
@@ -23,7 +22,7 @@ and held while the owner revoked the grant it spends; the revoke spent
 the control UTxO the held transaction references, so the node refused
 it as a transaction over a spent input before running any script. The
 account stake credential is the hash of the account's own stake script,
-applied to the owner key and the account script hash: creation registers
+applied to the owner key and the proxy hash: creation registers
 it with the deposit, and the owner device and later the agent device
 operate its reward account. Each grant lives in its own grant UTxO under
 its grant token; an agent spend consumes the grant UTxO and plain funds
@@ -98,7 +97,7 @@ the network file and reused by later runs.
 | 3 | deposit 60 tADA into the account as a reserve from the funding wallet, under the reserve datum the owner alone can spend | `9930da8e1ce5` | confirmed |
 | 4 | spendWithDevice 5 tADA to the owner address, fee drawn from the reserve and the reserve recreated | `9db891b85642` | confirmed |
 | 5 | withdrawRewards of zero from the reward account signed by the owner device | `07de3216cb60` | confirmed |
-| 6 | delegateStake to an active preprod pool signed by the owner device | `5b11d4838e56` | confirmed |
+| 6 | delegateStake to an active pool of the network signed by the owner device | `5b11d4838e56` | confirmed |
 | 7 | issueGrant slot 0 to the agent key: 10 tADA per call, 15 tADA in total, owner as the only recipient, minted into its own grant UTxO paid by the account | `21b1953c7439` | confirmed |
 | 8 | spendWithGrant 8 tADA to the owner address signed by the agent, spending the grant UTxO, referencing the control UTxO and running logic v1 through its zero withdrawal | `a5a23ada3750` | confirmed |
 | 9 | spendWithGrant 8 tADA again, beyond the remaining cap | none | refused by the builder: "Grant 0 refuses the spend: 9500000 of the scoped asset exceeds the remaining cap of 5500000" |
@@ -189,7 +188,7 @@ first, as memory / steps.
 | 40 | 1 | `b4737d55e98c` | 2 spend, reward | 1,483,742 (8.4%) | 478,691,081 (4.7%) | reward 0: 1,034,162 / 325,145,770; spend 1: 322,896 / 110,974,582; spend 0: 126,684 / 42,570,729 |
 | 41 | 6 | `4e473ebb77ea` | 2 spend, reward | 1,440,360 (8.2%) | 466,733,513 (4.6%) | reward 0: 990,780 / 313,188,202; spend 1: 322,896 / 110,974,582; spend 0: 126,684 / 42,570,729 |
 | 42 | 1 | `a4056d13458f` | 4 spend, reward | 1,504,847 (8.5%) | 517,494,551 (5.1%) | reward 0: 719,574 / 247,997,328; spend 2: 379,410 / 129,013,554; spend 1: 145,037 / 49,689,274; spend 3: 136,254 / 49,263,413; spend 0: 124,572 / 41,530,982 |
-| 43 | 1 | `cbfb4379058a` | cert | 21,507 (0.1%) | 6,248,080 (0.0%) | cert 0: 21,507 / 6,248,080 |
+| 43 | 1 | `cbfb4379058a` | cert | 21,507 (0.1%) | 6,248,080 (<0.1%) | cert 0: 21,507 / 6,248,080 |
 | 45 | 1 | `ed73264f87ee` | 2 spend, mint, reward | 1,686,558 (9.6%) | 574,421,755 (5.7%) | reward 0: 1,001,586 / 342,822,905; spend 1: 362,539 / 124,528,437; mint 0: 213,073 / 69,843,699; spend 0: 109,360 / 37,226,714 |
 | 46 | 1 | `46e230258e92` | 2 spend, 2 reward | 1,266,645 (7.2%) | 429,718,250 (4.2%) | reward 0: 477,101 / 164,153,389; reward 1: 376,037 / 122,146,015; spend 0: 315,465 / 107,918,923; spend 1: 98,042 / 35,499,923 |
 | 49 | 1 | `d28a9df4042c` | 3 spend, mint, reward | 1,692,796 (9.6%) | 583,256,600 (5.8%) | reward 0: 834,517 / 293,657,967; spend 0: 334,817 / 113,305,350; spend 2: 260,316 / 88,744,486; mint 0: 165,104 / 52,048,874; spend 1: 98,042 / 35,499,923 |
@@ -207,7 +206,9 @@ on-chain figures are what the ledger charged for the same handlers over
 the real transaction, so they are the ones the limits apply to. The
 heaviest agent sweep batch is set against the eight and forty deposit
 rows of the review; its input count is in the Redeemers column, one Fund
-execution per deposit beside the SpendWithGrant execution. The forty
+execution per deposit beside the SpendWithGrant execution. Those two rows
+are the one batch measured once, so their transaction and their on-chain
+columns repeat and only the review columns differ. The forty
 deposit row is not reachable on chain: the builder takes at most twelve
 fund UTxOs in one checked grant spend, as the refusal in the flows table
 above shows, so the batch over exactly twelve is the heaviest agent

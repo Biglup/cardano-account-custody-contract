@@ -1,5 +1,10 @@
 # Preprod evidence
 
+Superseded: this run is of the single validator model that preceded the
+proxy and logic split, so the hashes below are not the current hashes and
+none of its figures measures the split; the current evidence is
+`docs/devnet-evidence.md` until the next preprod run replaces this file.
+
 Every flow of the account custody contract exercised on the Cardano preprod
 network through Blockfrost. Confirmed flows link to their transactions on
 the preprod explorer. Flows refused by the builder quote the check that

@@ -31,6 +31,10 @@ use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
 // CONSTANTS *******************************************************************
 
+/// The POSIX millisecond at which the grants of these fixtures expire. A
+/// spend runs under a validity range ending just before it and a sweep
+/// under one starting just after it, so one number stands for both sides
+/// of the time rules.
 const expiry = 1_800_000_000_000
 
 /// The hash standing in for another script at the payment credential.

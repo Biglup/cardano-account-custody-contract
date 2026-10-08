@@ -670,7 +670,6 @@ test stays_within_scope_accepts_a_deposit() {
   stays_within_scope(token_scope(), leaving(-1, -1))
 }
 
-/// Whatever passes a scope still passes when less of each asset leaves.
 test stays_within_scope_is_monotone_in_the_outflow(
   case via smaller_outflow_fuzzer(),
 ) {
@@ -680,7 +679,6 @@ test stays_within_scope_is_monotone_in_the_outflow(
   !within || stays_within_scope(scope, smaller)
 }
 
-/// A scope with zero caps admits nothing but deposits.
 test stays_within_scope_with_zero_caps_admits_only_deposits(
   outflow via outflow_fuzzer(empty_scope()),
 ) {
@@ -924,8 +922,6 @@ test grant_after_spend_changes_nothing_but_the_remaining_caps(
   } == grant
 }
 
-/// A spend the scope admits leaves the remaining caps non negative, so a
-/// grant never carries a negative cap.
 test grant_after_spend_keeps_the_caps_non_negative_within_scope(
   case via scope_and_outflow_fuzzer(),
 ) {

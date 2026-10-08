@@ -1386,6 +1386,7 @@ describe('spendWithGrant', () => {
 
   it('refuses spends the validator would refuse', async () => {
     const params = agentParams();
+    /** One output paying the given lovelace to the recipient. */
     const payout = (coins: bigint) => [{ address: recipientAddress, value: { coins } }];
     await expect(spendWithGrant({ ...params, slot: 9n, outputs: payout(1n) })).rejects.toThrow(/no grant UTxO in slot 9/);
     await expect(spendWithGrant({ ...params, slot: 0n, outputs: payout(1n), grantee: OWNER_PAYMENT_KEY })).rejects.toThrow(/not the grantee/);

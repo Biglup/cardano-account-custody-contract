@@ -18,28 +18,22 @@
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Cometa } from '../src/cometa.js';
-import {
-  DEVNET_BASE_URL,
-  DEVNET_ENV_PATH,
-  DEVNET_NETWORK,
-  DEVNET_NETWORK_MAGIC,
-  ENV_PATH,
-  PREPROD_BASE_URL,
-  PREPROD_NETWORK,
-  devnetSlotConfig,
-  loadRunEnvironment,
-  providerConfiguration,
-  slotConfigOf,
-} from '../src/config.js';
+import { DEVNET_NETWORK, ENV_PATH, PREPROD_BASE_URL, PREPROD_NETWORK, loadRunEnvironment, providerConfiguration } from '../src/config.js';
 
 /* CONSTANTS ******************************************************************/
 
 /** A system start and the slot configuration it stands for. */
 const SYSTEM_START = '2026-10-08T10:43:34Z';
 const ZERO_TIME = 1791456214000n;
+
+/** The devnet endpoint, environment file and network magic a devnet run takes. */
+const DEVNET_BASE_URL = 'http://localhost:8080/api/v1';
+const DEVNET_ENV_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'devnet', 'devnet.env');
+const DEVNET_NETWORK_MAGIC = Cometa.NetworkMagic.Preprod;
 
 /** The directories a test wrote a genesis into, removed after it. */
 const directories: string[] = [];
@@ -49,6 +43,7 @@ const directories: string[] = [];
 /** A loader that records the files it is asked for and puts the given variables of each into the environment it is handed. */
 const recordingLoader = (env: NodeJS.ProcessEnv, contents: Record<string, Record<string, string>>) => {
   const loaded: { path: string; override?: boolean }[] = [];
+  /** Records the file it is asked for and applies that file's variables. */
   const load = (options: { path: string; override?: boolean }): void => {
     loaded.push(options);
     for (const [name, value] of Object.entries(contents[options.path] ?? {})) {
@@ -75,31 +70,6 @@ afterEach(() => {
   for (const directory of directories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
-});
-
-describe('slotConfigOf', () => {
-  it('reads a system start and a slot length in seconds', () => {
-    expect(slotConfigOf(SYSTEM_START, 1)).toEqual({ zeroTime: ZERO_TIME, zeroSlot: 0n, slotLength: 1000n });
-    expect(slotConfigOf(SYSTEM_START, 0.2).slotLength).toBe(200n);
-  });
-
-  it('refuses a system start and a slot length it cannot read', () => {
-    expect(() => slotConfigOf('not a time', 1)).toThrow(/is not a system start time/);
-    expect(() => slotConfigOf(SYSTEM_START, 0)).toThrow(/is not a slot length/);
-    expect(() => slotConfigOf(SYSTEM_START, Number.NaN)).toThrow(/is not a slot length/);
-  });
-});
-
-describe('devnetSlotConfig', () => {
-  it('reads the slot configuration of the chain the harness created', () => {
-    const path = genesisWith({ systemStart: SYSTEM_START, slotLength: 1, epochLength: 300 });
-    expect(devnetSlotConfig(path)).toEqual({ zeroTime: ZERO_TIME, zeroSlot: 0n, slotLength: 1000n });
-  });
-
-  it('refuses a genesis that is missing or records no start and length', () => {
-    expect(() => devnetSlotConfig(join(tmpdir(), 'custody-devnet-absent', 'shelley-genesis.json'))).toThrow(/does not exist/);
-    expect(() => devnetSlotConfig(genesisWith({ epochLength: 300 }))).toThrow(/does not record a system start and a slot length/);
-  });
 });
 
 describe('loadRunEnvironment', () => {
@@ -159,8 +129,23 @@ describe('providerConfiguration', () => {
     expect(configuration.slotConfig).toEqual({ zeroTime: ZERO_TIME, zeroSlot: 0n, slotLength: 1000n });
   });
 
+  it('reads a slot length in fractions of a second', () => {
+    const path = genesisWith({ systemStart: SYSTEM_START, slotLength: 0.2 });
+    expect(providerConfiguration({ CARDANO_NETWORK: DEVNET_NETWORK }, path).slotConfig).toEqual({ zeroTime: ZERO_TIME, zeroSlot: 0n, slotLength: 200n });
+  });
+
   it('refuses the devnet while its chain has not been started', () => {
     const absent = join(tmpdir(), 'custody-devnet-absent', 'shelley-genesis.json');
     expect(() => providerConfiguration({ CARDANO_NETWORK: DEVNET_NETWORK }, absent)).toThrow(/npm run devnet:start/);
+  });
+
+  it('refuses a devnet genesis whose start and slot length it cannot read', () => {
+    /** Builds the devnet configuration over a genesis holding the given content. */
+    const configurationOf = (content: unknown): void => {
+      providerConfiguration({ CARDANO_NETWORK: DEVNET_NETWORK }, genesisWith(content));
+    };
+    expect(() => configurationOf({ epochLength: 300 })).toThrow(/does not record a system start and a slot length/);
+    expect(() => configurationOf({ systemStart: 'not a time', slotLength: 1 })).toThrow(/is not a system start time/);
+    expect(() => configurationOf({ systemStart: SYSTEM_START, slotLength: 0 })).toThrow(/is not a slot length/);
   });
 });

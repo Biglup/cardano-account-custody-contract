@@ -165,12 +165,6 @@ export const resolveReferenceScript = async (provider: Provider, record: Referen
   return expected;
 };
 
-/** Where a builder takes a script from: its reference UTxO when the network records one, the script itself otherwise. */
-export const scriptSource = (network: NetworkScripts | undefined, script: PlutusScript): ScriptSource => {
-  const record = network && referenceOf(network, Cometa.computeScriptHash(script));
-  return record ? { kind: 'reference', utxo: referenceScriptUtxo(record, script) } : { kind: 'embedded', script };
-};
-
 /**
  * Where a builder takes a script from, with the reference UTxO the
  * network records resolved through the provider when one is given, so

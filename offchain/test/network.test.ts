@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Cometa } from '../src/cometa.js';
-import { DEFAULT_NETWORKS_DIRECTORY, loadNetworkScripts, networkFilePath, referenceOf, referenceScriptUtxo, resolveReferenceScript, resolveScriptSource, scriptSource } from '../src/network.js';
+import { DEFAULT_NETWORKS_DIRECTORY, loadNetworkScripts, networkFilePath, referenceOf, referenceScriptUtxo, resolveReferenceScript, resolveScriptSource } from '../src/network.js';
 import { PARKED_LOVELACE, REFERENCE_UTXO_TX, logicV1, logicV1Hash, logicV2, logicV2Hash, networkScripts, parkingAddress, referenceRecord, script, scenario, scriptHash } from './support/account.js';
 import { utxo } from './support/fake.js';
 
@@ -57,11 +57,11 @@ describe('loadNetworkScripts', () => {
     expect(referenceOf(loaded, 'ab'.repeat(28))).toBeUndefined();
   });
 
-  it('records nothing for a network without a file, so the scripts are embedded', () => {
+  it('records nothing for a network without a file, so the scripts are embedded', async () => {
     const directory = directoryWith('other', networkScripts());
     expect(loadNetworkScripts('fake', directory)).toEqual({ network: 'fake', references: [] });
     expect(loadNetworkScripts('nowhere', join(directory, 'missing'))).toEqual({ network: 'nowhere', references: [] });
-    expect(scriptSource(loadNetworkScripts('fake', directory), script)).toEqual({ kind: 'embedded', script });
+    expect(await resolveScriptSource(undefined, loadNetworkScripts('fake', directory), script)).toEqual({ kind: 'embedded', script });
     expect(networkFilePath('preprod')).toBe(join(DEFAULT_NETWORKS_DIRECTORY, 'preprod.json'));
     expect(DEFAULT_NETWORKS_DIRECTORY.endsWith('networks')).toBe(true);
   });
@@ -93,12 +93,12 @@ describe('reference script UTxOs', () => {
     expect(() => referenceScriptUtxo(referenceRecord(logicV1), logicV2)).toThrow(/was given a script hashing to/);
   });
 
-  it('takes a script from its reference UTxO when the network records one and embeds it otherwise', () => {
+  it('takes a script from its reference UTxO when the network records one and embeds it otherwise', async () => {
     const network = networkScripts([script, logicV1]);
-    expect(scriptSource(network, script)).toEqual({ kind: 'reference', utxo: referenceScriptUtxo(referenceRecord(script), script) });
-    expect(scriptSource(network, logicV1).kind).toBe('reference');
-    expect(scriptSource(network, logicV2)).toEqual({ kind: 'embedded', script: logicV2 });
-    expect(scriptSource(undefined, script)).toEqual({ kind: 'embedded', script });
+    expect(await resolveScriptSource(undefined, network, script)).toEqual({ kind: 'reference', utxo: referenceScriptUtxo(referenceRecord(script), script) });
+    expect((await resolveScriptSource(undefined, network, logicV1)).kind).toBe('reference');
+    expect(await resolveScriptSource(undefined, network, logicV2)).toEqual({ kind: 'embedded', script: logicV2 });
+    expect(await resolveScriptSource(undefined, undefined, script)).toEqual({ kind: 'embedded', script });
   });
 
   it('resolves a record through the provider and confirms the UTxO still carries the script', async () => {

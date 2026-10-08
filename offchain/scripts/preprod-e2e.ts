@@ -43,6 +43,7 @@ import {
   deposit,
   findAccountUtxos,
   fixedBudgetEvaluator,
+  fundBatches,
   issueGrant,
   removeDevice,
   revokeAllGrants,
@@ -371,8 +372,8 @@ const executionUnitsOf = async (projectId: string, txId: string, expected: numbe
 };
 
 /**
- * The first registered preprod pool that is not retiring and has live
- * stake, so that the delegation flow names a pool the ledger accepts.
+ * The first registered pool of the network that is not retiring and has
+ * live stake, so that the delegation flow names a pool the ledger accepts.
  */
 const firstActivePool = async (projectId: string): Promise<string> => {
   const pools = (await blockfrost<string[]>(projectId, `/pools?count=${POOL_CANDIDATES}`)) ?? [];
@@ -382,7 +383,7 @@ const firstActivePool = async (projectId: string): Promise<string> => {
       return poolId;
     }
   }
-  throw new Error(`None of the first ${POOL_CANDIDATES} preprod pools is active`);
+  throw new Error(`None of the first ${POOL_CANDIDATES} registered pools of the network is active`);
 };
 
 /**
@@ -807,10 +808,11 @@ class Run {
   }
 
   /**
-   * Sweeps every fund UTxO of the account in batches of at most
-   * `SWEEP_BATCH`, largest first, as many batches as the count at the
-   * start needs; the change of each batch is a fund UTxO the next batch
-   * or the owner's final sweep takes. The first batch spends exactly
+   * Sweeps every fund UTxO of the account in the batches `fundBatches`
+   * splits it into, largest first, as many batches as the count at the
+   * start needs; each sweep takes the first batch of what the account
+   * holds then, since the change of the one before it is a fund UTxO the
+   * next batch or the owner's final sweep takes. The first batch spends exactly
    * `SWEEP_BATCH` fund UTxOs, so the heaviest grant spend the library
    * submits is confirmed and measured, and at least the twenty small
    * deposits must be spent over the batches.
@@ -818,10 +820,10 @@ class Run {
   private async sweepFundsInBatches(step: number): Promise<void> {
     const { agent } = this.actors;
     const floor = await this.changeFloor();
-    const initial = (await this.fundsLargestFirst()).length;
+    const planned = fundBatches(await this.fundsLargestFirst(), SWEEP_BATCH).length;
     let spent = 0;
-    for (let batch = 0; batch < Math.ceil(initial / SWEEP_BATCH); batch += 1) {
-      const funds = (await this.fundsLargestFirst()).slice(0, SWEEP_BATCH);
+    for (let batch = 0; batch < planned; batch += 1) {
+      const [funds = []] = fundBatches(await this.fundsLargestFirst(), SWEEP_BATCH);
       if (batch === 0 && funds.length !== SWEEP_BATCH) {
         throw new Error(`The first sweep batch takes ${funds.length} fund UTxOs instead of ${SWEEP_BATCH}`);
       }
@@ -838,7 +840,7 @@ class Run {
     if (spent < SMALL_DEPOSIT_COUNT) {
       throw new Error(`The sweeps spent ${spent} fund UTxOs, fewer than the ${SMALL_DEPOSIT_COUNT} deposits`);
     }
-    console.log(`  the sweeps spent ${spent} fund UTxOs over ${Math.ceil(initial / SWEEP_BATCH)} transactions`);
+    console.log(`  the sweeps spent ${spent} fund UTxOs over ${planned} transactions`);
   }
 
   /** Creation, deposits, the first owner spend and the stake operations of the owner device. */

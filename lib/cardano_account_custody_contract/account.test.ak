@@ -222,8 +222,6 @@ test grant_token_names_differ_exactly_when_the_slots_differ(
   ) == ( first == second )
 }
 
-/// Names sort like their slots, so the names of grants issued in turn only
-/// ever grow.
 test grant_token_names_grow_with_the_slot(slots via ordered_slots_fuzzer()) {
   let (earlier, later) = slots
   bytearray.compare(

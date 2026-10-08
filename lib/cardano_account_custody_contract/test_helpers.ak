@@ -1,8 +1,3 @@
-//// Builders for the hand made transactions the validator tests exercise.
-//// Every builder works against one fictitious account proxy, one logic
-//// and one account owner, so tests only spell out what differs between
-//// cases.
-
 //
 // Copyright 2026 IOG.
 //
@@ -17,6 +12,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+// Builders for the hand made transactions the validator tests exercise.
+// Every builder works against one fictitious account proxy, one logic
+// and one account owner, so tests only spell out what differs between
+// cases.
 
 // USINGS **********************************************************************
 

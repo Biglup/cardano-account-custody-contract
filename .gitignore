@@ -1,11 +1,11 @@
 .env
 .env.*
 !.env.example
+!offchain/devnet/devnet.env
 node_modules/
 build/
 artifacts/
 dist/
-todo/
 .idea/
 offchain/devnet/run/
 offchain/networks/devnet.json

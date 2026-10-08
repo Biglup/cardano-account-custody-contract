@@ -1055,8 +1055,8 @@ surface.
   lovelace grant is charged on `per_call_cap` and `cap`, a token grant on
   the lovelace caps, so a token grant can only spend while its lovelace
   caps cover the lovelace of its outputs plus the bound, and never when
-  they are below the bound. The preprod run's 8 tADA spends fit under a
-  10 tADA per call cap with the bound included.
+  they are below the bound. The end to end run's 8 tADA spends fit under
+  a 10 tADA per call cap with the bound included.
 - Fund inputs. A checked `spendWithGrant` takes at most `MAX_FUND_INPUTS`
   (12) fund UTxOs, since on chain every script execution pays to decode
   the whole transaction context and each fund input adds a proxy run; a
@@ -1250,25 +1250,31 @@ action on the first run of a cluster and logs
 because "hexString" is null` on every start, so the proposal never
 reaches the chain.
 
-## Security review and preprod evidence
+## Security review and chain evidence
 
-`docs/security-review.md` is an adversarial review of the three
+`docs/security-review.md` is an adversarial review of the four
 validators, organised by vulnerability class, with each attack reproduced
 as a transaction in `validators/attacks.test.ak` that the validators are
 shown to refuse. It records the findings that needed a code change and
 how each was closed, the properties the proxy holds whatever logic an
 account runs, the attacks specific to the logic split and the upgrade
 path, the budget of every path over the largest well formed state
-measured with `aiken check` and on preprod, the residual risks, and what
-an audit covers.
+measured with `aiken check` and on the devnet, the residual risks, and
+what an audit covers.
 
-`docs/preprod-evidence.md` records the run of the script above against
-the Cardano preprod network through Blockfrost on the date it states,
-with the transaction links, the refusals and the ledger errors. The
-recorded run predates the per grant model and the logic split; the
-execution units the figures above quote come from a later run of the
-script. `docs/devnet-evidence.md` records the last full run of the
-fifty four flows on the devnet, the upgrade path included.
+`docs/devnet-evidence.md` records the last full run of
+`offchain/scripts/preprod-e2e.ts` over the fifty four flows on the
+devnet, the upgrade path included, with the transaction ids, the
+refusals, the ledger errors and the execution units the chain charged for
+every script transaction. Those are the on-chain figures the sections
+above quote.
+
+`docs/preprod-evidence.md` records an earlier run of the same script
+against the Cardano preprod network through Blockfrost on the date it
+states. That run predates the per grant model and the logic split, so its
+hashes are not the current hashes and none of its figures measures the
+proxy and logic split; it is superseded until the next preprod run
+replaces it.
 
 ## Prior art
 
@@ -1324,21 +1330,23 @@ for that reason.
   slots and 8 recipients per grant; the bounds are constants in
   `state.ak`. Issuing sixteen grants in one transaction costs about
   16.4 M memory units net over the largest state in the test runner and
-  sweeping sixteen about 19.3 M, against preprod's limit of 17.5 M, which
+  sweeping sixteen about 19.3 M, against the limit of 17.5 M, which
   the runner understates since it charges nothing for decoding the
   transaction context, so neither fits on chain; batches of eight cost
-  about 7.7 M and 8.1 M. On preprod an eight grant issue measured 38 to
-  41 percent of the limit and an eight grant sweep 40 to 56 percent
-  depending on input order, so the builder batches at most 8 grant issues
-  or sweeps per transaction. A device rewrite or revoke over the largest
-  state measured 6 to 7 percent on preprod.
+  about 7.7 M and 8.1 M. On the devnet an eight grant issue measured 45.2
+  and 47.5 percent of the limit and an eight grant sweep 49.5 and 52.5
+  percent, so the builder batches at most 8 grant issues or sweeps per
+  transaction. A device rewrite or revoke over the largest state measured
+  8.7 to 9.9 percent on the devnet.
 - Every script execution on chain pays to decode the whole transaction
-  context, which the test runner does not charge, so each fund input of
-  an agent spend costs more on chain than the runner measures. On preprod
-  a grant spend over one fund input measured about 1.13 M memory units,
-  over thirteen about 7.28 M, and over twenty five about 20.6 M, which
-  the node refused; a checked grant spend therefore takes at most 12 fund
-  inputs, and `fundBatches` splits a larger sweep.
+  context and, under the split, the proxy execution of its own input,
+  neither of which the test runner charges, so each fund input of an
+  agent spend costs more on chain than the runner measures. On the devnet
+  a grant spend over twelve fund UTxOs, the most a checked spend takes,
+  measured about 6.20 M memory units, each fund input between 0.26 M and
+  0.40 M against the 0.16 M of the runner, and the builder refused a
+  spend over thirteen; a checked grant spend therefore takes at most 12
+  fund inputs, and `fundBatches` splits a larger sweep.
 - One account per logic version per transaction: a logic refuses two
   control UTxOs naming it, and two accounts under different logics cannot
   share a transaction when either mints. The builders operate one account
@@ -1355,8 +1363,10 @@ for that reason.
   admits any registered script credential as a logic, so the signer's
   list of known logic hashes is what keeps a device from pointing the
   account at unknown code.
-- The contract has only run on the Cardano preprod testnet and has had no
-  independent audit; treat it as unaudited and testnet only.
+- The proxy and logic code has only run on the local devnet, whose chain
+  carries preprod's parameters, and has had no independent audit; the
+  recorded preprod run is of the superseded single validator model, so
+  treat the contract as unaudited and as never having met a public chain.
 
 ## Transaction builder requirements
 

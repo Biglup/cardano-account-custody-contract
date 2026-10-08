@@ -1012,36 +1012,44 @@ export class FakeProvider implements Provider {
     this.utxos.set(utxo.output.address, list);
   }
 
+  /** The provider's name, as cometa reports it in errors. */
   getName(): string {
     return 'Fake provider';
   }
 
+  /** The network magic the builders are given, preprod's. */
   getNetworkMagic(): NetworkMagic {
     return Cometa.NetworkMagic.Preprod;
   }
 
+  /** The rewards of any reward account: none, since the fake chain pays none. */
   getRewardsBalance(): Promise<bigint> {
     return Promise.resolve(0n);
   }
 
+  /** The protocol parameters every build and evaluation is priced by. */
   getParameters(): Promise<ProtocolParameters> {
     return Promise.resolve(PROTOCOL_PARAMETERS);
   }
 
+  /** The UTxOs added at an address. */
   getUnspentOutputs(address: Address | string): Promise<UTxO[]> {
     return Promise.resolve([...(this.utxos.get(addressKey(address)) ?? [])]);
   }
 
+  /** The UTxOs at an address holding a given asset. */
   async getUnspentOutputsWithAsset(address: Address | string, assetId: string): Promise<UTxO[]> {
     const utxos = await this.getUnspentOutputs(address);
     return utxos.filter((utxo) => (utxo.output.value.assets?.[assetId] ?? 0n) > 0n);
   }
 
+  /** The single UTxO holding one unit of an asset, or a rejection when none does. */
   getUnspentOutputByNft(assetId: string): Promise<UTxO> {
     const match = [...this.utxos.values()].flat().find((utxo) => (utxo.output.value.assets?.[assetId] ?? 0n) === 1n);
     return match ? Promise.resolve(match) : Promise.reject(new Error(`No UTxO holds ${assetId}`));
   }
 
+  /** The UTxOs the given output references name. */
   resolveUnspentOutputs(txIns: TxIn[]): Promise<UTxO[]> {
     const all = [...this.utxos.values()].flat();
     return Promise.resolve(
@@ -1049,18 +1057,26 @@ export class FakeProvider implements Provider {
     );
   }
 
+  /** Rejects: the fake chain holds no datum by hash, so nothing is spendable under one. */
   resolveDatum(): Promise<string> {
     return Promise.reject(new Error('The fake provider holds no datums by hash'));
   }
 
+  /** Confirms at once: nothing is submitted, so nothing waits for a block. */
   confirmTransaction(): Promise<boolean> {
     return Promise.resolve(true);
   }
 
+  /** Rejects: a test checks what a builder produces, never what a chain accepts. */
   submitTransaction(): Promise<string> {
     return Promise.reject(new Error('The fake provider does not submit transactions'));
   }
 
+  /**
+   * Evaluates every redeemer of a built transaction against the rules this
+   * fake reproduces, rejecting with the first failure as a provider does,
+   * and returns the redeemers with a fixed budget each.
+   */
   async evaluateTransaction(tx: string): Promise<Redeemer[]> {
     const redeemers = Cometa.readRedeemersFromTx(tx);
     const parts = transactionBodyParts(tx);
@@ -1120,6 +1136,7 @@ export class FakeProvider implements Provider {
 export class FakeWallet implements Wallet {
   readonly address: Address;
 
+  /** A wallet of the given payment and stake key hashes, over the provider's UTxOs. */
   constructor(
     private readonly provider: FakeProvider,
     readonly paymentKeyHash: string,
@@ -1132,59 +1149,75 @@ export class FakeWallet implements Wallet {
     ).toAddress();
   }
 
+  /** The network id of the wallet's address, testnet. */
   getNetworkId(): Promise<NetworkId> {
     return Promise.resolve(Cometa.NetworkId.Testnet);
   }
 
+  /** The UTxOs the provider holds at the wallet's address. */
   getUnspentOutputs(): Promise<UTxO[]> {
     return this.provider.getUnspentOutputs(this.address);
   }
 
+  /** The lovelace of those UTxOs, which is all a builder asks of this wallet. */
   async getBalance(): Promise<Value> {
     const utxos = await this.getUnspentOutputs();
     return { coins: utxos.reduce((total, utxo) => total + utxo.output.value.coins, 0n) };
   }
 
+  /** The wallet's one address. */
   getUsedAddresses(): Promise<Address[]> {
     return Promise.resolve([this.address]);
   }
 
+  /** No unused address: the wallet owns one address and uses it. */
   getUnusedAddresses(): Promise<Address[]> {
     return Promise.resolve([]);
   }
 
+  /** The address change returns to, the wallet's own. */
   getChangeAddress(): Promise<Address> {
     return Promise.resolve(this.address);
   }
 
+  /** No reward address: the account's own stake script owns the one a run operates. */
   getRewardAddresses(): Promise<RewardAddress[]> {
     return Promise.resolve([]);
   }
 
+  /** Rejects: a test reads an unsigned body, so no witness is ever needed. */
   signTransaction(): Promise<VkeyWitnessSet> {
     return Promise.reject(new Error('The fake wallet does not sign'));
   }
 
+  /** Rejects: nothing in a test signs data. */
   signData(): Promise<{ signature: string; key: string }> {
     return Promise.reject(new Error('The fake wallet does not sign'));
   }
 
+  /** Defers to the provider, which refuses to submit. */
   submitTransaction(): Promise<string> {
     return this.provider.submitTransaction();
   }
 
+  /** No collateral UTxO: the builders are given collateral explicitly. */
   getCollateral(): Promise<UTxO[]> {
     return Promise.resolve([]);
   }
 
+  /** The network magic of the wallet, preprod's. */
   getNetworkMagic = (): Promise<number> => Promise.resolve(Cometa.NetworkMagic.Preprod);
 
+  /** Rejects: the wallet holds no DRep key, which no flow needs. */
   getPubDRepKey = (): Promise<string> => Promise.reject(new Error('The fake wallet has no DRep key'));
 
+  /** No registered stake key: the account's credential is a script, not a key. */
   getRegisteredPubStakeKeys = (): Promise<string[]> => Promise.resolve([]);
 
+  /** No unregistered stake key either. */
   getUnregisteredPubStakeKeys = (): Promise<string[]> => Promise.resolve([]);
 
+  /** A builder over the wallet's UTxOs, evaluating through the fake provider and returning change and collateral change to the wallet. */
   async createTransactionBuilder(): Promise<TransactionBuilder> {
     const utxos = await this.getUnspentOutputs();
     return Cometa.TransactionBuilder.create({ params: PROTOCOL_PARAMETERS, slotConfig: Cometa.CARDANO_PREPROD_SLOT_CONFIG })

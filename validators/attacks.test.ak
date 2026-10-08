@@ -1,13 +1,3 @@
-//// Exploit attempts against the account proxy, the logic and the stake
-//// script, one group per vulnerability class of the Cardano smart contract
-//// security curriculum. Every `attack_` test builds a transaction an
-//// adversary would submit and asserts that a validator refuses it: with
-//// `!` when the handler returns False and as a `fail` test when it aborts
-//// on an `expect`. The `budget_` tests build the largest well formed state
-//// and the heaviest transactions over it so that `aiken check` reports
-//// their execution units, the proxy's per input and the logic's per
-//// transaction.
-
 //
 // Copyright 2026 IOG.
 //
@@ -22,6 +12,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+// Exploit attempts against the account proxy, the logic and the stake
+// script, one group per vulnerability class of the Cardano smart contract
+// security curriculum. Every `attack_` test builds a transaction an
+// adversary would submit and asserts that a validator refuses it: with
+// `!` when the handler returns False and as a `fail` test when it aborts
+// on an `expect`. The `budget_` tests build the largest well formed state
+// and the heaviest transactions over it so that `aiken check` reports
+// their execution units, the proxy's per input and the logic's per
+// transaction.
 
 // USINGS **********************************************************************
 
@@ -59,6 +59,10 @@ use logic_v1
 
 // CONSTANTS *******************************************************************
 
+/// The POSIX millisecond at which the grants of these fixtures expire. A
+/// spend runs under a validity range ending just before it and a sweep
+/// under one starting just after it, so one number stands for both sides
+/// of the time rules.
 const expiry = 1_800_000_000_000
 
 /// The key hash of a party that holds no device, owner or grantee key.
@@ -1046,6 +1050,27 @@ test attack_datum_hijacking_padded_grant_datum_at_issuance() fail {
     grant_token(stake_script_hash, 0),
   )
   run(tx)
+}
+
+/// The grantee offers a padded `SpendWithGrant` redeemer on its grant
+/// UTxO, the right constructor index with an extra field. The logic reads
+/// the proxy redeemers from the script context through a soft cast and
+/// leaves a value it cannot read alone, so a padded redeemer the ledger
+/// accepted would carry a grant spend past the grant rule; the proxy's
+/// redeemer is a typed parameter, and the cast the ledger applies to it
+/// refuses the padded constructor before the handler runs. The padded
+/// datum cases above are the same question asked of the datum.
+test attack_datum_hijacking_padded_grant_redeemer_on_a_grant_spend() fail {
+  let extra_field: Data = 7
+  let padded: Data = builtin.constr_data(1, [extra_field])
+  expect redeemer: types.AccountRedeemer = padded
+  let grant = lovelace_grant()
+  proxy_spend_grant(
+    grant,
+    redeemer,
+    0,
+    grant_transaction(grant, lovelace_grant_outputs(grant, 3_000_000)),
+  )
 }
 
 /// An account at the victim's address, under the attacker's device, is
