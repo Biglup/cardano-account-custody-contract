@@ -20,17 +20,19 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Provider, Wallet } from '@biglup/cometa';
+import type { NativeScript, Provider, UTxO, Wallet } from '@biglup/cometa';
 import { config as loadEnv } from 'dotenv';
 import { accountAddress, paymentKeyHashOf, rewardAddress } from '../src/address.js';
 import { accountScript, accountScriptHash } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
 import { posixTimeToSlot, transactionBodyParts } from '../src/body.js';
-import type { AccountState, Scope } from '../src/data.js';
+import type { AccountState, Asset, Scope } from '../src/data.js';
 import { type AccountRecord, accountByOwner, accountExists } from '../src/discovery.js';
+import { minimumUtxoLovelace } from '../src/output.js';
 import { stakeScript, stakeScriptHash } from '../src/stake-script.js';
 import { LOVELACE } from '../src/state.js';
 import {
+  type AccountOutput,
   addDevice,
   createAccount,
   delegateStake,
@@ -40,35 +42,62 @@ import {
   removeDevice,
   revokeAllGrants,
   revokeGrant,
+  rewriteState,
   spendWithDevice,
   spendWithGrant,
   sweepGrant,
   withdrawRewards,
 } from '../src/transactions.js';
+import { addBalances, toBalance, toValue } from '../src/value.js';
 import {
   AGENT_GRANT_SLOT,
   AGENT_WALLET_LOVELACE,
   CAP,
   DEPOSIT_LOVELACE,
   DEVICE_SPEND_LOVELACE,
+  FIRST_LARGEST_SLOT,
   FLOW_PLAN,
   type Flow,
   type FlowRecord,
+  GRANT_BATCH,
   GRANT_LIFETIME_MS,
   GRANT_SPEND_LOVELACE,
+  LARGEST_GRANTS,
+  LARGEST_RECIPIENTS,
   MINIMUM_FUNDING_LOVELACE,
   NEW_DEVICE_SPEND_LOVELACE,
   OWNER_COLLATERAL_LOVELACE,
   PER_CALL_CAP,
+  type RedeemerUnits,
   RESERVE_LOVELACE,
   REVOKED_SPEND_LOVELACE,
+  ROTATION_KEYS,
   SHORT_GRANT_LIFETIME_MS,
   SHORT_GRANT_SLOT,
+  SMALL_DEPOSIT_COUNT,
+  SMALL_DEPOSIT_LOVELACE,
   STRANGER_SPEND_LOVELACE,
+  SWEEP_BATCH,
+  SWEEP_FEE_BOUND,
+  SWEEP_GRANT_CAP,
+  SWEEP_GRANT_SLOT,
   type SupportingTransaction,
+  TOKEN_CAP,
+  TOKEN_DEPOSIT_LOVELACE,
+  TOKEN_GRANT_SLOT,
+  TOKEN_LOVELACE_CAP,
+  TOKEN_LOVELACE_PER_CALL_CAP,
+  TOKEN_NAME_HEX,
+  TOKEN_OVER_CAP,
+  TOKEN_PER_CALL_CAP,
+  TOKEN_SPEND_LOVELACE,
+  TOKEN_SUPPLY,
+  TRANSACTION_MEMORY_LIMIT,
+  TRANSACTION_STEPS_LIMIT,
   WITHDRAWN_LOVELACE,
   classifyFailure,
   evidenceDocument,
+  isNodePhaseOneRefusal,
   isNodeScriptRefusal,
   nodeRefusalSummary,
 } from './flow-plan.js';
@@ -85,6 +114,9 @@ const CONFIRMATION_TIMEOUT_MS = 10 * 60 * 1000;
 const UTXO_VIEW_TIMEOUT_MS = 5 * 60 * 1000;
 const UTXO_VIEW_POLL_MS = 5_000;
 
+/** How long to wait for Blockfrost to index the redeemers of a confirmed transaction. */
+const REDEEMER_VIEW_TIMEOUT_MS = 60 * 1000;
+
 /** How far the provider's view of the current slot can lag behind the wall clock on preprod. */
 const PROVIDER_SLOT_VIEW_LAG_MS = 120_000;
 
@@ -94,54 +126,87 @@ const EXPIRY_SAFETY_MARGIN_MS = 20_000;
 /** How far past a grant's expiry the expiry flow waits before attempting its spend. */
 const EXPIRY_MARGIN_MS = PROVIDER_SLOT_VIEW_LAG_MS + EXPIRY_SAFETY_MARGIN_MS;
 
-/** How many slots a grant spend stays valid for, and how few the expiry attempt asks for. */
+/** How many slots a grant spend stays valid for, how few the expiry attempt asks for, and how long the held spend stays valid while the revoke lands. */
 const VALIDITY_WINDOW_SLOTS = 600n;
 const EXPIRED_WINDOW_SLOTS = 5n;
+const HELD_WINDOW_SLOTS = 3_600n;
 
 /** The message printed when the funding wallet cannot pay for the run. */
 const FUND_MESSAGE = 'Fund this address with tADA from the preprod faucet and rerun';
 
-/** The Blockfrost preprod endpoint, queried directly for what the provider does not expose: pools and reward account status. */
+/** The Blockfrost preprod endpoint, queried directly for what the provider does not expose: pools, reward account status and redeemer units. */
 const BLOCKFROST_URL = 'https://cardano-preprod.blockfrost.io/api/v0';
 
 /** How many registered pools are examined before giving up on finding an active one. */
 const POOL_CANDIDATES = 10;
 
-/** The account index of the mnemonic the agent wallet is derived from; the funding wallet is index 0. */
-const AGENT_ACCOUNT = 1;
-
-/** The first account index of the mnemonic tried for the owner wallet, and how many are tried. */
-const FIRST_OWNER_ACCOUNT = 2;
+/**
+ * The account indexes of the mnemonic a run derives its keys from: the
+ * owner wallet takes the first candidate index whose stake credential is
+ * not registered, trying every stride from the first index on, and the
+ * agent, the recipient and the rotation keys take the indexes that follow
+ * it within the stride, so that no run shares a key with another. The
+ * funding wallet is index 0.
+ */
+const FIRST_OWNER_ACCOUNT = 15;
+const OWNER_ACCOUNT_STRIDE = 10;
 const OWNER_ACCOUNT_CANDIDATES = 50;
+const AGENT_OFFSET = 1;
+const RECIPIENT_OFFSET = 2;
+const ROTATION_OFFSET = 3;
 
 /** The password cometa encrypts the derived keys with, fresh for every process. */
 const password = randomBytes(32);
 
 /* TYPES **********************************************************************/
 
-/** The owner wallet of a run and the account identifiers its payment key fixes. */
+/** The owner wallet of a run, its account index and the account identifiers its payment key fixes. */
 interface Owner {
   owner: Wallet;
+  ownerAccount: number;
   ownerAddress: string;
   ownerKeyHash: string;
   stakeCredential: string;
   reward: string;
 }
 
+/** A wallet derived from the mnemonic with its address and payment key hash. */
+interface Keyed {
+  wallet: Wallet;
+  address: string;
+  keyHash: string;
+}
+
 /** The keys, addresses and identifiers every flow works with. */
 interface Actors {
   provider: Provider;
+  projectId: string;
   funding: Wallet;
   owner: Wallet;
   agent: Wallet;
+  recipient: Wallet;
   fundingAddress: string;
   ownerAddress: string;
   agentAddress: string;
+  recipientAddress: string;
   ownerKeyHash: string;
   agentKeyHash: string;
+  /** The rotation keys the largest state adds as devices, six at first and a seventh that replaces the sixth. */
+  rotation: Keyed[];
   /** What the agent persists to find the account: it never holds the owner key or wallet. */
   record: AccountRecord;
   poolId: string;
+  /** The native policy of the test token, requiring the funding wallet's signature, and the token's asset. */
+  tokenScript: NativeScript;
+  token: Asset;
+}
+
+/** A redeemer of a transaction as Blockfrost lists it. */
+interface BlockfrostRedeemer {
+  tx_index: number;
+  purpose: string;
+  unit_mem: string;
+  unit_steps: string;
 }
 
 /* FUNCTIONS ******************************************************************/
@@ -180,23 +245,38 @@ const walletOf = (provider: Provider, mnemonics: string[], account: number): Pro
     credentialsConfig: { account, paymentIndex: 0, stakingIndex: 0 },
   });
 
+/** A wallet of one account of the mnemonic with its address and payment key hash. */
+const keyedWalletOf = async (provider: Provider, mnemonics: string[], account: number, name: string): Promise<Keyed> => {
+  const wallet = await walletOf(provider, mnemonics, account);
+  const address = (await wallet.getChangeAddress()).toString();
+  const keyHash = paymentKeyHashOf(address);
+  if (!keyHash) {
+    throw new Error(`The ${name} wallet did not derive a key address`);
+  }
+  return { wallet, address, keyHash };
+};
+
 /**
- * Signs a built transaction with every wallet that must witness it and
- * submits it, returning the transaction id. Each wallet contributes its
- * own witness set, so a sponsored transaction gathers the owner's
- * signature and the sponsor's without either wallet seeing the other's
- * keys.
+ * Signs a built transaction with every wallet that must witness it. Each
+ * wallet contributes its own witness set, so a sponsored transaction
+ * gathers the owner's signature and the sponsor's without either wallet
+ * seeing the other's keys.
  */
-const submit = async (signers: Wallet[], tx: string): Promise<string> => {
+const signedBy = async (signers: Wallet[], tx: string): Promise<string> => {
   const witnesses = [];
   for (const wallet of signers) {
     witnesses.push(...(await wallet.signTransaction(tx, true)));
   }
+  return Cometa.applyVkeyWitnessSet(tx, witnesses);
+};
+
+/** Signs a built transaction with every wallet that must witness it and submits it through the first, returning the transaction id. */
+const submit = async (signers: Wallet[], tx: string): Promise<string> => {
   const [submitter] = signers;
   if (!submitter) {
     throw new Error('A transaction needs at least one signer');
   }
-  return submitter.submitTransaction(Cometa.applyVkeyWitnessSet(tx, witnesses));
+  return submitter.submitTransaction(await signedBy(signers, tx));
 };
 
 /** Polls an address until the provider lists an output of the transaction at it. */
@@ -231,6 +311,28 @@ const isStakeCredentialRegistered = async (projectId: string, rewardAddress: str
 };
 
 /**
+ * The execution units the chain recorded for every redeemer of a
+ * confirmed transaction, read from Blockfrost, which indexes them a
+ * moment after the transaction itself. A transaction carrying redeemers
+ * is polled until they appear or the wait runs out.
+ */
+const executionUnitsOf = async (projectId: string, txId: string, expected: number): Promise<RedeemerUnits[]> => {
+  const deadline = Date.now() + REDEEMER_VIEW_TIMEOUT_MS;
+  for (;;) {
+    const redeemers = (await blockfrost<BlockfrostRedeemer[]>(projectId, `/txs/${txId}/redeemers`)) ?? [];
+    if (redeemers.length >= expected || Date.now() >= deadline) {
+      return redeemers.map((redeemer) => ({
+        purpose: redeemer.purpose,
+        index: redeemer.tx_index,
+        memory: BigInt(redeemer.unit_mem),
+        steps: BigInt(redeemer.unit_steps),
+      }));
+    }
+    await sleep(UTXO_VIEW_POLL_MS);
+  }
+};
+
+/**
  * The first registered preprod pool that is not retiring and has live
  * stake, so that the delegation flow names a pool the ledger accepts.
  */
@@ -255,21 +357,17 @@ const firstActivePool = async (projectId: string): Promise<string> => {
  * owner address.
  */
 const freshOwner = async (provider: Provider, projectId: string, mnemonics: string[], scriptHash: string): Promise<Owner> => {
-  for (let index = FIRST_OWNER_ACCOUNT; index < FIRST_OWNER_ACCOUNT + OWNER_ACCOUNT_CANDIDATES; index += 1) {
-    const owner = await walletOf(provider, mnemonics, index);
-    const ownerAddress = (await owner.getChangeAddress()).toString();
-    const ownerKeyHash = paymentKeyHashOf(ownerAddress);
-    if (!ownerKeyHash) {
-      throw new Error('The owner wallet did not derive a key address');
-    }
+  for (let candidate = 0; candidate < OWNER_ACCOUNT_CANDIDATES; candidate += 1) {
+    const ownerAccount = FIRST_OWNER_ACCOUNT + candidate * OWNER_ACCOUNT_STRIDE;
+    const { wallet: owner, address: ownerAddress, keyHash: ownerKeyHash } = await keyedWalletOf(provider, mnemonics, ownerAccount, 'owner');
     const stakeCredential = stakeScriptHash(stakeScript(ownerKeyHash, scriptHash));
     const reward = rewardAddress(stakeCredential).toBech32();
     if (!(await isStakeCredentialRegistered(projectId, reward))) {
-      console.log(`Owner wallet: account index ${index} of the mnemonic`);
-      return { owner, ownerAddress, ownerKeyHash, stakeCredential, reward };
+      console.log(`Owner wallet: account index ${ownerAccount} of the mnemonic`);
+      return { owner, ownerAccount, ownerAddress, ownerKeyHash, stakeCredential, reward };
     }
   }
-  throw new Error(`Every owner account index from ${FIRST_OWNER_ACCOUNT} onwards already has a registered stake credential`);
+  throw new Error(`Every owner account index from ${FIRST_OWNER_ACCOUNT} in strides of ${OWNER_ACCOUNT_STRIDE} already has a registered stake credential`);
 };
 
 /** Polls an address until the provider lists nothing at it. */
@@ -295,7 +393,10 @@ const settle = async (provider: Provider, txId: string, tx: string): Promise<voi
   }
 };
 
-/** Runs the flows in order, recording transactions and refusals for the evidence document. */
+/** The slots from a first slot on, as many as asked. */
+const slotsFrom = (first: bigint, count: number): bigint[] => Array.from({ length: count }, (_, index) => first + BigInt(index));
+
+/** Runs the flows in order, recording transactions, refusals and execution units for the evidence document. */
 class Run {
   readonly records: FlowRecord[] = [];
   readonly supporting: SupportingTransaction[] = [];
@@ -317,13 +418,17 @@ class Run {
     if (existing) {
       return existing;
     }
-    const record: FlowRecord = { flow: this.flow(step), txIds: [] };
+    const record: FlowRecord = { flow: this.flow(step), txIds: [], measured: [] };
     this.records.push(record);
     console.log(`Step ${step}: ${record.flow.description}`);
     return record;
   }
 
-  /** Builds, signs, submits and settles a transaction that must succeed. */
+  /**
+   * Builds, signs, submits and settles a transaction that must succeed,
+   * then reads the execution units the chain recorded for its redeemers
+   * when it ran any script.
+   */
   async confirm(step: number, description: string, signers: Wallet[], build: () => Promise<string>): Promise<string> {
     const record = this.record(step);
     const tx = await build();
@@ -331,6 +436,14 @@ class Run {
     console.log(`  ${txId} ${description}`);
     await settle(this.actors.provider, txId, tx);
     record.txIds.push(txId);
+    const expected = Cometa.readRedeemersFromTx(tx).length;
+    if (expected > 0) {
+      const redeemers = await executionUnitsOf(this.actors.projectId, txId, expected);
+      const memory = redeemers.reduce((total, redeemer) => total + redeemer.memory, 0n);
+      const steps = redeemers.reduce((total, redeemer) => total + redeemer.steps, 0n);
+      console.log(`  ${redeemers.length} redeemers, ${memory} memory units, ${steps} steps`);
+      record.measured?.push({ txId, redeemers });
+    }
     return txId;
   }
 
@@ -344,6 +457,20 @@ class Run {
     return txId;
   }
 
+  /** Checks a refusal message against the pattern the flow expects and records it. */
+  private recordRefusal(step: number, refusedBy: string, message: string, summary: string): void {
+    const record = this.record(step);
+    const expected = record.flow.expectedMessage;
+    if (!expected) {
+      throw new Error(`Step ${step} has no expected message pattern to verify the ${refusedBy} refusal against`);
+    }
+    if (!expected.test(message)) {
+      throw new Error(`Step ${step} was refused by the ${refusedBy} but the message did not match ${expected}: ${message}`);
+    }
+    record.refusal = summary;
+    console.log(`  refused by the ${refusedBy}: ${summary}`);
+  }
+
   /**
    * Attempts a transaction that the builder must refuse while applying
    * the contract's rules, so that nothing reaches the chain. The error is
@@ -354,7 +481,7 @@ class Run {
    * or a built transaction fails the run.
    */
   async refuseInBuilder(step: number, description: string, build: () => Promise<string>): Promise<void> {
-    const record = this.record(step);
+    this.record(step);
     try {
       await build();
     } catch (error) {
@@ -363,15 +490,7 @@ class Run {
       if (kind !== 'refusal' || isNodeScriptRefusal(error)) {
         throw new Error(`Step ${step} failed with a ${kind} error instead of a refusal by the builder: ${message}`);
       }
-      const expected = record.flow.expectedMessage;
-      if (!expected) {
-        throw new Error(`Step ${step} has no expected message pattern to verify the builder refusal against`);
-      }
-      if (!expected.test(message)) {
-        throw new Error(`Step ${step} was refused by the builder but the message did not match ${expected}: ${message}`);
-      }
-      record.refusal = message;
-      console.log(`  refused by the builder: ${message}`);
+      this.recordRefusal(step, 'builder', message, message);
       return;
     }
     throw new Error(`Step ${step} was not refused: ${description} was built`);
@@ -392,7 +511,7 @@ class Run {
    * anything else is submitted.
    */
   async refuseAtNode(step: number, description: string, signers: Wallet[], build: () => Promise<string>): Promise<void> {
-    const record = this.record(step);
+    this.record(step);
     const tx = await build();
     let txId: string;
     try {
@@ -402,15 +521,7 @@ class Run {
       if (!isNodeScriptRefusal(error)) {
         throw new Error(`Step ${step} failed with a ${classifyFailure(error)} error instead of a refusal by the node: ${message}`);
       }
-      const expected = record.flow.expectedMessage;
-      if (!expected) {
-        throw new Error(`Step ${step} has no expected message pattern to verify the node refusal against`);
-      }
-      if (!expected.test(message)) {
-        throw new Error(`Step ${step} was refused by the node but the message did not match ${expected}: ${message}`);
-      }
-      record.refusal = nodeRefusalSummary(message);
-      console.log(`  refused by the node: ${record.refusal}`);
+      this.recordRefusal(step, 'node', message, nodeRefusalSummary(message));
       return;
     }
     throw new Error(
@@ -420,17 +531,60 @@ class Run {
     );
   }
 
-  /** A lovelace scope paying the owner only, expiring after a lifetime from now. */
-  private scope(lifetimeMs: bigint): Scope {
+  /**
+   * Submits a transaction signed earlier, expecting the node to refuse it
+   * in phase one because an input it references was spent since it was
+   * built. No script runs in phase one, so no collateral is at stake; the
+   * ledger's failure is recorded once its text matches the flow's
+   * expected pattern. Should the node accept the transaction instead, the
+   * run stops, since the held spend would then have passed a revoke.
+   */
+  async refuseInPhaseOne(step: number, description: string, submitter: Wallet, signedTx: string): Promise<void> {
+    this.record(step);
+    let txId: string;
+    try {
+      txId = await submitter.submitTransaction(signedTx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isNodePhaseOneRefusal(error)) {
+        throw new Error(`Step ${step} failed with a ${classifyFailure(error)} error instead of a phase one refusal by the node: ${message}`);
+      }
+      this.recordRefusal(step, 'node in phase one', message, nodeRefusalSummary(message));
+      return;
+    }
+    throw new Error(`Step ${step} was not refused: ${description} was accepted as ${txId} after the revoke landed`);
+  }
+
+  /** A lovelace scope with the run's caps, paying the given recipients only, expiring after a lifetime from now. */
+  private scope(lifetimeMs: bigint, recipients: string[] = [this.actors.ownerAddress], perCallCap = PER_CALL_CAP, cap = CAP): Scope {
     return {
       asset: LOVELACE,
-      perCallCap: PER_CALL_CAP,
-      cap: CAP,
+      perCallCap,
+      cap,
       lovelacePerCallCap: 0n,
       lovelaceCap: 0n,
       expiresAt: BigInt(Date.now()) + lifetimeMs,
-      recipients: [this.actors.ownerAddress],
+      recipients,
     };
+  }
+
+  /** The token scope: a few tokens per call with some lovelace alongside, paying the recipient wallet only. */
+  private tokenScope(): Scope {
+    return {
+      asset: this.actors.token,
+      perCallCap: TOKEN_PER_CALL_CAP,
+      cap: TOKEN_CAP,
+      lovelacePerCallCap: TOKEN_LOVELACE_PER_CALL_CAP,
+      lovelaceCap: TOKEN_LOVELACE_CAP,
+      expiresAt: BigInt(Date.now()) + GRANT_LIFETIME_MS,
+      recipients: [this.actors.recipientAddress],
+    };
+  }
+
+  /** The eight recipients of the largest grants: every address the run derives. */
+  private largestRecipients(): string[] {
+    const { ownerAddress, agentAddress, recipientAddress, fundingAddress, rotation } = this.actors;
+    return [ownerAddress, agentAddress, recipientAddress, fundingAddress, ...rotation.map((keyed) => keyed.address)].slice(0, LARGEST_RECIPIENTS);
   }
 
   /** The parameters every owner transaction shares: the owner key is the account's initial device and the owner of its stake script. */
@@ -446,26 +600,32 @@ class Run {
   }
 
   /**
-   * A grant spend paying lovelace to one address, valid for a window of
-   * slots from now. An unchecked spend skips the builder's checks so that
-   * the validator is the one to refuse it.
+   * A grant spend paying one output, valid for a window of slots from
+   * now. An unchecked spend skips the builder's checks so that the
+   * validator is the one to refuse it.
    */
-  private grantSpend(
-    slot: bigint,
-    grantee: string,
-    address: string,
-    lovelace: bigint,
-    windowSlots: bigint,
-    unchecked = false,
-  ): Promise<string> {
-    return spendWithGrant({
+  private grantSpend(slot: bigint, output: AccountOutput, windowSlots: bigint, unchecked = false, feeBound?: bigint): Promise<string> {
+    const params = {
       ...this.agentParams,
       slot,
-      grantee,
-      outputs: [{ address, value: { coins: lovelace } }],
+      grantee: this.actors.agentKeyHash,
+      outputs: [output],
       validUntilSlot: currentSlot() + windowSlots,
       unchecked,
-    });
+    };
+    return spendWithGrant(feeBound === undefined ? params : { ...params, feeBound });
+  }
+
+  /** A grant spend paying lovelace to one address. */
+  private lovelaceSpend(slot: bigint, address: string, lovelace: bigint, windowSlots: bigint, unchecked = false): Promise<string> {
+    return this.grantSpend(slot, { address, value: { coins: lovelace } }, windowSlots, unchecked);
+  }
+
+  /** A token grant spend paying tokens with some lovelace to the recipient wallet. */
+  private tokenSpend(tokens: bigint, unchecked = false): Promise<string> {
+    const { recipientAddress, token } = this.actors;
+    const output: AccountOutput = { address: recipientAddress, value: { coins: TOKEN_SPEND_LOVELACE, assets: { [`${token.policyId}${token.assetName}`]: tokens } } };
+    return this.grantSpend(TOKEN_GRANT_SLOT, output, VALIDITY_WINDOW_SLOTS, unchecked);
   }
 
   /** Gives a wallet lovelace from the funding wallet unless it holds at least half the amount already. */
@@ -527,21 +687,104 @@ class Run {
     return this.sweep('agent', agent, agentAddress);
   }
 
+  /** Returns the recipient wallet's tokens and lovelace to the funding wallet. */
+  sweepRecipientWallet(): Promise<void> {
+    const { recipient, recipientAddress } = this.actors;
+    return this.sweep('recipient', recipient, recipientAddress);
+  }
+
   /**
-   * An owner spend paying every fund and reserve UTxO of the account to
-   * the funding wallet, which sponsors the fee so that nothing returns to
-   * the account and only the control UTxO stays.
+   * An owner spend paying every fund and reserve UTxO of the account,
+   * tokens included, to the funding wallet, which sponsors the fee so
+   * that nothing returns to the account and only the control UTxO stays.
    */
   private async sweepAccount(): Promise<string> {
     const { provider, funding, fundingAddress } = this.actors;
     const { funds, reserves } = await findAccountUtxos(provider, this.ownerParams);
-    const lovelace = [...funds, ...reserves].reduce((total, utxo) => total + utxo.output.value.coins, 0n);
-    return spendWithDevice({ ...this.ownerParams, sponsor: funding, outputs: [{ address: fundingAddress, value: { coins: lovelace } }] });
+    const balance = addBalances(...[...funds, ...reserves].map((utxo) => toBalance(utxo.output.value)));
+    return spendWithDevice({ ...this.ownerParams, sponsor: funding, outputs: [{ address: fundingAddress, value: toValue(balance) }] });
   }
 
-  /** Executes the flows of the plan in order. */
-  async flows(): Promise<void> {
-    const { funding, owner, agent, ownerAddress, agentAddress, ownerKeyHash, agentKeyHash, poolId } = this.actors;
+  /** The fund UTxOs of the account as the agent sees them, largest first. */
+  private async fundsLargestFirst(): Promise<UTxO[]> {
+    const { funds } = await findAccountUtxos(this.actors.provider, { ...this.agentParams });
+    return [...funds].sort((a, b) => Number(b.output.value.coins - a.output.value.coins));
+  }
+
+  /** The least lovelace a plain change output at the account address may hold. */
+  private async changeFloor(): Promise<bigint> {
+    const { provider, record } = this.actors;
+    return minimumUtxoLovelace({ address: record.address, value: { coins: 0n } }, BigInt((await provider.getParameters()).adaPerUtxoByte));
+  }
+
+  /**
+   * An agent sweep of the given fund UTxOs under the sweep grant: it pays
+   * the funding wallet everything they hold beyond the fee bound and the
+   * change floor, so that the selection, which takes the largest fund
+   * UTxOs first, needs exactly those UTxOs and the change returns as a
+   * single plain deposit at the floor.
+   */
+  private sweepOf(funds: UTxO[], floor: bigint, unchecked: boolean): Promise<string> {
+    const total = funds.reduce((sum, utxo) => sum + utxo.output.value.coins, 0n);
+    const output: AccountOutput = { address: this.actors.fundingAddress, value: { coins: total - SWEEP_FEE_BOUND - floor } };
+    return this.grantSpend(SWEEP_GRANT_SLOT, output, VALIDITY_WINDOW_SLOTS, unchecked, SWEEP_FEE_BOUND);
+  }
+
+  /**
+   * Evaluates one sweep over every fund UTxO of the account through the
+   * provider, built unchecked so that it carries fixed budgets instead of
+   * an evaluation the builder would refuse, and raises the measured units
+   * as the refusal when they exceed the transaction limit. Should the
+   * spend fit after all, the built transaction is returned and the step
+   * fails as not refused.
+   */
+  private async measureWholeSweep(): Promise<string> {
+    const funds = await this.fundsLargestFirst();
+    const tx = await this.sweepOf(funds, await this.changeFloor(), true);
+    const redeemers = await this.actors.provider.evaluateTransaction(tx);
+    const memory = redeemers.reduce((sum, redeemer) => sum + BigInt(redeemer.executionUnits.memory), 0n);
+    const steps = redeemers.reduce((sum, redeemer) => sum + BigInt(redeemer.executionUnits.steps), 0n);
+    if (memory > TRANSACTION_MEMORY_LIMIT || steps > TRANSACTION_STEPS_LIMIT) {
+      throw new Error(
+        `A spend over ${funds.length} fund UTxOs evaluates at ${memory} memory units and ${steps} steps over ${redeemers.length} redeemers, which exceeds the transaction memory limit of ${TRANSACTION_MEMORY_LIMIT} memory units and ${TRANSACTION_STEPS_LIMIT} steps`,
+      );
+    }
+    return tx;
+  }
+
+  /**
+   * Sweeps every fund UTxO of the account in batches of at most
+   * `SWEEP_BATCH`, largest first, as many batches as the count at the
+   * start needs; the change of each batch is a fund UTxO the next batch
+   * or the owner's final sweep takes. At least the twenty small deposits
+   * must be spent over the batches.
+   */
+  private async sweepFundsInBatches(step: number): Promise<void> {
+    const { agent } = this.actors;
+    const floor = await this.changeFloor();
+    const initial = (await this.fundsLargestFirst()).length;
+    let spent = 0;
+    for (let batch = 0; batch < Math.ceil(initial / SWEEP_BATCH); batch += 1) {
+      const funds = (await this.fundsLargestFirst()).slice(0, SWEEP_BATCH);
+      await this.confirm(step, `spendWithGrant sweeping ${funds.length} fund UTxOs to the funding wallet`, [agent], async () => {
+        const tx = await this.sweepOf(funds, floor, false);
+        const inputs = transactionBodyParts(tx).inputs.filter((input) => funds.some((utxo) => utxo.input.txId === input.txId && utxo.input.index === input.index));
+        if (inputs.length !== funds.length) {
+          throw new Error(`The sweep spends ${inputs.length} fund UTxOs instead of the ${funds.length} selected`);
+        }
+        spent += inputs.length;
+        return tx;
+      });
+    }
+    if (spent < SMALL_DEPOSIT_COUNT) {
+      throw new Error(`The sweeps spent ${spent} fund UTxOs, fewer than the ${SMALL_DEPOSIT_COUNT} deposits`);
+    }
+    console.log(`  the sweeps spent ${spent} fund UTxOs over ${Math.ceil(initial / SWEEP_BATCH)} transactions`);
+  }
+
+  /** Creation, deposits, the first owner spend and the stake operations of the owner device. */
+  private async basics(): Promise<void> {
+    const { funding, owner, ownerAddress, ownerKeyHash, poolId } = this.actors;
     const initialState: AccountState = { devices: [ownerKeyHash], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
 
     await this.confirm(1, 'createAccount sponsored by the funding wallet', [owner, funding], () =>
@@ -560,36 +803,82 @@ class Run {
       withdrawRewards({ ...this.ownerParams, amount: WITHDRAWN_LOVELACE }),
     );
     await this.confirm(6, `delegateStake to ${poolId} signed by the owner device`, [owner], () => delegateStake({ ...this.ownerParams, poolId }));
+  }
 
+  /** The lovelace grant: one spend within the caps, then the cap and recipient refusals by the builder and by the node. */
+  private async lovelaceGrant(): Promise<void> {
+    const { owner, agent, ownerAddress, agentAddress, agentKeyHash } = this.actors;
     await this.confirm(7, `issueGrant slot ${AGENT_GRANT_SLOT} to the agent`, [owner], () =>
       issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: this.scope(GRANT_LIFETIME_MS) }] }),
     );
     await this.confirm(8, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace to the owner`, [agent], () =>
-      this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
     );
     await this.refuseInBuilder(9, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace beyond the remaining cap`, () =>
-      this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
     );
     await this.refuseAtNode(10, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace beyond the remaining cap, unchecked`, [agent], () =>
-      this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
     );
     await this.refuseInBuilder(11, `spendWithGrant ${STRANGER_SPEND_LOVELACE} lovelace to an address outside the recipients`, () =>
-      this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, agentAddress, STRANGER_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, agentAddress, STRANGER_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
     );
     await this.refuseAtNode(12, `spendWithGrant ${STRANGER_SPEND_LOVELACE} lovelace to an address outside the recipients, unchecked`, [agent], () =>
-      this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, agentAddress, STRANGER_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, agentAddress, STRANGER_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
     );
-    await this.confirm(13, `revokeGrant slot ${AGENT_GRANT_SLOT}`, [owner], () => revokeGrant({ ...this.ownerParams, slot: AGENT_GRANT_SLOT }));
-    await this.refuseInBuilder(14, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant`, () =>
-      this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
-    );
-    await this.refuseAtNode(15, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant, unchecked`, [agent], () =>
-      this.grantSpend(AGENT_GRANT_SLOT, agentKeyHash, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
-    );
-    await this.confirm(16, `sweepGrant slot ${AGENT_GRANT_SLOT}`, [owner], () => sweepGrant({ ...this.ownerParams, slots: [AGENT_GRANT_SLOT] }));
+  }
 
+  /** The token grant: the funding wallet mints and deposits the tokens, the owner issues the grant, the agent is refused over the per call cap and then exhausts the cap. */
+  private async tokenGrant(): Promise<void> {
+    const { funding, owner, agent, agentKeyHash, record, tokenScript, token } = this.actors;
+    const assetId = `${token.policyId}${token.assetName}`;
+    await this.confirm(13, `mint ${TOKEN_SUPPLY} test tokens and deposit them into the account`, [funding], async () =>
+      (await funding.createTransactionBuilder())
+        .mintToken({ assetIdHex: assetId, amount: TOKEN_SUPPLY })
+        .addScript(tokenScript)
+        .sendValue({ address: record.address, value: { coins: TOKEN_DEPOSIT_LOVELACE, assets: { [assetId]: TOKEN_SUPPLY } } })
+        .build(),
+    );
+    await this.confirm(14, `issueGrant slot ${TOKEN_GRANT_SLOT} over the test token to the agent`, [owner], () =>
+      issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: this.tokenScope() }] }),
+    );
+    await this.refuseInBuilder(15, `spendWithGrant ${TOKEN_OVER_CAP} tokens beyond the per call cap`, () => this.tokenSpend(TOKEN_OVER_CAP));
+    await this.refuseAtNode(16, `spendWithGrant ${TOKEN_OVER_CAP} tokens beyond the per call cap, unchecked`, [agent], () =>
+      this.tokenSpend(TOKEN_OVER_CAP, true),
+    );
+    for (let call = 0; call < Number(TOKEN_CAP / TOKEN_PER_CALL_CAP); call += 1) {
+      await this.confirm(17, `spendWithGrant ${TOKEN_PER_CALL_CAP} tokens with ${TOKEN_SPEND_LOVELACE} lovelace to the recipient`, [agent], () =>
+        this.tokenSpend(TOKEN_PER_CALL_CAP),
+      );
+    }
+  }
+
+  /** The revoke that lands under a held agent spend, the refusals of the revoked grant, the generation bump and the sweep of both dead grants. */
+  private async revocation(): Promise<void> {
+    const { owner, agent, ownerAddress } = this.actors;
+    const held = await signedBy([agent], await this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, HELD_WINDOW_SLOTS));
+    console.log(`  the agent holds a signed spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace against slot ${AGENT_GRANT_SLOT}`);
+    await this.confirm(18, `revokeGrant slot ${AGENT_GRANT_SLOT} while the agent holds its signed spend`, [owner], () =>
+      revokeGrant({ ...this.ownerParams, slot: AGENT_GRANT_SLOT }),
+    );
+    await this.refuseInPhaseOne(18, `the held spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace`, agent, held);
+    await this.refuseInBuilder(19, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant`, () =>
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
+    );
+    await this.refuseAtNode(20, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant, unchecked`, [agent], () =>
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
+    );
+    await this.confirm(21, 'revokeAllGrants', [owner], () => revokeAllGrants(this.ownerParams));
+    await this.confirm(22, `sweepGrant slots ${AGENT_GRANT_SLOT} and ${TOKEN_GRANT_SLOT}`, [owner], () =>
+      sweepGrant({ ...this.ownerParams, slots: [AGENT_GRANT_SLOT, TOKEN_GRANT_SLOT] }),
+    );
+  }
+
+  /** The short lived grant: issued, left to expire, refused by the builder and the node, then swept. */
+  private async expiry(): Promise<void> {
+    const { owner, agent, ownerAddress, agentKeyHash } = this.actors;
     const shortScope = this.scope(SHORT_GRANT_LIFETIME_MS);
-    await this.confirm(17, `issueGrant slot ${SHORT_GRANT_SLOT} expiring in ${SHORT_GRANT_LIFETIME_MS / 1000n} seconds`, [owner], () =>
+    await this.confirm(23, `issueGrant slot ${SHORT_GRANT_SLOT} expiring in ${SHORT_GRANT_LIFETIME_MS / 1000n} seconds`, [owner], () =>
       issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: shortScope }] }),
     );
     const resumeAt = Number(shortScope.expiresAt) + EXPIRY_MARGIN_MS;
@@ -598,28 +887,127 @@ class Run {
       console.log(`  waiting ${Math.ceil(waitMs / 1000)} seconds for grant ${SHORT_GRANT_SLOT} to expire`);
       await sleep(waitMs);
     }
-    await this.refuseInBuilder(17, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant`, () =>
-      this.grantSpend(SHORT_GRANT_SLOT, agentKeyHash, ownerAddress, REVOKED_SPEND_LOVELACE, EXPIRED_WINDOW_SLOTS),
+    await this.refuseInBuilder(23, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant`, () =>
+      this.lovelaceSpend(SHORT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, EXPIRED_WINDOW_SLOTS),
     );
-    await this.refuseAtNode(18, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant, unchecked`, [agent], () =>
-      this.grantSpend(SHORT_GRANT_SLOT, agentKeyHash, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
+    await this.refuseAtNode(24, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant, unchecked`, [agent], () =>
+      this.lovelaceSpend(SHORT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
     );
-    await this.confirm(19, `sweepGrant slot ${SHORT_GRANT_SLOT} after its expiry`, [owner], () =>
+    await this.confirm(25, `sweepGrant slot ${SHORT_GRANT_SLOT} after its expiry`, [owner], () =>
       sweepGrant({ ...this.ownerParams, slots: [SHORT_GRANT_SLOT], validFromSlot: posixTimeToSlot(shortScope.expiresAt) + 1n }),
     );
+  }
 
-    await this.confirm(20, 'addDevice the agent wallet key', [owner], () => addDevice({ ...this.ownerParams, device: agentKeyHash }));
-    await this.confirm(20, `spendWithDevice ${NEW_DEVICE_SPEND_LOVELACE} lovelace signed by the new device`, [agent], () =>
+  /** Issues two batches of the largest grants to the agent, taking the next slots in order. */
+  private async issueLargestGrants(step: number): Promise<void> {
+    const { owner, agentKeyHash } = this.actors;
+    const scope = this.scope(GRANT_LIFETIME_MS, this.largestRecipients(), NEW_DEVICE_SPEND_LOVELACE, NEW_DEVICE_SPEND_LOVELACE);
+    const grants = Array.from({ length: GRANT_BATCH }, () => ({ grantee: agentKeyHash, scope }));
+    for (let batch = 0; batch < LARGEST_GRANTS / GRANT_BATCH; batch += 1) {
+      await this.confirm(step, `issueGrant ${GRANT_BATCH} grants with ${LARGEST_RECIPIENTS} recipients each`, [owner], () =>
+        issueGrant({ ...this.ownerParams, grants }),
+      );
+    }
+  }
+
+  /** Revokes the given slots one transaction at a time. */
+  private async revokeSlots(step: number, slots: bigint[]): Promise<void> {
+    const { owner } = this.actors;
+    for (const slot of slots) {
+      await this.confirm(step, `revokeGrant slot ${slot}`, [owner], () => revokeGrant({ ...this.ownerParams, slot }));
+    }
+  }
+
+  /** Sweeps the given dead slots in batches of eight. */
+  private async sweepSlots(step: number, slots: bigint[]): Promise<void> {
+    const { owner } = this.actors;
+    for (let start = 0; start < slots.length; start += GRANT_BATCH) {
+      const batch = slots.slice(start, start + GRANT_BATCH);
+      await this.confirm(step, `sweepGrant slots ${batch[0]} to ${batch[batch.length - 1]}`, [owner], () =>
+        sweepGrant({ ...this.ownerParams, slots: batch }),
+      );
+    }
+  }
+
+  /**
+   * Builds the largest state the validators admit and rewrites it: seven
+   * devices are added, sixteen largest grants are issued, revoked one by
+   * one and swept, sixteen more are issued and revoked one by one, which
+   * fills the revoked list, then the state is rewritten with one rotation
+   * key replaced and the sixteen dead grants are swept.
+   */
+  private async largestState(): Promise<void> {
+    const { owner, agentKeyHash, rotation } = this.actors;
+    const added = [agentKeyHash, ...rotation.slice(0, ROTATION_KEYS).map((keyed) => keyed.keyHash)];
+    for (const device of added) {
+      await this.confirm(26, `addDevice ${device}`, [owner], () => addDevice({ ...this.ownerParams, device }));
+    }
+    const firstRound = slotsFrom(FIRST_LARGEST_SLOT, LARGEST_GRANTS);
+    const secondRound = slotsFrom(FIRST_LARGEST_SLOT + BigInt(LARGEST_GRANTS), LARGEST_GRANTS);
+    await this.issueLargestGrants(27);
+    await this.revokeSlots(28, firstRound);
+    await this.sweepSlots(29, firstRound);
+    await this.issueLargestGrants(30);
+    await this.revokeSlots(31, secondRound);
+
+    const retired = rotation[ROTATION_KEYS - 1]?.keyHash;
+    const replacement = rotation[ROTATION_KEYS]?.keyHash;
+    if (retired === undefined || replacement === undefined) {
+      throw new Error(`The run needs ${ROTATION_KEYS + 1} rotation keys`);
+    }
+    await this.confirm(32, `rewriteState replacing device ${retired} with ${replacement}`, [owner], async () => {
+      const { state } = await findAccountUtxos(this.actors.provider, this.ownerParams);
+      return rewriteState({ ...this.ownerParams, newState: { ...state, devices: state.devices.map((device) => (device === retired ? replacement : device)) } });
+    });
+    await this.sweepSlots(33, secondRound);
+  }
+
+  /** The agent device spends and withdraws from the persisted record, then the funding wallet deposits twenty UTxOs the agent sweeps under a wide grant, in batches after one whole sweep is shown over the limit. */
+  private async agentDeviceAndSweep(): Promise<void> {
+    const { funding, owner, agent, ownerAddress, fundingAddress, agentKeyHash, record } = this.actors;
+    await this.confirm(34, `spendWithDevice ${NEW_DEVICE_SPEND_LOVELACE} lovelace signed by the agent device`, [agent], () =>
       spendWithDevice({ ...this.agentParams, outputs: [{ address: ownerAddress, value: { coins: NEW_DEVICE_SPEND_LOVELACE } }] }),
     );
-    await this.confirm(21, `withdrawRewards ${WITHDRAWN_LOVELACE} lovelace signed by the new device`, [agent], () =>
+    await this.confirm(35, `withdrawRewards ${WITHDRAWN_LOVELACE} lovelace signed by the agent device`, [agent], () =>
       withdrawRewards({ ...this.agentParams, amount: WITHDRAWN_LOVELACE }),
     );
-    await this.confirm(22, 'removeDevice the agent wallet key', [owner], () => removeDevice({ ...this.ownerParams, device: agentKeyHash }));
-    await this.confirm(23, 'revokeAllGrants', [owner], () => revokeAllGrants(this.ownerParams));
-    await this.confirm(24, 'spendWithDevice sweeping every fund and reserve UTxO to the funding wallet, sponsored by it', [owner, funding], () =>
+    await this.confirm(36, `deposit ${SMALL_DEPOSIT_COUNT} UTxOs of ${SMALL_DEPOSIT_LOVELACE} lovelace from the funding wallet`, [funding], async () => {
+      const builder = await funding.createTransactionBuilder();
+      for (let index = 0; index < SMALL_DEPOSIT_COUNT; index += 1) {
+        builder.sendLovelace({ address: record.address, amount: SMALL_DEPOSIT_LOVELACE });
+      }
+      return builder.build();
+    });
+    await this.confirm(37, `issueGrant slot ${SWEEP_GRANT_SLOT} to the agent paying the funding wallet`, [owner], () =>
+      issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: this.scope(GRANT_LIFETIME_MS, [fundingAddress], SWEEP_GRANT_CAP, SWEEP_GRANT_CAP) }] }),
+    );
+    await this.refuseInBuilder(38, 'spendWithGrant over every fund UTxO at once', () => this.measureWholeSweep());
+    await this.sweepFundsInBatches(39);
+  }
+
+  /** Removes the agent key and the rotation keys, then sweeps the account to its control UTxO. */
+  private async teardown(): Promise<void> {
+    const { owner, funding, agentKeyHash, rotation } = this.actors;
+    await this.confirm(40, 'removeDevice the agent wallet key', [owner], () => removeDevice({ ...this.ownerParams, device: agentKeyHash }));
+    const { state } = await findAccountUtxos(this.actors.provider, this.ownerParams);
+    for (const device of rotation.map((keyed) => keyed.keyHash).filter((keyHash) => state.devices.includes(keyHash))) {
+      await this.confirm(41, `removeDevice ${device}`, [owner], () => removeDevice({ ...this.ownerParams, device }));
+    }
+    await this.confirm(42, 'spendWithDevice sweeping every fund and reserve UTxO to the funding wallet, sponsored by it', [owner, funding], () =>
       this.sweepAccount(),
     );
+  }
+
+  /** Executes the flows of the plan in order. */
+  async flows(): Promise<void> {
+    await this.basics();
+    await this.lovelaceGrant();
+    await this.tokenGrant();
+    await this.revocation();
+    await this.expiry();
+    await this.largestState();
+    await this.agentDeviceAndSweep();
+    await this.teardown();
   }
 }
 
@@ -646,8 +1034,7 @@ const main = async (): Promise<void> => {
     mnemonics = Cometa.entropyToMnemonic(randomBytes(32));
     storeMnemonic(mnemonics);
   }
-  const funding = await walletOf(provider, mnemonics, 0);
-  const fundingAddress = (await funding.getChangeAddress()).toString();
+  const { wallet: funding, address: fundingAddress, keyHash: fundingKeyHash } = await keyedWalletOf(provider, mnemonics, 0, 'funding');
   if (generated) {
     askForFunds(fundingAddress);
   }
@@ -657,54 +1044,65 @@ const main = async (): Promise<void> => {
   }
 
   const scriptHash = accountScriptHash(accountScript());
-  const { owner, ownerAddress, ownerKeyHash, stakeCredential, reward } = await freshOwner(provider, projectId, mnemonics, scriptHash);
+  const { owner, ownerAccount, ownerAddress, ownerKeyHash, stakeCredential, reward } = await freshOwner(provider, projectId, mnemonics, scriptHash);
   const address = accountAddress(scriptHash, stakeCredential).toString();
   const discovered = accountByOwner(ownerKeyHash);
   if (discovered.address !== address || discovered.stakeScriptHash !== stakeCredential || discovered.rewardAddress !== reward) {
     throw new Error('Account discovery from the owner key disagrees with the derived account');
   }
   const record: AccountRecord = { owner: discovered.owner, stakeScriptHash: discovered.stakeScriptHash, address: discovered.address };
-  const agent = await walletOf(provider, mnemonics, AGENT_ACCOUNT);
-  const agentAddress = (await agent.getChangeAddress()).toString();
-  const agentKeyHash = paymentKeyHashOf(agentAddress);
-  if (!agentKeyHash) {
-    throw new Error('The agent wallet did not derive a key address');
+  const { wallet: agent, address: agentAddress, keyHash: agentKeyHash } = await keyedWalletOf(provider, mnemonics, ownerAccount + AGENT_OFFSET, 'agent');
+  const { wallet: recipient, address: recipientAddress } = await keyedWalletOf(provider, mnemonics, ownerAccount + RECIPIENT_OFFSET, 'recipient');
+  const rotation: Keyed[] = [];
+  for (let index = 0; index <= ROTATION_KEYS; index += 1) {
+    rotation.push(await keyedWalletOf(provider, mnemonics, ownerAccount + ROTATION_OFFSET + index, `rotation ${index + 1}`));
   }
+  const tokenScript: NativeScript = { type: Cometa.ScriptType.Native, kind: Cometa.NativeScriptKind.RequireSignature, keyHash: fundingKeyHash };
+  const token: Asset = { policyId: Cometa.computeScriptHash(tokenScript), assetName: TOKEN_NAME_HEX };
   const poolId = await firstActivePool(projectId);
   const actors: Actors = {
     provider,
+    projectId,
     funding,
     owner,
     agent,
+    recipient,
     fundingAddress,
     ownerAddress,
     agentAddress,
+    recipientAddress,
     ownerKeyHash,
     agentKeyHash,
+    rotation,
     record,
     poolId,
+    tokenScript,
+    token,
   };
 
   const run = new Run(actors);
   console.log(`Funding address: ${fundingAddress}`);
   console.log(`Owner address: ${ownerAddress}`);
   console.log(`Agent address: ${agentAddress}`);
+  console.log(`Recipient address: ${recipientAddress}`);
   console.log(`Account address: ${address}`);
   console.log(`Account script hash: ${scriptHash}`);
   console.log(`Account stake credential: ${stakeCredential}`);
   console.log(`Reward address: ${reward}`);
   console.log(`Delegation pool: ${poolId}`);
+  console.log(`Test token policy id: ${token.policyId}`);
 
   await run.fundOwnerCollateral();
   await run.fundAgentWallet();
   await run.flows();
   await run.sweepAgentWallet();
   await run.sweepOwnerWallet();
+  await run.sweepRecipientWallet();
 
   const remaining = await provider.getUnspentOutputs(address);
   const live = await accountExists(provider, record);
   if (remaining.length !== 1 || !live || live.state.devices.length !== 1) {
-    throw new Error(`The account address should hold only its control UTxO after the sweep but holds ${remaining.length} UTxOs`);
+    throw new Error(`The account address should hold only its control UTxO with the owner device after the sweep but holds ${remaining.length} UTxOs`);
   }
   if (!(await isStakeCredentialRegistered(projectId, reward))) {
     throw new Error(`Blockfrost no longer lists ${reward} as registered`);
@@ -717,11 +1115,14 @@ const main = async (): Promise<void> => {
       date: new Date().toISOString().slice(0, 10),
       fundingAddress,
       ownerAddress,
+      agentAddress,
+      recipientAddress,
       accountAddress: address,
       scriptHash,
       stakeScriptHash: stakeCredential,
       rewardAddress: reward,
       poolId,
+      tokenPolicyId: token.policyId,
       records: run.records,
       supporting: run.supporting,
     }),
