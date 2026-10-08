@@ -37,6 +37,7 @@ use cardano/transaction.{
   DatumHash, InlineDatum, Input, NoDatum, Output, Transaction,
 }
 use cardano_account_custody_contract/account as custody
+use cardano_account_custody_contract/state
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
   grant_datum, grant_output, grant_token, grant_value, input,
@@ -56,6 +57,15 @@ const expiry = 1_800_000_000_000
 
 /// The key hash of a party that holds no device, owner or grantee key.
 const attacker_key = #"00000000000000000000000000000000000000000000000000000007"
+
+/// The slot of the largest lovelace grant: past the revoked list of the
+/// largest state, which fills slots 1 to `max_revoked`, with the largest
+/// token grant one slot below it.
+const largest_grant_slot = state.max_revoked + 7
+
+/// The next slot of the largest state, the first an issuance over it
+/// takes.
+const largest_next_slot = largest_grant_slot + 1
 
 // FUNCTIONS *******************************************************************
 
@@ -697,8 +707,8 @@ fn stray_nft_burn_transaction() -> Transaction {
 }
 
 /// The grantee recreates its grant UTxO with its own cap raised. The
-/// recreated grant must equal the spent one with only the remaining caps
-/// reduced.
+/// recreated grant must keep every field of the spent one but the
+/// remaining caps, which may only fall, by at least the outflow.
 test attack_datum_hijacking_grant_spend_raises_its_own_cap() {
   !spend_lovelace_grant(
     lovelace_grant(),
@@ -2118,15 +2128,15 @@ test attack_resource_exhaustion_reference_script_on_a_returned_deposit() {
   )
 }
 
-/// The largest control state the validator admits: eight devices, thirty
-/// two revoked slots, sixteen outstanding grants and a generation past
-/// zero.
+/// The largest control state the validator admits: eight devices,
+/// `max_revoked` revoked slots from 1 up, sixteen outstanding grants and
+/// a generation past zero. The next slot follows the largest grants.
 fn largest_state() -> AccountState {
   AccountState {
     devices: keys(8),
     grant_generation: 1,
-    next_slot: 40,
-    revoked: list.range(1, 32),
+    next_slot: largest_next_slot,
+    revoked: list.range(1, state.max_revoked),
     outstanding: 16,
   }
 }
@@ -2140,22 +2150,22 @@ fn largest_scope(scope: Scope) -> Scope {
   }
 }
 
-/// The largest lovelace grant: slot 39, eight recipients, issued under the
-/// current generation.
+/// The largest lovelace grant: the largest grant slot, eight recipients,
+/// issued under the current generation.
 fn largest_lovelace_grant() -> Grant {
   Grant {
-    slot: 39,
+    slot: largest_grant_slot,
     grantee: stranger_key,
     generation: 1,
     scope: largest_scope(lovelace_scope()),
   }
 }
 
-/// The largest token grant: slot 38, eight recipients, issued under the
-/// current generation.
+/// The largest token grant: the slot below the largest grant slot, eight
+/// recipients, issued under the current generation.
 fn largest_token_grant() -> Grant {
   Grant {
-    slot: 38,
+    slot: largest_grant_slot - 1,
     grantee: stranger_key,
     generation: 1,
     scope: largest_scope(token_scope()),
@@ -2281,12 +2291,13 @@ test budget_largest_state_fund_spend_among_eight_deposits() {
   spend(None, Fund, 8, largest_state_grant_transaction())
 }
 
-/// A revoke over the full revoked list: the oldest slot is dropped to
-/// make room, as the owner would before bumping the generation.
+/// A revoke of the largest lovelace grant over the full revoked list: the
+/// oldest slot is dropped to make room, as the owner would before bumping
+/// the generation.
 fn largest_state_device_revoke_transaction() -> Transaction {
   let next = AccountState {
     ..largest_state(),
-    revoked: list.concat(list.range(2, 32), [39]),
+    revoked: list.concat(list.range(2, state.max_revoked), [largest_grant_slot]),
   }
   transaction(
     [input(0, control_output(largest_state(), 2_000_000))],
@@ -2400,15 +2411,19 @@ test budget_largest_state_delegation() {
 
 /// An issuance at the largest state once one grant has been swept, so
 /// that a sixteenth may be issued: the control UTxO in and out and one
-/// grant UTxO with eight recipients.
+/// grant UTxO of the next slot with eight recipients.
 fn largest_state_issue_transaction() -> Transaction {
   let current = AccountState { ..largest_state(), outstanding: 15 }
-  let next = AccountState { ..current, next_slot: 41, outstanding: 16 }
-  let grant = Grant { ..largest_lovelace_grant(), slot: 40 }
+  let next = AccountState {
+    ..current,
+    next_slot: largest_next_slot + 1,
+    outstanding: 16,
+  }
+  let grant = Grant { ..largest_lovelace_grant(), slot: largest_next_slot }
   transaction(
     [input(0, control_output(current, 2_000_000))],
     [control_output(next, 2_000_000), grant_output(grant, 2_000_000)],
-    grant_token(stake_script_hash, 40),
+    grant_token(stake_script_hash, largest_next_slot),
     [key(8)],
     interval.everything,
   )
@@ -2429,13 +2444,13 @@ test budget_largest_state_issue_grants() {
 
 /// An issuance of `count` grants at once over the largest state with no
 /// grant outstanding: the control UTxO in and out and `count` grant UTxOs
-/// of slots 40 up with eight recipients each.
+/// from the next slot up with eight recipients each.
 fn largest_state_grant_issue_transaction(count: Int) -> Transaction {
-  let slots = list.range(40, 39 + count)
+  let slots = list.range(largest_next_slot, largest_next_slot + count - 1)
   let current = AccountState { ..largest_state(), outstanding: 0 }
   let next = AccountState {
     ..current,
-    next_slot: 40 + count,
+    next_slot: largest_next_slot + count,
     outstanding: count,
   }
   transaction(

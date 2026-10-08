@@ -2197,17 +2197,27 @@ fn spend_lovelace_with_fee(fee: Int, lovelace: Int, after: Grant) -> Bool {
 /// is the payout plus the fee.
 test spend_with_grant_charges_a_fee_paid_by_the_account_against_the_cap() {
   spend_lovelace_with_fee(
-    1_000_000,
+    500_000,
     2_000_000,
-    with_caps(lovelace_grant(), 2_000_000, 0),
+    with_caps(lovelace_grant(), 2_500_000, 0),
   )
 }
 
 test spend_with_grant_rejects_a_cap_decrement_that_leaves_out_the_fee() {
   !spend_lovelace_with_fee(
-    1_000_000,
+    500_000,
     2_000_000,
     with_caps(lovelace_grant(), 3_000_000, 0),
+  )
+}
+
+/// A builder may charge the cap for a fee estimate above the fee it ends
+/// up paying, so the grant output need not depend on the exact fee.
+test spend_with_grant_accepts_a_cap_decrement_beyond_the_fee() {
+  spend_lovelace_with_fee(
+    500_000,
+    2_000_000,
+    with_caps(lovelace_grant(), 2_000_000, 0),
   )
 }
 
@@ -2317,6 +2327,51 @@ test spend_with_grant_rejects_a_lovelace_cap_decrement_that_leaves_out_the_fee()
     1_000_000,
     with_caps(token_grant(), 40, 1_000_000),
   )
+}
+
+/// Whether the token grant pays 10 tokens and 1 ADA to the recipient,
+/// handing back a grant output with `cap` and `lovelace_cap` remaining;
+/// the outflow leaves 40 tokens and 1 ADA.
+fn spend_token_recapped(cap: Int, lovelace_cap: Int) -> Bool {
+  spend_token(
+    [
+      grant_output(with_caps(token_grant(), cap, lovelace_cap), 2_000_000),
+      change(assets.merge(assets.from_lovelace(9_000_000), token(10))),
+      output(
+        recipient_address(),
+        assets.merge(assets.from_lovelace(1_000_000), token(10)),
+        NoDatum,
+      ),
+    ],
+  )
+}
+
+test spend_with_grant_accepts_a_token_cap_decremented_below_the_outflow() {
+  spend_token_recapped(30, 1_000_000)
+}
+
+test spend_with_grant_accepts_a_lovelace_cap_decremented_below_the_outflow() {
+  spend_token_recapped(40, 500_000)
+}
+
+test spend_with_grant_accepts_both_caps_decremented_below_the_outflow() {
+  spend_token_recapped(39, 999_999)
+}
+
+test spend_with_grant_rejects_a_token_cap_one_above_the_outflow_decrement() {
+  !spend_token_recapped(41, 1_000_000)
+}
+
+test spend_with_grant_rejects_a_lovelace_cap_one_above_the_outflow_decrement() {
+  !spend_token_recapped(40, 1_000_001)
+}
+
+test spend_with_grant_rejects_a_negative_token_cap() {
+  !spend_token_recapped(-1, 1_000_000)
+}
+
+test spend_with_grant_rejects_a_negative_lovelace_cap() {
+  !spend_token_recapped(40, -1)
 }
 
 test spend_with_grant_rejects_a_foreign_asset_leaving() {
@@ -2438,7 +2493,7 @@ test spend_with_grant_rejects_a_cap_raised_by_a_net_deposit() {
   !spend_with_agent_deposit(with_caps(lovelace_grant(), 9_000_000, 0))
 }
 
-test spend_with_grant_rejects_a_wrong_cap_decrement() {
+test spend_with_grant_rejects_a_cap_decrement_short_of_the_outflow() {
   !spend_lovelace(
     interval.before(expiry - 1),
     [
@@ -2479,6 +2534,22 @@ fn rewritten_spend(after: Grant) -> Bool {
     ],
     [stranger_key],
   )
+}
+
+test spend_with_grant_accepts_a_cap_decremented_below_the_outflow() {
+  rewritten_spend(with_caps(lovelace_grant(), 2_500_000, 0))
+}
+
+test spend_with_grant_accepts_a_cap_decremented_to_zero() {
+  rewritten_spend(with_caps(lovelace_grant(), 0, 0))
+}
+
+test spend_with_grant_rejects_a_cap_one_lovelace_above_the_outflow_decrement() {
+  !rewritten_spend(with_caps(lovelace_grant(), 3_000_001, 0))
+}
+
+test spend_with_grant_rejects_a_negative_cap() {
+  !rewritten_spend(with_caps(lovelace_grant(), -1, 0))
 }
 
 test spend_with_grant_rejects_a_changed_generation() {

@@ -24,7 +24,7 @@ use cardano/transaction.{
 }
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/grant.{
-  carries_grant, carries_no_reference_script, deposits_are_plain,
+  carries_grant_within, carries_no_reference_script, deposits_are_plain,
   ends_before_expiry, grant_after_spend, is_authorised_by_grantee, is_current,
   is_dead, leaving_value, pays_only_recipients, referenced_control,
   spends_one_account_token, stays_within_scope,
@@ -71,9 +71,10 @@ use cardano_account_custody_contract/types.{
 /// ends before the grant expires; the leaving value stays within the scope
 /// caps; outputs away from the account go to allowed recipients; deposits
 /// paid back are plain; placement holds; the single grant output sits at
-/// the same address with the same value, carries the grant with its
-/// remaining caps reduced by what left and no reference script; nothing is
-/// minted under the policy. Placement already pins the grant output to the
+/// the same address with the same value, carries the grant with every
+/// field as spent but its remaining caps, each reduced by at least what
+/// left and never below zero, and no reference script; nothing is minted
+/// under the policy. Placement already pins the grant output to the
 /// account address, so the address rule on it is defence in depth.
 /// `SweepGrant`: the UTxO is a grant UTxO, the control UTxO is spent and a
 /// device signs, the grant is dead and its token is burned. See README,
@@ -245,7 +246,7 @@ validator account {
           custody.tokens_sit_at_their_own_addresses(self.outputs, script_hash),
           grant_output.address == address,
           grant_output.value == own.output.value,
-          carries_grant(grant_output, grant_after_spend(grant, leaving)),
+          carries_grant_within(grant_output, grant_after_spend(grant, leaving)),
           carries_no_reference_script(grant_output),
           custody.holds_no_account_token(self.mint, script_hash),
         }

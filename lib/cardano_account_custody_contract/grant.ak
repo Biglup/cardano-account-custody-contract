@@ -237,10 +237,42 @@ fn scope_after_spend(scope: Scope, leaving: Assets) -> Scope {
   }
 }
 
-/// Whether the output's inline datum equals the expected grant as data.
-pub fn carries_grant(output: Output, expected: Grant) -> Bool {
-  let data: Data = expected
-  output.datum == InlineDatum(data)
+/// Whether the output's inline datum is a grant within `expected`, the
+/// grant after the spend: every field equal but the remaining caps, each
+/// at most the expected one and at least zero. The fee is part of the
+/// outflow, so an exact datum would depend on the execution units a
+/// builder only learns by evaluating the transaction; a grantee that
+/// decrements its own caps further costs itself headroom and nothing
+/// else, and caps still never increase. A datum given by hash or missing
+/// never passes.
+pub fn carries_grant_within(output: Output, expected: Grant) -> Bool {
+  when output.datum is {
+    InlineDatum(data) -> {
+      expect actual: Grant = data
+      is_grant_within(actual, expected)
+    }
+    _ -> False
+  }
+}
+
+/// Whether `actual` is `expected` with its remaining caps lowered, each
+/// no further than zero: slot, grantee, generation, asset, per call caps,
+/// expiry and recipients are equal.
+fn is_grant_within(actual: Grant, expected: Grant) -> Bool {
+  and {
+    Grant {
+      ..actual,
+      scope: Scope {
+        ..actual.scope,
+        cap: expected.scope.cap,
+        lovelace_cap: expected.scope.lovelace_cap,
+      },
+    } == expected,
+    actual.scope.cap >= 0,
+    actual.scope.cap <= expected.scope.cap,
+    actual.scope.lovelace_cap >= 0,
+    actual.scope.lovelace_cap <= expected.scope.lovelace_cap,
+  }
 }
 
 /// Whether the output carries no reference script. See README, Agent spend

@@ -22,7 +22,7 @@ use cardano/address
 use cardano/assets.{Assets}
 use cardano/transaction.{DatumHash, InlineDatum, NoDatum, Output}
 use cardano_account_custody_contract/grant.{
-  carries_grant, carries_no_reference_script, deposits_are_plain,
+  carries_grant_within, carries_no_reference_script, deposits_are_plain,
   ends_before_expiry, grant_after_spend, is_authorised_by_grantee, is_current,
   is_dead, leaving_value, pays_only_recipients, quantity_of_asset,
   referenced_control, spends_one_account_token, starts_after_expiry,
@@ -36,6 +36,13 @@ use cardano_account_custody_contract/test_helpers.{
   stake_script_hash, state_datum, stranger_key,
 }
 use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
+
+// CONSTANTS *******************************************************************
+
+/// The first slot above the range the revoked slots are drawn from, which
+/// runs from zero to `max_revoked` plus seven so that a full revoked list
+/// always has room.
+const first_live_slot = state.max_revoked + 8
 
 // FUNCTIONS *******************************************************************
 
@@ -85,6 +92,17 @@ fn lovelace_scope() -> Scope {
     asset: lovelace_asset(),
     per_call_cap: 3_000_000,
     cap: 5_000_000,
+    lovelace_per_call_cap: 0,
+    lovelace_cap: 0,
+  }
+}
+
+/// The token scope with every cap at zero.
+fn empty_scope() -> Scope {
+  Scope {
+    ..token_scope(),
+    per_call_cap: 0,
+    cap: 0,
     lovelace_per_call_cap: 0,
     lovelace_cap: 0,
   }
@@ -151,28 +169,89 @@ fn scope_fuzzer() -> Fuzzer<Scope> {
   }
 }
 
-/// A leaving value of lovelace and native asset quantities drawn from
-/// -150 to 150, so that deposits, outflows within the caps and outflows
-/// beyond them all occur.
-fn leaving_fuzzer() -> Fuzzer<Assets> {
-  let lovelace <- fuzz.and_then(fuzz.int_between(-150, 150))
-  let tokens <- fuzz.map(fuzz.int_between(-150, 150))
+/// A quantity drawn from -150 to 150, or exactly one of `caps` half of
+/// the time, so that the boundaries fall under the properties.
+fn quantity_fuzzer(caps: List<Int>) -> Fuzzer<Int> {
+  fuzz.either(fuzz.int_between(-150, 150), fuzz.one_of(caps))
+}
+
+/// A leaving value whose lovelace and native asset quantities each land
+/// anywhere from a deposit to beyond the caps of `scope`, or exactly on
+/// one of the caps that bound that asset.
+fn outflow_fuzzer(scope: Scope) -> Fuzzer<Assets> {
+  let lovelace_caps = if state.is_lovelace(scope.asset) {
+    [scope.per_call_cap, scope.cap]
+  } else {
+    [scope.lovelace_per_call_cap, scope.lovelace_cap]
+  }
+  let lovelace <- fuzz.and_then(quantity_fuzzer(lovelace_caps))
+  let tokens <- fuzz.map(quantity_fuzzer([scope.per_call_cap, scope.cap]))
   leaving(lovelace, tokens)
+}
+
+/// A scope and an outflow drawn against it.
+fn scope_and_outflow_fuzzer() -> Fuzzer<(Scope, Assets)> {
+  let scope <- fuzz.and_then(scope_fuzzer())
+  let outflow <- fuzz.map(outflow_fuzzer(scope))
+  (scope, outflow)
 }
 
 /// A scope, an outflow and a second outflow with no more of either asset
 /// leaving than the first.
 fn smaller_outflow_fuzzer() -> Fuzzer<(Scope, Assets, Assets)> {
   let scope <- fuzz.and_then(scope_fuzzer())
-  let lovelace <- fuzz.and_then(fuzz.int_between(-150, 150))
-  let tokens <- fuzz.and_then(fuzz.int_between(-150, 150))
+  let outflow <- fuzz.and_then(outflow_fuzzer(scope))
   let less_lovelace <- fuzz.and_then(fuzz.int_between(0, 50))
   let less_tokens <- fuzz.map(fuzz.int_between(0, 50))
   (
     scope,
-    leaving(lovelace, tokens),
-    leaving(lovelace - less_lovelace, tokens - less_tokens),
+    outflow,
+    leaving(
+      assets.lovelace_of(outflow) - less_lovelace,
+      quantity_of_asset(outflow, token_asset()) - less_tokens,
+    ),
   )
+}
+
+/// A grant after a spend and the same grant with each remaining cap
+/// lowered to anywhere from zero up to the expected value.
+fn lowered_grant_fuzzer() -> Fuzzer<(Grant, Grant)> {
+  let scope <- fuzz.and_then(scope_fuzzer())
+  let cap <- fuzz.and_then(fuzz.int_between(0, scope.cap))
+  let lovelace_cap <- fuzz.map(fuzz.int_between(0, scope.lovelace_cap))
+  let expected = Grant { ..token_grant(), scope }
+  (expected, Grant { ..expected, scope: Scope { ..scope, cap, lovelace_cap } })
+}
+
+/// A grant after a spend and the same grant with one remaining cap moved
+/// above the expected value or below zero.
+fn strayed_grant_fuzzer() -> Fuzzer<(Grant, Grant)> {
+  let scope <- fuzz.and_then(scope_fuzzer())
+  let on_lovelace <- fuzz.and_then(fuzz.bool())
+  let stray <- fuzz.map(
+    fuzz.either(fuzz.int_between(1, 50), fuzz.int_between(-50, -1)),
+  )
+  let expected = Grant { ..token_grant(), scope }
+  let strayed = if on_lovelace {
+    Scope {
+      ..scope,
+      lovelace_cap: if stray > 0 {
+        scope.lovelace_cap + stray
+      } else {
+        stray
+      },
+    }
+  } else {
+    Scope {
+      ..scope,
+      cap: if stray > 0 {
+        scope.cap + stray
+      } else {
+        stray
+      },
+    }
+  }
+  (expected, Grant { ..expected, scope: strayed })
 }
 
 /// A value of some lovelace and up to five tokens under random policies
@@ -201,12 +280,16 @@ fn value_fuzzer() -> Fuzzer<Assets> {
 }
 
 /// A state of a random generation with one to `max_revoked` distinct
-/// revoked slots below 40, and a grant of one of those slots issued under
-/// that generation or an older one.
+/// revoked slots below `first_live_slot`, and a grant of one of those
+/// slots issued under that generation or an older one.
 fn revoked_grant_fuzzer() -> Fuzzer<(AccountState, Grant)> {
   let grant_generation <- fuzz.and_then(fuzz.int_between(0, 5))
   let revoked <- fuzz.and_then(
-    fuzz.set_between(fuzz.int_between(0, 39), 1, state.max_revoked),
+    fuzz.set_between(
+      fuzz.int_between(0, first_live_slot - 1),
+      1,
+      state.max_revoked,
+    ),
   )
   let picked <- fuzz.and_then(fuzz.pick(revoked))
   let generation <- fuzz.map(fuzz.int_between(0, grant_generation))
@@ -215,7 +298,7 @@ fn revoked_grant_fuzzer() -> Fuzzer<(AccountState, Grant)> {
     AccountState {
       ..state(),
       grant_generation,
-      next_slot: 40,
+      next_slot: first_live_slot,
       revoked,
       outstanding: 16,
     },
@@ -224,19 +307,24 @@ fn revoked_grant_fuzzer() -> Fuzzer<(AccountState, Grant)> {
 }
 
 /// A state of a random generation with up to `max_revoked` distinct
-/// revoked slots below 40, and a grant of a slot from 40 up issued under
-/// that generation, so that nothing makes it dead but time.
+/// revoked slots below `first_live_slot`, and a grant of a slot from
+/// `first_live_slot` up issued under that generation, so that nothing
+/// makes it dead but time.
 fn live_grant_fuzzer() -> Fuzzer<(AccountState, Grant)> {
   let grant_generation <- fuzz.and_then(fuzz.int_between(0, 5))
   let revoked <- fuzz.and_then(
-    fuzz.set_between(fuzz.int_between(0, 39), 0, state.max_revoked),
+    fuzz.set_between(
+      fuzz.int_between(0, first_live_slot - 1),
+      0,
+      state.max_revoked,
+    ),
   )
-  let slot <- fuzz.map(fuzz.int_between(40, 60))
+  let slot <- fuzz.map(fuzz.int_between(first_live_slot, first_live_slot + 20))
   (
     AccountState {
       ..state(),
       grant_generation,
-      next_slot: 61,
+      next_slot: first_live_slot + 21,
       revoked,
       outstanding: 16,
     },
@@ -583,15 +671,9 @@ test stays_within_scope_is_monotone_in_the_outflow(
 
 /// A scope with zero caps admits nothing but deposits.
 test stays_within_scope_with_zero_caps_admits_only_deposits(
-  outflow via leaving_fuzzer(),
+  outflow via outflow_fuzzer(empty_scope()),
 ) {
-  let empty = Scope {
-    ..token_scope(),
-    per_call_cap: 0,
-    cap: 0,
-    lovelace_per_call_cap: 0,
-    lovelace_cap: 0,
-  }
+  let empty = empty_scope()
   stays_within_scope(empty, outflow) == (
     assets.lovelace_of(outflow) <= 0 && quantity_of_asset(
       outflow,
@@ -800,9 +882,7 @@ test grant_after_spend_reduces_the_caps_to_zero_on_an_exact_spend() {
   }
 }
 
-test grant_after_spend_never_raises_a_cap(
-  case via fuzz.both(scope_fuzzer(), leaving_fuzzer()),
-) {
+test grant_after_spend_never_raises_a_cap(case via scope_and_outflow_fuzzer()) {
   let (scope, outflow) = case
   let grant = Grant { ..token_grant(), scope }
   let after = grant_after_spend(grant, outflow)
@@ -818,7 +898,7 @@ test grant_after_spend_never_raises_a_cap(
 }
 
 test grant_after_spend_changes_nothing_but_the_remaining_caps(
-  case via fuzz.both(scope_fuzzer(), leaving_fuzzer()),
+  case via scope_and_outflow_fuzzer(),
 ) {
   let (scope, outflow) = case
   let grant = Grant { ..token_grant(), scope }
@@ -836,7 +916,7 @@ test grant_after_spend_changes_nothing_but_the_remaining_caps(
 /// A spend the scope admits leaves the remaining caps non negative, so a
 /// grant never carries a negative cap.
 test grant_after_spend_keeps_the_caps_non_negative_within_scope(
-  case via fuzz.both(scope_fuzzer(), leaving_fuzzer()),
+  case via scope_and_outflow_fuzzer(),
 ) {
   let (scope, outflow) = case
   let within = stays_within_scope(scope, outflow)
@@ -845,22 +925,131 @@ test grant_after_spend_keeps_the_caps_non_negative_within_scope(
   !within || after.scope.cap >= 0 && after.scope.lovelace_cap >= 0
 }
 
-test carries_grant_accepts_the_matching_inline_datum() {
-  carries_grant(grant_output(lovelace_grant(), 1), lovelace_grant())
+/// The token grant with its remaining caps replaced.
+fn recapped(cap: Int, lovelace_cap: Int) -> Grant {
+  Grant { ..token_grant(), scope: Scope { ..token_scope(), cap, lovelace_cap } }
 }
 
-test carries_grant_rejects_a_different_grant() {
-  let changed = Grant { ..lovelace_grant(), generation: 2 }
-  !carries_grant(grant_output(lovelace_grant(), 1), changed)
+/// Whether the grant output carrying `actual` passes as the token grant
+/// after a spend expecting `expected`.
+fn carries_within(actual: Grant, expected: Grant) -> Bool {
+  carries_grant_within(grant_output(actual, 1), expected)
 }
 
-test carries_grant_rejects_a_datum_given_by_hash() {
+test carries_grant_within_accepts_the_expected_grant() {
+  carries_within(token_grant(), token_grant())
+}
+
+test carries_grant_within_accepts_a_lower_cap() {
+  carries_within(recapped(42, 1_500_000), recapped(43, 1_500_000))
+}
+
+test carries_grant_within_accepts_a_lower_lovelace_cap() {
+  carries_within(recapped(43, 1_499_999), recapped(43, 1_500_000))
+}
+
+test carries_grant_within_accepts_both_caps_lowered_to_zero() {
+  carries_within(recapped(0, 0), recapped(43, 1_500_000))
+}
+
+test carries_grant_within_rejects_a_cap_one_above_the_expected() {
+  !carries_within(recapped(44, 1_500_000), recapped(43, 1_500_000))
+}
+
+test carries_grant_within_rejects_a_negative_cap() {
+  !carries_within(recapped(-1, 1_500_000), recapped(43, 1_500_000))
+}
+
+test carries_grant_within_rejects_a_lovelace_cap_one_above_the_expected() {
+  !carries_within(recapped(43, 1_500_001), recapped(43, 1_500_000))
+}
+
+test carries_grant_within_rejects_a_negative_lovelace_cap() {
+  !carries_within(recapped(43, -1), recapped(43, 1_500_000))
+}
+
+test carries_grant_within_rejects_a_lovelace_cap_on_a_lovelace_grant() {
+  let lowered = Grant {
+    ..lovelace_grant(),
+    scope: Scope { ..lovelace_scope(), cap: 4_000_000 },
+  }
+  and {
+    carries_within(lowered, lowered),
+    !carries_within(
+      Grant { ..lowered, scope: Scope { ..lowered.scope, lovelace_cap: 1 } },
+      lowered,
+    ),
+  }
+}
+
+test carries_grant_within_rejects_a_changed_per_call_cap() {
+  let expected = recapped(43, 1_500_000)
+  and {
+    !carries_within(
+      Grant { ..expected, scope: Scope { ..expected.scope, per_call_cap: 9 } },
+      expected,
+    ),
+    !carries_within(
+      Grant {
+        ..expected,
+        scope: Scope { ..expected.scope, lovelace_per_call_cap: 999_999 },
+      },
+      expected,
+    ),
+  }
+}
+
+test carries_grant_within_rejects_a_changed_generation() {
+  !carries_within(Grant { ..token_grant(), generation: 2 }, token_grant())
+}
+
+test carries_grant_within_rejects_a_changed_expiry() {
+  !carries_within(
+    Grant { ..token_grant(), scope: Scope { ..token_scope(), expires_at: 999 } },
+    token_grant(),
+  )
+}
+
+test carries_grant_within_rejects_a_datum_given_by_hash() {
   let hashed = output(
     account_address(),
-    grant_value(stake_script_hash, 0, 1),
+    grant_value(stake_script_hash, 1, 1),
     DatumHash(stranger_key),
   )
-  !carries_grant(hashed, lovelace_grant())
+  !carries_grant_within(hashed, token_grant())
+}
+
+test carries_grant_within_rejects_a_missing_datum() {
+  let bare = output(
+    account_address(),
+    grant_value(stake_script_hash, 1, 1),
+    NoDatum,
+  )
+  !carries_grant_within(bare, token_grant())
+}
+
+test carries_grant_within_accepts_caps_lowered_down_to_zero(
+  case via lowered_grant_fuzzer(),
+) {
+  let (expected, actual) = case
+  fuzz.label_when(
+    actual.scope.cap == expected.scope.cap && actual.scope.lovelace_cap == expected.scope.lovelace_cap,
+    @"caps as expected",
+    @"a cap lowered",
+  )
+  carries_within(actual, expected)
+}
+
+test carries_grant_within_refuses_a_cap_above_the_expected_or_below_zero(
+  case via strayed_grant_fuzzer(),
+) {
+  let (expected, actual) = case
+  fuzz.label_when(
+    actual.scope.cap > expected.scope.cap || actual.scope.lovelace_cap > expected.scope.lovelace_cap,
+    @"a cap above the expected",
+    @"a cap below zero",
+  )
+  !carries_within(actual, expected)
 }
 
 test carries_no_reference_script_accepts_a_plain_grant_output() {

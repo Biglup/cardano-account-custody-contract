@@ -105,27 +105,46 @@ and is never burned.
 
 ## Double satisfaction
 
-Attack. Two accounts grant the same agent and restrict it to the same
-recipient. One 2 ADA output to that recipient is offered as the payout of
-both grants and the other 2 ADA go to the attacker. A second variant
-spends a deposit of account B with `Fund` while only account A's control
-UTxO is in the transaction.
+Attack. Two accounts grant the same agent under open recipient lists and
+the agent spends through both at once, returning each deposit 2 ADA
+short. One 2 ADA output to the recipient is offered as the payout of both
+spends and recorded against the first account's grant only, the other
+2 ADA riding out to the attacker, which an open list allows. A second
+variant takes 2 ADA out of the first account for the recipient and puts
+2 ADA of the agent's own into the second, so that across the two
+accounts, which share the payment script, nothing leaves, and hands both
+grants back unchanged. A third spends a deposit of account B with `Fund`
+while only account A's control UTxO, or a grant UTxO of account A, is in
+the transaction.
 
 Mitigation. The grant accounting never matches outputs against a claim:
-`grant.leaving_value` sums every input at the account's full address and
-subtracts every output paid back to it, so each account sees its own net
-outflow whatever the other outputs are. Any surplus has to appear in an
-output, which `grant.pays_only_recipients` refuses when it is not a
-listed recipient, or in the fee, which still counts as leaving. `Fund`
-looks for a control UTxO of the deposit's own stake credential
-(`account.has_control_input`), so another account's control UTxO never
-authorises it.
+`grant.leaving_value` sums every input at the account's full address,
+stake part included, and subtracts every output paid back to it, so each
+account's handler sees its own net outflow whatever the other outputs
+are, and `grant.carries_grant_within` requires the grant output to
+record that outflow: its remaining caps may sit anywhere from zero up to
+the spent caps less the net outflow of each asset, never above. A grant
+handed back unchanged beside a positive outflow fails that rule alone.
+Any surplus has to appear in an output, which `grant.pays_only_recipients`
+refuses when it is not a listed recipient, or in the fee, which still
+counts as leaving. `Fund` looks for an account token of the deposit's
+own stake credential (`account.has_account_token_input` with no datum,
+`account.has_control_input` with one), so another account's control or
+grant UTxO never authorises it.
 
-Tests. `attack_double_satisfaction_one_recipient_output_for_two_accounts`
-(both handlers return False),
+Tests. `attack_double_satisfaction_one_recipient_output_for_two_accounts`:
+the first account's handler passes, since its grant records the 2 ADA
+that left it, and the second's returns False on the cap rule, since
+2 ADA left it against an unchanged grant.
+`attack_double_satisfaction_a_deposit_into_another_account_offsets_the_outflow`:
+the second account's handler sees a net deposit and passes, the first's
+returns False on the cap rule.
 `attack_double_satisfaction_fund_of_another_account_rides_on_this_control`
-(`!`). The companion in the functional suite is
-`fund_rejects_the_control_utxo_of_another_account`.
+and `attack_double_satisfaction_fund_of_another_account_rides_on_this_grant`
+(`!`). The companions in the functional suite are
+`spend_with_grant_accepts_two_accounts_each_paying_their_own_recipient_output`,
+`fund_rejects_the_control_utxo_of_another_account` and
+`fund_rejects_a_grant_utxo_of_another_account`.
 
 ## Missing UTxO authentication
 
@@ -590,9 +609,9 @@ Tests. `attack_dust_attack_grant_spend_keeps_one_unit_of_dust` (`!`),
 
 The `budget_` tests in `validators/attacks.test.ak` build the largest
 state the validators admit and run every handler of every path over it.
-The largest control state has eight devices, thirty two revoked slots,
-sixteen outstanding grants and a generation past zero; the largest grant
-lists eight recipients; every key is 28 bytes. The largest control datum
+The largest control state has eight devices, `max_revoked` revoked
+slots, sixteen outstanding grants and a generation past zero; the largest
+grant lists eight recipients; every key is 28 bytes. The largest control datum
 serialises to 293 bytes of CBOR and the largest grant datum to 398, and
 `budget_largest_state_datums_stay_within_the_transaction_size_limit`
 asserts that the two together stay under 2 KiB, far inside the 16 KiB
@@ -610,38 +629,44 @@ transaction builder. The mainnet limits are 14,000,000 memory units and
 20,000,000,000 steps per block; a transaction pays the sum over every
 handler it runs, one per script input, mint policy, certificate and
 withdrawal. The last column repeats the net memory with `max_revoked`
-set to 64 and the fixture's revoked list filled to 64; the committed
-bound is 32.
+set to 64 in `state.ak` and nothing else changed: `largest_state` in
+`validators/attacks.test.ak` fills its revoked list with slots 1 to
+`max_revoked`, puts the largest token grant and the largest lovelace
+grant at `max_revoked` plus 6 and plus 7 and its next slot at
+`max_revoked` plus 8, and the revoke fixture drops slot 1 to append the
+lovelace grant's slot, so every budget fixture follows the constant; at
+64 the three tests that pin the bound at thirty three revoked slots fail
+and every other check passes. The committed bound is 32.
 
 | Test | mem | cpu | baseline mem | net mem | net cpu | net mem, 64 revoked |
 | --- | --- | --- | --- | --- | --- | --- |
 | `budget_largest_state_account_creation` | 792,442 | 234,571,371 | 298,294 | 0.49 M | 0.15 G | 0.49 M |
 | `budget_largest_state_registration` | 441,442 | 126,807,016 | 298,294 | 0.14 M | 0.04 G | 0.14 M |
-| `budget_largest_state_device_revoke` | 1,644,107 | 469,350,024 | 545,997 | 1.10 M | 0.32 G | 1.49 M |
-| `budget_largest_state_device_rewrite` | 1,550,890 | 441,568,196 | 447,680 | 1.10 M | 0.32 G | 1.50 M |
-| `budget_largest_state_fund_spend_of_a_reserve_beside_the_control` | 487,144 | 141,069,515 | 410,269 | 0.08 M | 0.03 G | 0.06 M |
+| `budget_largest_state_device_revoke` | 1,644,307 | 469,382,024 | 545,997 | 1.10 M | 0.32 G | 1.49 M |
+| `budget_largest_state_device_rewrite` | 1,551,090 | 441,600,196 | 447,680 | 1.10 M | 0.32 G | 1.50 M |
+| `budget_largest_state_fund_spend_of_a_reserve_beside_the_control` | 487,544 | 141,133,515 | 410,269 | 0.08 M | 0.03 G | 0.06 M |
 | `budget_largest_state_withdrawal` | 540,842 | 148,502,543 | 232,903 | 0.31 M | 0.08 G | 0.44 M |
 | `budget_largest_state_delegation` | 550,260 | 152,566,332 | 230,083 | 0.32 M | 0.09 G | 0.46 M |
-| `budget_largest_state_device_issue` | 1,584,317 | 459,062,657 | 387,566 | 1.20 M | 0.35 G | 1.60 M |
+| `budget_largest_state_device_issue` | 1,584,717 | 459,126,657 | 387,566 | 1.20 M | 0.35 G | 1.60 M |
 | `budget_largest_state_issue_grants` | 1,378,357 | 403,077,891 | 387,566 | 0.99 M | 0.29 G | 1.26 M |
-| `budget_largest_state_device_issue_eight_grants` | 3,457,317 | 1,042,223,505 | 1,768,883 | 1.69 M | 0.52 G | 2.09 M |
+| `budget_largest_state_device_issue_eight_grants` | 3,459,117 | 1,042,511,505 | 1,768,883 | 1.69 M | 0.52 G | 2.10 M |
 | `budget_largest_state_issue_eight_grants` | 6,985,885 | 2,136,542,565 | 1,768,883 | 5.22 M | 1.61 G | 5.48 M |
-| `budget_largest_state_device_issue_sixteen_grants` | 5,857,181 | 1,784,958,697 | 3,606,595 | 2.25 M | 0.71 G | 2.66 M |
+| `budget_largest_state_device_issue_sixteen_grants` | 5,860,581 | 1,785,502,697 | 3,606,595 | 2.25 M | 0.71 G | 2.66 M |
 | `budget_largest_state_issue_sixteen_grants` | 16,327,261 | 4,936,209,161 | 3,606,595 | 12.72 M | 3.86 G | 12.99 M |
-| `budget_largest_state_device_sweep` | 1,739,068 | 501,311,896 | 546,324 | 1.19 M | 0.35 G | 1.59 M |
-| `budget_largest_state_sweep_grant` | 1,285,677 | 375,979,490 | 546,324 | 0.74 M | 0.22 G | 0.86 M |
+| `budget_largest_state_device_sweep` | 1,739,468 | 501,375,896 | 546,324 | 1.19 M | 0.35 G | 1.59 M |
+| `budget_largest_state_sweep_grant` | 1,286,577 | 376,123,490 | 546,324 | 0.74 M | 0.22 G | 0.86 M |
 | `budget_largest_state_burn_grants` | 863,536 | 241,290,260 | 546,324 | 0.32 M | 0.09 G | 0.44 M |
-| `budget_largest_state_device_sweep_eight_grants` | 3,433,764 | 1,024,119,304 | 1,948,809 | 1.48 M | 0.45 G | 1.88 M |
-| `budget_largest_state_sweep_grant_among_eight` | 2,750,050 | 825,062,830 | 1,948,809 | 0.80 M | 0.25 G | 0.92 M |
+| `budget_largest_state_device_sweep_eight_grants` | 3,435,564 | 1,024,407,304 | 1,948,809 | 1.49 M | 0.45 G | 1.89 M |
+| `budget_largest_state_sweep_grant_among_eight` | 2,752,350 | 825,430,830 | 1,948,809 | 0.80 M | 0.25 G | 0.93 M |
 | `budget_largest_state_burn_eight_grants` | 2,290,615 | 670,883,547 | 1,948,809 | 0.34 M | 0.10 G | 0.47 M |
-| `budget_largest_state_device_sweep_sixteen_grants` | 5,629,852 | 1,697,879,136 | 3,810,713 | 1.82 M | 0.57 G | 2.22 M |
-| `budget_largest_state_sweep_grant_among_sixteen` | 4,679,826 | 1,414,072,870 | 3,810,713 | 0.87 M | 0.28 G | 0.99 M |
+| `budget_largest_state_device_sweep_sixteen_grants` | 5,633,252 | 1,698,423,136 | 3,810,713 | 1.82 M | 0.57 G | 2.22 M |
+| `budget_largest_state_sweep_grant_among_sixteen` | 4,683,726 | 1,414,696,870 | 3,810,713 | 0.87 M | 0.28 G | 1.00 M |
 | `budget_largest_state_burn_sixteen_grants` | 4,180,855 | 1,238,112,955 | 3,810,713 | 0.37 M | 0.11 G | 0.49 M |
-| `budget_largest_state_grant_spend_lovelace_scope` (9 inputs) | 2,815,579 | 921,672,816 | 721,596 | 2.09 M | 0.72 G | 2.32 M |
-| `budget_largest_state_fund_spend_among_eight_deposits` | 823,582 | 249,524,248 | 721,596 | 0.10 M | 0.04 G | 0.10 M |
-| `budget_largest_state_grant_spend_token_scope` (2 inputs) | 2,190,801 | 712,019,064 | 599,416 | 1.59 M | 0.54 G | 1.82 M |
-| `budget_grant_spend_over_forty_deposits` | 6,435,355 | 2,115,891,952 | 1,502,780 | 4.93 M | 1.69 G | 5.16 M |
-| `budget_fund_spend_among_forty_deposits` | 1,706,910 | 535,780,216 | 1,502,780 | 0.20 M | 0.11 G | 0.20 M |
+| `budget_largest_state_grant_spend_lovelace_scope` (9 inputs) | 3,102,459 | 1,011,928,445 | 721,596 | 2.38 M | 0.81 G | 2.61 M |
+| `budget_largest_state_fund_spend_among_eight_deposits` | 823,982 | 249,588,248 | 721,596 | 0.10 M | 0.04 G | 0.10 M |
+| `budget_largest_state_grant_spend_token_scope` (2 inputs) | 2,477,681 | 802,274,693 | 599,416 | 1.88 M | 0.63 G | 2.11 M |
+| `budget_grant_spend_over_forty_deposits` | 6,722,235 | 2,206,147,581 | 1,502,780 | 5.22 M | 1.78 G | 5.45 M |
+| `budget_fund_spend_among_forty_deposits` | 1,707,310 | 535,844,216 | 1,502,780 | 0.20 M | 0.11 G | 0.20 M |
 
 The baselines are the `budget_baseline_` tests named after the fixture
 each row builds: `largest_state_creation_transaction` for the creation
@@ -669,19 +694,21 @@ units at 32 revoked slots, with the 64 figure in brackets:
   (1.50 M).
 - Issuance of one grant: `Device` and `IssueGrants`, 2.19 M (2.86 M).
   Eight grants with eight recipients each: 6.91 M (7.58 M), 49 percent of
-  the limit. Sixteen at once: 14.97 M (15.64 M), over the limit, since
-  `IssueGrants` costs about 0.65 M to 0.80 M per grant on top of its
-  base. The off-chain builder must issue at most eight largest grants
-  per transaction; grants with fewer recipients are cheaper.
+  the limit. Sixteen at once: 14.97 M (15.65 M), over the limit, since
+  `IssueGrants` grows with the count: (5.22 - 0.99) / 7 = 0.60 M per
+  grant from one grant to eight and (12.72 - 5.22) / 8 = 0.94 M per grant
+  from eight to sixteen. The off-chain builder must issue at most eight
+  largest grants per transaction; grants with fewer recipients are
+  cheaper.
 - Sweep of one dead grant: `Device`, `SweepGrant` and `BurnGrants`,
-  2.25 M (2.89 M). Eight at once: 8.24 M (9.75 M), 59 percent. Sixteen at
-  once: 16.10 M (18.59 M), over the limit, because every `SweepGrant`
+  2.25 M (2.90 M). Eight at once: 8.26 M (9.77 M), 59 percent. Sixteen at
+  once: 16.16 M (18.66 M), over the limit, because every `SweepGrant`
   execution decodes the control state again, about 0.80 M to 0.87 M
   each. The builder must sweep at most eight per transaction.
 - Agent spend over eight deposits: `SpendWithGrant` and eight `Fund`
-  executions, 2.91 M (3.09 M); over the token scope with one deposit,
-  1.69 M. Over forty deposits: 4.93 M plus forty `Fund` executions of
-  0.20 M, 13.10 M (13.07 M), 94 percent of the limit, so around thirty
+  executions, 3.20 M (3.38 M); over the token scope with one deposit,
+  1.98 M. Over forty deposits: 5.22 M plus forty `Fund` executions of
+  0.20 M, 13.40 M (13.37 M), 96 percent of the limit, so around thirty
   deposits per grant spend is the provisional batch size pending on-chain
   measurement; with its default fixed budgets the builder stops at about
   fourteen.
@@ -692,15 +719,17 @@ Observations.
 
 - Raising `max_revoked` to 64 adds between 0.1 M and 0.4 M to every
   handler that decodes or scans the control state and about 1.5 M to the
-  eight grant sweep, the heaviest transaction that fits. Every path that
-  fits at 32 still fits at 64, but with a smaller margin, so the bound
-  stays at 32; the owner bumps the generation once thirty two slots are
-  revoked.
-- The heaviest single execution is `IssueGrants` over eight largest
-  grants at 5.22 M, 37 percent of the limit; the heaviest owner execution
-  over the largest state is a `Device` spend at 1.10 M to 2.25 M. No path
-  of the owner is near the limit at the committed bounds, and the levers
-  if on-chain measurement shows otherwise are `max_grants`,
+  eight grant sweep, the heaviest owner transaction that fits. Every path
+  that fits at 32 still fits at 64, but with a smaller margin, so the
+  bound stays at 32; the owner bumps the generation once thirty two slots
+  are revoked.
+- The heaviest single execution of a transaction that fits is
+  `IssueGrants` over eight largest grants at 5.22 M, 37 percent of the
+  limit; the 12.72 M of `IssueGrants` over sixteen only occurs in a
+  transaction over the limit. The heaviest owner execution over the
+  largest state is a `Device` spend at 1.10 M to 2.25 M. No path of the
+  owner is near the limit at the committed bounds, and the levers if
+  on-chain measurement shows otherwise are `max_grants`,
   `max_recipients` and `max_revoked` in `state.ak`.
 - Complexity. `grant.leaving_value` folds `assets.merge` over the
   inputs and outputs at the address; each merge is linear in the number
@@ -712,7 +741,8 @@ Observations.
   measured growth is from 0.10 M to 0.20 M memory units per `Fund`
   execution between 9 and 41 inputs. `SpendWithGrant` and `SweepGrant`
   each decode the control state once, from the reference input or the
-  spent input. `IssueGrants` runs `account.find_token_output` over the
+  spent input, and `SpendWithGrant` decodes the grant output's datum
+  once to bound its caps. `IssueGrants` runs `account.find_token_output` over the
   outputs once per minted token and `recreates_control_output` reads the
   mint once, so an issuance of k grants grows with k squared in the
   output scans and linearly in the grant datums decoded.
