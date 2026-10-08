@@ -30,9 +30,10 @@ use cardano/script_context.{ScriptContext, Voting}
 use cardano/transaction.{DatumHash, Input, NoDatum, Output, Transaction}
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
-  grant_datum, grant_output, input, other_account_address, other_device_key,
-  other_stake_script_hash, output, recipient_address, registration, script_hash,
-  stake_script_hash, state_datum, state_nft, stranger_key,
+  grant_datum, grant_output, input, logic_hash, other_account_address,
+  other_device_key, other_stake_script_hash, output, recipient_address,
+  registration, script_hash, stake_script_hash, state_datum, state_nft,
+  stranger_key, withdrawing,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, CreateAccount, Grant, Operate, Scope,
@@ -44,6 +45,7 @@ use cardano_account_custody_contract/types.{
 /// grant.
 fn state() -> AccountState {
   AccountState {
+    logic: logic_hash,
     devices: [device_key, other_device_key],
     grant_generation: 0,
     next_slot: 1,
@@ -56,6 +58,7 @@ fn state() -> AccountState {
 /// counters.
 fn fresh_state(devices: List<ByteArray>) -> AccountState {
   AccountState {
+    logic: logic_hash,
     devices,
     grant_generation: 0,
     next_slot: 0,
@@ -165,6 +168,7 @@ fn creation(
     interval.everything,
   )
     |> test_helpers.publishing(certificate)
+    |> withdrawing([logic_hash])
 }
 
 /// The creation of the account under test with the given control output
@@ -367,7 +371,7 @@ test publish_rejects_a_registration_with_a_control_output_carrying_a_grant() fai
 
 /// The stake script only counts the state NFT of its own credential, so a
 /// second account's NFT minted beside it passes the registration; the
-/// account mint handler, which runs in the same transaction, refuses a
+/// proxy's mint handler, which runs in the same transaction, refuses a
 /// mint of two names, and both must pass for the creation to apply.
 test publish_accepts_a_second_nft_beside_the_mint_that_the_mint_handler_refuses() {
   let tx = Transaction {

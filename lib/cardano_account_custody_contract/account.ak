@@ -15,25 +15,34 @@
 
 // USINGS **********************************************************************
 
+use aiken/builtin
 use aiken/collection/dict
 use aiken/collection/list
+use aiken/collection/pairs
 use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use aiken/primitive/bytearray
 use cardano/address.{Address, Credential, Inline, Script}
-use cardano/assets.{AssetName, Assets}
+use cardano/assets.{AssetName, Assets, Lovelace, PolicyId}
 use cardano/certificate.{
   Certificate, RegisterAndDelegateCredential, RegisterCredential,
 }
 use cardano/transaction.{
-  InlineDatum, Input, Output, OutputReference, Publish, Redeemer, ScriptPurpose,
+  InlineDatum, Input, Mint, Output, OutputReference, Publish, Redeemer,
+  ScriptPurpose, Spend,
 }
 use cardano_account_custody_contract/state
-use cardano_account_custody_contract/types.{AccountState}
+use cardano_account_custody_contract/types.{
+  AccountRedeemer, AccountState, Grant, MintRedeemer,
+}
 
 // CONSTANTS *******************************************************************
 
+/// The length of a script hash, which is what a state NFT name and the
+/// logic pointer of a control datum are.
+pub const script_hash_length = 28
+
 /// The length of a state NFT name: the account's stake script hash.
-pub const state_nft_name_length = 28
+pub const state_nft_name_length = script_hash_length
 
 /// The length of the slot suffix a grant token name appends to the stake
 /// script hash, as a big endian integer.
@@ -65,7 +74,7 @@ pub fn stake_script_hash_of(address: Address) -> ScriptHash {
   stake_script_hash
 }
 
-/// The account address: the account script as payment credential and the
+/// The account address: the account proxy as payment credential and the
 /// account stake script as stake credential.
 pub fn account_address(
   script_hash: ScriptHash,
@@ -89,6 +98,11 @@ pub fn grant_token_name(stake_script_hash: ScriptHash, slot: Int) -> AssetName {
 /// to: the name itself for a state NFT, its prefix for a grant token.
 pub fn account_of_name(name: AssetName) -> ScriptHash {
   bytearray.take(name, state_nft_name_length)
+}
+
+/// Whether a byte string has the length of a script hash.
+pub fn is_script_hash(bytes: ByteArray) -> Bool {
+  bytearray.length(bytes) == script_hash_length
 }
 
 /// Whether a token name has the shape of a state NFT name.
@@ -140,14 +154,34 @@ pub fn holds_no_account_token(value: Assets, script_hash: ScriptHash) -> Bool {
   assets.tokens(value, script_hash) == dict.empty
 }
 
-/// Whether an output sits at the account address and holds the state NFT.
+/// Whether an output is the control UTxO of the account: it carries an
+/// inline datum, holds the state NFT and sits at `address`, the account
+/// address. A control UTxO always carries its state inline, so the datum
+/// shape is checked first and a plain deposit fails on one match; the
+/// token check follows and the address comparison comes last.
+fn is_control(
+  output: Output,
+  address: Address,
+  script_hash: ScriptHash,
+  stake_script_hash: ScriptHash,
+) -> Bool {
+  when output.datum is {
+    InlineDatum(_) ->
+      holds_state_nft(output.value, script_hash, stake_script_hash) && output.address == address
+    _ -> False
+  }
+}
+
+/// Whether an output sits at the account address and holds the state NFT
+/// under an inline datum.
 pub fn is_control_output(
   output: Output,
   script_hash: ScriptHash,
   stake_script_hash: ScriptHash,
 ) -> Bool {
-  output.address == account_address(script_hash, stake_script_hash) && holds_state_nft(
-    output.value,
+  is_control(
+    output,
+    account_address(script_hash, stake_script_hash),
     script_hash,
     stake_script_hash,
   )
@@ -159,10 +193,41 @@ pub fn find_control_output(
   script_hash: ScriptHash,
   stake_script_hash: ScriptHash,
 ) -> Option<Output> {
+  let address = account_address(script_hash, stake_script_hash)
   when
-    list.filter(outputs, is_control_output(_, script_hash, stake_script_hash))
+    list.filter(
+      outputs,
+      fn(output) { is_control(output, address, script_hash, stake_script_hash) },
+    )
   is {
     [output] -> Some(output)
+    _ -> None
+  }
+}
+
+/// The account's control UTxO among the inputs and the reference inputs
+/// taken together; none or several, spent and referenced at once
+/// included, yield `None`. This is the one scan the proxy runs on every
+/// spend that defers to the logic, so it reads nothing but the datum
+/// shape, the value and the address of each input.
+pub fn find_present_control(
+  inputs: List<Input>,
+  reference_inputs: List<Input>,
+  script_hash: ScriptHash,
+  stake_script_hash: ScriptHash,
+) -> Option<Output> {
+  let address = account_address(script_hash, stake_script_hash)
+  let collect = fn(input: Input, found: List<Output>) {
+    if is_control(input.output, address, script_hash, stake_script_hash) {
+      [input.output, ..found]
+    } else {
+      found
+    }
+  }
+  when
+    list.foldl(reference_inputs, list.foldl(inputs, [], collect), collect)
+  is {
+    [control] -> Some(control)
     _ -> None
   }
 }
@@ -202,13 +267,14 @@ pub fn find_grant_output(
 
 /// Whether an output sits at the account address and holds a token of the
 /// account policy named under the account: its state NFT or one of its
-/// grant tokens.
+/// grant tokens. The token check runs first, since most outputs at an
+/// account address are deposits that fail it on one lookup.
 pub fn holds_account_token(
   output: Output,
   script_hash: ScriptHash,
   stake_script_hash: ScriptHash,
 ) -> Bool {
-  output.address == account_address(script_hash, stake_script_hash) && (
+  (
     assets.tokens(output.value, script_hash)
       |> dict.to_pairs
       |> list.any(
@@ -217,7 +283,7 @@ pub fn holds_account_token(
             account_of_name(name) == stake_script_hash
           },
         )
-  )
+  ) && output.address == account_address(script_hash, stake_script_hash)
 }
 
 /// Whether some input holds a token of the account: its control UTxO or
@@ -290,6 +356,65 @@ pub fn tokens_sit_at_their_own_addresses(
   )
 }
 
+/// Whether every minted entry is a grant token of the account in the
+/// given quantity: a 32 byte name prefixed by the account's stake script
+/// hash, in quantity one for an issuance and minus one for a burn. A
+/// state NFT name, another account's prefix, a burn beside an issuance or
+/// any other quantity fails, so a mint under the grant redeemers can
+/// neither mint a second state NFT nor touch another account's tokens.
+pub fn mints_grants_of(
+  minted: Pairs<AssetName, Int>,
+  stake_script_hash: ScriptHash,
+  quantity: Int,
+) -> Bool {
+  list.all(
+    minted,
+    fn(token) {
+      let Pair(name, minted_quantity) = token
+      and {
+        minted_quantity == quantity,
+        is_grant_name(name),
+        account_of_name(name) == stake_script_hash,
+      }
+    },
+  )
+}
+
+/// Whether the outputs keep the account's control UTxO in place: exactly
+/// one output holds the state NFT, at the account address, under an
+/// inline datum, with nothing but lovelace beside the NFT and no reference
+/// script. The datum is not decoded, so the rule holds whatever state
+/// shape the account's logic writes. See README, State NFT placement.
+pub fn keeps_control_output(
+  outputs: List<Output>,
+  script_hash: ScriptHash,
+  stake_script_hash: ScriptHash,
+) -> Bool {
+  when
+    list.filter(
+      outputs,
+      fn(output) {
+        holds_state_nft(output.value, script_hash, stake_script_hash)
+      },
+    )
+  is {
+    [control] -> and {
+        control.address == account_address(script_hash, stake_script_hash),
+        holds_only_lovelace_and_state_nft(
+          control.value,
+          script_hash,
+          stake_script_hash,
+        ),
+        when control.datum is {
+          InlineDatum(_) -> True
+          _ -> False
+        },
+        control.reference_script == None,
+      }
+    _ -> False
+  }
+}
+
 /// The number of grant tokens of the account minted and the number burned
 /// in a transaction, read from the mint field. Fails on any other token of
 /// the account policy, on another account's grant token and on any
@@ -319,12 +444,66 @@ pub fn grant_mint_delta(
       )
 }
 
+/// The data an output carries as its inline datum; fails on any other
+/// datum.
+pub fn inline_datum(output: Output) -> Data {
+  expect InlineDatum(data) = output.datum
+  data
+}
+
+/// The logic hash a control datum names in its first field, read without
+/// decoding the rest of the state. Fails on a datum that is not a
+/// constructor whose first field is a byte string.
+pub fn logic_of(data: Data) -> ScriptHash {
+  expect [logic, ..] = builtin.unconstr_fields(data)
+  builtin.un_b_data(logic)
+}
+
+/// The device list a control datum carries in its second field, read
+/// without decoding the rest of the state. Fails on a datum that is not a
+/// constructor whose second field is a list of byte strings.
+pub fn devices_of(data: Data) -> List<VerificationKeyHash> {
+  expect [_, devices, ..] = builtin.unconstr_fields(data)
+  expect keys: List<VerificationKeyHash> = devices
+  keys
+}
+
+/// The grant generation a control datum carries in its third field, read
+/// without decoding the rest of the state. Fails on a datum that is not a
+/// constructor whose third field is an integer.
+pub fn generation_of(data: Data) -> Int {
+  expect [_, _, generation, ..] = builtin.unconstr_fields(data)
+  builtin.un_i_data(generation)
+}
+
+/// The slot a grant datum carries in its first field, read without
+/// decoding the rest of the grant. Fails on a datum that is not a
+/// constructor whose first field is an integer.
+pub fn grant_slot_of(data: Data) -> Int {
+  expect [slot, ..] = builtin.unconstr_fields(data)
+  builtin.un_i_data(slot)
+}
+
+/// The generation a grant datum carries in its third field, read without
+/// decoding the rest of the grant. Fails on a datum that is not a
+/// constructor whose third field is an integer.
+pub fn grant_generation_of(data: Data) -> Int {
+  expect [_, _, generation, ..] = builtin.unconstr_fields(data)
+  builtin.un_i_data(generation)
+}
+
 /// The `AccountState` an output carries as its inline datum; fails on any
 /// other datum.
 pub fn state_datum(output: Output) -> AccountState {
-  expect InlineDatum(data) = output.datum
-  expect state: AccountState = data
+  expect state: AccountState = inline_datum(output)
   state
+}
+
+/// The `Grant` an output carries as its inline datum; fails on any other
+/// datum.
+pub fn grant_datum(output: Output) -> Grant {
+  expect grant: Grant = inline_datum(output)
+  grant
 }
 
 /// Whether a control output holds only lovelace and the state NFT and
@@ -355,17 +534,27 @@ pub fn find_control_input(
   )
 }
 
+/// Whether one of the listed devices is among the required signers.
+pub fn has_device_signature(
+  devices: List<VerificationKeyHash>,
+  extra_signatories: List<VerificationKeyHash>,
+) -> Bool {
+  list.any(devices, fn(device) { list.has(extra_signatories, device) })
+}
+
 /// Whether one of the state's devices is among the required signers.
 pub fn is_signed_by_a_device(
   state: AccountState,
   extra_signatories: List<VerificationKeyHash>,
 ) -> Bool {
-  list.any(state.devices, fn(device) { list.has(extra_signatories, device) })
+  has_device_signature(state.devices, extra_signatories)
 }
 
 /// Whether a device listed in the account's control UTxO, spent or
-/// referenced, is among the required signers. Fails when no control UTxO
-/// of the account is present.
+/// referenced, is among the required signers. The devices are read from
+/// the second field of the control datum, so the rule holds whatever
+/// state shape the account's logic keeps after them. Fails when no control
+/// UTxO of the account is present.
 pub fn is_authorised_by_a_device(
   inputs: List<Input>,
   reference_inputs: List<Input>,
@@ -378,7 +567,44 @@ pub fn is_authorised_by_a_device(
     script_hash,
     stake_script_hash,
   )
-  is_signed_by_a_device(state_datum(control.output), extra_signatories)
+  has_device_signature(
+    devices_of(inline_datum(control.output)),
+    extra_signatories,
+  )
+}
+
+/// Whether the transaction withdraws from the reward account of a logic
+/// script, which is what makes the ledger run that logic over the whole
+/// transaction. The amount does not matter and is zero in practice.
+pub fn withdraws_from(
+  withdrawals: Pairs<Credential, Lovelace>,
+  logic: ScriptHash,
+) -> Bool {
+  pairs.has_key(withdrawals, Script(logic))
+}
+
+/// The proxy redeemer of the input at `output_reference`, read from the
+/// transaction's redeemers; fails when the input carries none or one of
+/// another shape.
+pub fn spend_redeemer_of(
+  redeemers: Pairs<ScriptPurpose, Redeemer>,
+  output_reference: OutputReference,
+) -> AccountRedeemer {
+  expect Some(data) = pairs.get_first(redeemers, Spend(output_reference))
+  expect redeemer: AccountRedeemer = data
+  redeemer
+}
+
+/// The proxy redeemer of the mint under the account policy, read from the
+/// transaction's redeemers; fails when the policy is not run or its
+/// redeemer has another shape.
+pub fn mint_redeemer_of(
+  redeemers: Pairs<ScriptPurpose, Redeemer>,
+  policy_id: PolicyId,
+) -> MintRedeemer {
+  expect Some(data) = pairs.get_first(redeemers, Mint(policy_id))
+  expect redeemer: MintRedeemer = data
+  redeemer
 }
 
 /// Whether a certificate registers the credential, alone or with a

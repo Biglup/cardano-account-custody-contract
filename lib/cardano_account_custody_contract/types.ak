@@ -15,7 +15,7 @@
 
 // USINGS **********************************************************************
 
-use aiken/crypto.{VerificationKeyHash}
+use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use cardano/address.{Address}
 use cardano/assets.{AssetName, PolicyId}
 
@@ -65,16 +65,24 @@ pub type Grant {
   scope: Scope,
 }
 
-/// The account's on-chain state in the control UTxO: its owner devices and
-/// the grant bookkeeping. `grant_generation` only ever grows and kills every
-/// grant issued under an older value; `next_slot` is the slot the next
-/// issued grant takes; `revoked` lists the slots of the current generation
-/// revoked one by one; `outstanding` counts grant tokens minted and not yet
-/// burned.
+/// The account's on-chain state in the control UTxO: the logic that
+/// governs the account, its owner devices and the grant bookkeeping.
+/// `logic` is the hash of the logic script whose rules apply to the
+/// account; a device rewrite that changes it is an upgrade and needs both
+/// the old and the new logic to run. `grant_generation` only ever grows
+/// and kills every grant issued under an older value; `next_slot` is the
+/// slot the next issued grant takes; `revoked` lists the slots of the
+/// current generation revoked one by one; `outstanding` counts grant
+/// tokens minted and not yet burned.
 ///
-/// `devices` is read positionally by other scripts and must stay the first
-/// field in later revisions.
+/// The first three fields are a stable prefix read positionally by
+/// scripts that never decode the whole state: the proxy reads `logic` at
+/// field 0, the stake script reads `devices` at field 1 and a logic an
+/// account arrives at reads `devices` and `grant_generation` at fields 1
+/// and 2 of the state it leaves. Later revisions must keep these three
+/// fields first and in this order and may only change what follows.
 pub type AccountState {
+  logic: ScriptHash,
   devices: List<VerificationKeyHash>,
   grant_generation: Int,
   next_slot: Int,
@@ -82,17 +90,18 @@ pub type AccountState {
   outstanding: Int,
 }
 
-/// The redeemer for the account validator's spend handler.
+/// The redeemer for the account proxy's spend handler, which the logic the
+/// control UTxO names reads back from the script context.
 ///
 /// `Device` is the owner path on the control UTxO: any device key may
 /// rewrite the state freely, as long as the result stays well formed and
-/// the counters follow the grant tokens minted and burned. `SpendWithGrant`
-/// is the agent path on a grant UTxO: the grantee signs the transaction as
-/// a required signer, the control UTxO is referenced, and the grant's
-/// remaining caps bound what the transaction may take. `SweepGrant` is the
-/// owner path on a dead grant UTxO, burning its token. `Fund` is for a
-/// deposit UTxO at the account address, which rides on an account token
-/// spent alongside.
+/// the counters follow the grant tokens minted and burned, or point the
+/// account at another logic. `SpendWithGrant` is the agent path on a grant
+/// UTxO: the grantee signs the transaction as a required signer, the
+/// control UTxO is referenced, and the grant's remaining caps bound what
+/// the transaction may take. `SweepGrant` is the owner path on a dead
+/// grant UTxO, burning its token. `Fund` is for a deposit UTxO at the
+/// account address, which rides on an account token spent alongside.
 pub type AccountRedeemer {
   Device
   SpendWithGrant
@@ -100,10 +109,11 @@ pub type AccountRedeemer {
   Fund
 }
 
-/// The redeemer for the account validator's mint handler. `CreateAccount`
+/// The redeemer for the account proxy's mint handler. `CreateAccount`
 /// mints the account's state NFT, which is never burned. `IssueGrants`
 /// mints grant tokens into new grant UTxOs and `BurnGrants` burns the
-/// tokens of swept grants, both with the control UTxO spent by a device.
+/// tokens of swept grants, both with the control UTxO spent by a device
+/// under the rules of the logic it names.
 pub type MintRedeemer {
   CreateAccount
   IssueGrants
@@ -117,4 +127,12 @@ pub type MintRedeemer {
 /// `Operate` is its only value.
 pub type StakeRedeemer {
   Operate
+}
+
+/// The redeemer for a logic script's withdraw and publish handlers. The
+/// logic learns what it is validating from the script context, the
+/// control UTxO that names it and the proxy redeemers beside its own, so
+/// the redeemer carries no choice and `Run` is its only value.
+pub type LogicRedeemer {
+  Run
 }

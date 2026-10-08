@@ -15,7 +15,6 @@
 
 // USINGS **********************************************************************
 
-use aiken/builtin
 use aiken/collection/list
 use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use cardano/address.{Credential, Script}
@@ -24,17 +23,21 @@ use cardano/certificate.{
   Certificate, DelegateCredential, RegisterAndDelegateCredential,
   RegisterCredential,
 }
-use cardano/transaction.{InlineDatum, Output, Transaction}
+use cardano/transaction.{Output, Transaction}
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/types.{StakeRedeemer}
 
 // VALIDATORS ******************************************************************
 
 /// The account's stake validator, applied to the account's initial device
-/// key as `owner` and the account validator's hash as `account_hash`. Its
+/// key as `owner` and the account proxy's hash as `proxy_hash`. Its
 /// script hash is the account's stake credential, the name of its state
 /// NFT and the prefix of its grant token names, so every user has their
-/// own stake script, address and reward account. See README, Stake script.
+/// own stake script, address and reward account. The script reads the
+/// devices from the second field of the control datum and nothing else of
+/// the state, so it answers to no logic version and keeps rewards and
+/// delegation under the devices whatever logic the account runs. See
+/// README, Stake script.
 ///
 /// Publish: registering the credential, alone or with a delegation, is the
 /// act that creates the account and needs the owner's signature, exactly
@@ -48,22 +51,22 @@ use cardano_account_custody_contract/types.{StakeRedeemer}
 ///
 /// Withdraw: any withdrawal from the reward account, including zero, needs
 /// a device of the account.
-validator account_stake(owner: VerificationKeyHash, account_hash: ScriptHash) {
+validator account_stake(owner: VerificationKeyHash, proxy_hash: ScriptHash) {
   withdraw(_redeemer: StakeRedeemer, credential: Credential, self: Transaction) {
     expect Script(stake_script_hash) = credential
-    is_authorised_by_a_device(self, account_hash, stake_script_hash)
+    is_authorised_by_a_device(self, proxy_hash, stake_script_hash)
   }
 
   publish(_redeemer: StakeRedeemer, certificate: Certificate, self: Transaction) {
     when certificate is {
       RegisterCredential { credential: Script(stake_script_hash), .. } ->
-        creates_the_account(self, owner, account_hash, stake_script_hash)
+        creates_the_account(self, owner, proxy_hash, stake_script_hash)
       RegisterAndDelegateCredential {
         credential: Script(stake_script_hash),
         ..
-      } -> creates_the_account(self, owner, account_hash, stake_script_hash)
+      } -> creates_the_account(self, owner, proxy_hash, stake_script_hash)
       DelegateCredential { credential: Script(stake_script_hash), .. } ->
-        is_authorised_by_a_device(self, account_hash, stake_script_hash)
+        is_authorised_by_a_device(self, proxy_hash, stake_script_hash)
       _ -> False
     }
   }
@@ -79,14 +82,14 @@ validator account_stake(owner: VerificationKeyHash, account_hash: ScriptHash) {
 /// read from the control UTxO the transaction spends or references.
 fn is_authorised_by_a_device(
   self: Transaction,
-  account_hash: ScriptHash,
+  proxy_hash: ScriptHash,
   stake_script_hash: ScriptHash,
 ) -> Bool {
   custody.is_authorised_by_a_device(
     self.inputs,
     self.reference_inputs,
     self.extra_signatories,
-    account_hash,
+    proxy_hash,
     stake_script_hash,
   )
 }
@@ -99,39 +102,37 @@ fn is_authorised_by_a_device(
 fn creates_the_account(
   self: Transaction,
   owner: VerificationKeyHash,
-  account_hash: ScriptHash,
+  proxy_hash: ScriptHash,
   stake_script_hash: ScriptHash,
 ) -> Bool {
   and {
     list.has(self.extra_signatories, owner),
-    assets.quantity_of(self.mint, account_hash, stake_script_hash) == 1,
+    assets.quantity_of(self.mint, proxy_hash, stake_script_hash) == 1,
     lists_the_owner_as_a_device(
       self.outputs,
       owner,
-      account_hash,
+      proxy_hash,
       stake_script_hash,
     ),
   }
 }
 
 /// Whether the account's single control output among the outputs lists
-/// `owner` in the device list of its inline state. Only the first field
-/// of the datum is decoded, since the account validator checks the whole
-/// state in the same transaction. Fails when no single control output
-/// exists or its datum is not an inline constructor with a key list first.
+/// `owner` in the device list of its inline state. Only the second field
+/// of the datum is decoded, since the logic the control names checks the
+/// whole state in the same transaction. Fails when no single control
+/// output exists or its datum is not an inline constructor with a key
+/// list second.
 fn lists_the_owner_as_a_device(
   outputs: List<Output>,
   owner: VerificationKeyHash,
-  account_hash: ScriptHash,
+  proxy_hash: ScriptHash,
   stake_script_hash: ScriptHash,
 ) -> Bool {
   expect Some(control) = custody.find_control_output(
     outputs,
-    account_hash,
+    proxy_hash,
     stake_script_hash,
   )
-  expect InlineDatum(data) = control.datum
-  expect [first, ..] = builtin.unconstr_fields(data)
-  expect devices: List<VerificationKeyHash> = first
-  list.has(devices, owner)
+  list.has(custody.devices_of(custody.inline_datum(control)), owner)
 }

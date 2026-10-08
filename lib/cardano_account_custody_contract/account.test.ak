@@ -15,6 +15,8 @@
 
 // USINGS **********************************************************************
 
+use aiken/builtin
+use aiken/collection/dict
 use aiken/fuzz
 use aiken/primitive/bytearray
 use cardano/address.{Address, Inline, Pointer, Script, VerificationKey}
@@ -23,27 +25,31 @@ use cardano/certificate.{
   DelegateBlockProduction, DelegateCredential, RegisterAndDelegateCredential,
   RegisterDelegateRepresentative, UnregisterCredential,
 }
-use cardano/transaction.{DatumHash, Mint, NoDatum}
+use cardano/transaction.{DatumHash, InlineDatum, Mint, NoDatum, Spend, Withdraw}
 use cardano_account_custody_contract/account.{
-  account_address, account_of_name, count_account_token_inputs,
-  find_control_input, find_control_output, find_grant_output, find_token_output,
-  grant_mint_delta, grant_token_name, has_account_token_input, has_control_input,
+  account_address, account_of_name, count_account_token_inputs, devices_of,
+  find_control_input, find_control_output, find_grant_output,
+  find_present_control, find_token_output, generation_of, grant_datum,
+  grant_generation_of, grant_mint_delta, grant_slot_of, grant_token_name,
+  has_account_token_input, has_control_input, has_device_signature,
   holds_account_token, holds_no_account_token,
   holds_only_lovelace_and_grant_token, holds_only_lovelace_and_state_nft,
-  holds_state_nft, is_authorised_by_a_device, is_control_output, is_grant_name,
-  is_signed_by_a_device, is_state_nft_name, is_valid_control_output, own_input,
-  registers_credential, registers_stake_credential, script_hash_of,
-  stake_script_hash_of, state_datum, tokens_sit_at_their_own_addresses,
+  holds_state_nft, inline_datum, is_authorised_by_a_device, is_control_output,
+  is_grant_name, is_script_hash, is_signed_by_a_device, is_state_nft_name,
+  is_valid_control_output, keeps_control_output, logic_of, mint_redeemer_of,
+  mints_grants_of, own_input, registers_credential, registers_stake_credential,
+  script_hash_of, spend_redeemer_of, stake_script_hash_of, state_datum,
+  tokens_sit_at_their_own_addresses, withdraws_from,
 }
 use cardano_account_custody_contract/test_helpers.{
   control_output, control_value, device_key, fund_output, grant_output,
-  grant_token, grant_value, input, other_account_address,
-  other_stake_script_hash, output, output_reference, publishing,
-  recipient_address, registration, script_hash, stake_script_hash, state_nft,
-  stranger_key,
+  grant_token, grant_value, input, logic_hash, next_logic_hash,
+  other_account_address, other_stake_script_hash, output, output_reference,
+  publishing, recipient_address, registration, script_hash, stake_script_hash,
+  state_nft, stranger_key,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, Grant, Operate, Scope,
+  AccountState, Asset, Device, Grant, IssueGrants, Operate, Run, Scope,
 }
 
 // FUNCTIONS *******************************************************************
@@ -51,6 +57,7 @@ use cardano_account_custody_contract/types.{
 /// The state of the account under test: one device and one issued grant.
 fn state() -> AccountState {
   AccountState {
+    logic: logic_hash,
     devices: [device_key],
     grant_generation: 0,
     next_slot: 1,
@@ -672,6 +679,171 @@ test tokens_sit_at_their_own_addresses_rejects_a_quantity_of_two() {
   !tokens_sit_at_their_own_addresses([doubled], script_hash)
 }
 
+/// The minted entries of `mint` under the test proxy, as the proxy reads
+/// them.
+fn minted(mint: assets.Assets) -> Pairs<assets.AssetName, Int> {
+  assets.tokens(mint, script_hash) |> dict.to_pairs
+}
+
+test mints_grants_of_accepts_grant_tokens_of_the_account_in_the_quantity() {
+  let mint = assets.merge(
+    grant_token(stake_script_hash, 5),
+    grant_token(stake_script_hash, 6),
+  )
+  mints_grants_of(minted(mint), stake_script_hash, 1)
+}
+
+test mints_grants_of_accepts_burns_of_the_account_in_the_quantity() {
+  let mint = assets.from_asset(
+    script_hash,
+    grant_token_name(stake_script_hash, 5),
+    -1,
+  )
+  mints_grants_of(minted(mint), stake_script_hash, -1)
+}
+
+test mints_grants_of_accepts_an_empty_mint() {
+  mints_grants_of([], stake_script_hash, 1)
+}
+
+test mints_grants_of_rejects_the_other_quantity() {
+  let burn = assets.from_asset(
+    script_hash,
+    grant_token_name(stake_script_hash, 5),
+    -1,
+  )
+  and {
+    !mints_grants_of(
+      minted(grant_token(stake_script_hash, 5)),
+      stake_script_hash,
+      -1,
+    ),
+    !mints_grants_of(minted(burn), stake_script_hash, 1),
+  }
+}
+
+test mints_grants_of_rejects_a_quantity_of_two() {
+  let mint = assets.from_asset(
+    script_hash,
+    grant_token_name(stake_script_hash, 5),
+    2,
+  )
+  !mints_grants_of(minted(mint), stake_script_hash, 1)
+}
+
+test mints_grants_of_rejects_a_burn_beside_an_issuance() {
+  let mint = assets.merge(
+    grant_token(stake_script_hash, 5),
+    assets.from_asset(script_hash, grant_token_name(stake_script_hash, 1), -1),
+  )
+  !mints_grants_of(minted(mint), stake_script_hash, 1)
+}
+
+test mints_grants_of_rejects_the_state_nft_name() {
+  and {
+    !mints_grants_of(minted(state_nft(stake_script_hash)), stake_script_hash, 1),
+    !mints_grants_of(
+      minted(assets.from_asset(script_hash, stake_script_hash, -1)),
+      stake_script_hash,
+      -1,
+    ),
+  }
+}
+
+test mints_grants_of_rejects_another_accounts_grant_token_beside_its_own() {
+  let mint = assets.merge(
+    grant_token(stake_script_hash, 5),
+    grant_token(other_stake_script_hash, 0),
+  )
+  !mints_grants_of(minted(mint), stake_script_hash, 1)
+}
+
+test mints_grants_of_rejects_another_accounts_state_nft_beside_its_own_grant() {
+  let mint = assets.merge(
+    grant_token(stake_script_hash, 5),
+    state_nft(other_stake_script_hash),
+  )
+  !mints_grants_of(minted(mint), stake_script_hash, 1)
+}
+
+test keeps_control_output_accepts_the_control_output_among_others() {
+  let payout = output(recipient_address(), assets.from_lovelace(1), NoDatum)
+  keeps_control_output(
+    [payout, grant_utxo(), control()],
+    script_hash,
+    stake_script_hash,
+  )
+}
+
+test keeps_control_output_accepts_a_datum_of_any_shape() {
+  let foreign: Data = 42
+  let control = output(
+    test_helpers.account_address(),
+    control_value(stake_script_hash, 1),
+    InlineDatum(foreign),
+  )
+  keeps_control_output([control], script_hash, stake_script_hash)
+}
+
+test keeps_control_output_rejects_no_holder() {
+  !keeps_control_output([grant_utxo()], script_hash, stake_script_hash)
+}
+
+test keeps_control_output_rejects_two_holders() {
+  !keeps_control_output([control(), control()], script_hash, stake_script_hash)
+}
+
+test keeps_control_output_rejects_the_nft_at_another_address() {
+  let stray = output(
+    recipient_address(),
+    control_value(stake_script_hash, 1),
+    test_helpers.state_datum(state()),
+  )
+  let exported = output(
+    other_account_address(),
+    control_value(stake_script_hash, 1),
+    test_helpers.state_datum(state()),
+  )
+  and {
+    !keeps_control_output([stray], script_hash, stake_script_hash),
+    !keeps_control_output([exported], script_hash, stake_script_hash),
+  }
+}
+
+test keeps_control_output_rejects_an_extra_token() {
+  let parked = output(
+    test_helpers.account_address(),
+    assets.merge(control_value(stake_script_hash, 1), other_token()),
+    test_helpers.state_datum(state()),
+  )
+  !keeps_control_output([parked], script_hash, stake_script_hash)
+}
+
+test keeps_control_output_rejects_a_datum_hash_and_no_datum() {
+  let hashed = output(
+    test_helpers.account_address(),
+    control_value(stake_script_hash, 1),
+    DatumHash(stranger_key),
+  )
+  let bare = output(
+    test_helpers.account_address(),
+    control_value(stake_script_hash, 1),
+    NoDatum,
+  )
+  and {
+    !keeps_control_output([hashed], script_hash, stake_script_hash),
+    !keeps_control_output([bare], script_hash, stake_script_hash),
+  }
+}
+
+test keeps_control_output_rejects_a_reference_script() {
+  let encumbered = transaction.Output {
+    ..control(),
+    reference_script: Some(logic_hash),
+  }
+  !keeps_control_output([encumbered], script_hash, stake_script_hash)
+}
+
 test grant_mint_delta_is_zero_without_a_mint() {
   grant_mint_delta(assets.zero, script_hash, stake_script_hash) == (0, 0)
 }
@@ -984,4 +1156,289 @@ test registers_stake_credential_ignores_a_certificate_without_a_redeemer() {
     tx.certificates == [registration(stake_script_hash)],
     !registers_stake_credential([], stake_script_hash),
   }
+}
+
+/// A control datum of a shape no logic version here knows: the stable
+/// prefix followed by fields of its own.
+fn foreign_state() -> Data {
+  let logic: Data = next_logic_hash
+  let devices: Data = [device_key, stranger_key]
+  let generation: Data = 7
+  let later: Data = "later fields"
+  builtin.constr_data(0, [logic, devices, generation, later])
+}
+
+test is_script_hash_accepts_twenty_eight_bytes_only() {
+  and {
+    is_script_hash(logic_hash),
+    !is_script_hash(#"00"),
+    !is_script_hash(grant_token_name(stake_script_hash, 0)),
+  }
+}
+
+test inline_datum_returns_the_inline_data() {
+  let data: Data = 42
+  inline_datum(output(recipient_address(), assets.zero, InlineDatum(data))) == data
+}
+
+test inline_datum_fails_without_a_datum() fail {
+  inline_datum(fund_output(assets.zero)) == inline_datum(
+    fund_output(assets.zero),
+  )
+}
+
+test inline_datum_fails_for_a_datum_hash() fail {
+  let data: Data = 1
+  inline_datum(
+    output(recipient_address(), assets.zero, DatumHash(stranger_key)),
+  ) == data
+}
+
+test logic_of_reads_the_first_field_of_an_account_state() {
+  let data: Data = state()
+  logic_of(data) == logic_hash
+}
+
+test logic_of_reads_the_first_field_of_a_state_of_another_shape() {
+  logic_of(foreign_state()) == next_logic_hash
+}
+
+test logic_of_fails_for_a_datum_that_is_not_a_constructor() fail {
+  let data: Data = 42
+  logic_of(data) == logic_hash
+}
+
+test logic_of_fails_for_a_constructor_without_fields() fail {
+  logic_of(builtin.constr_data(0, [])) == logic_hash
+}
+
+test logic_of_fails_for_a_first_field_that_is_not_bytes() fail {
+  let first: Data = 1
+  logic_of(builtin.constr_data(0, [first])) == logic_hash
+}
+
+test devices_of_reads_the_second_field_of_an_account_state() {
+  let data: Data = state()
+  devices_of(data) == [device_key]
+}
+
+test devices_of_reads_the_second_field_of_a_state_of_another_shape() {
+  devices_of(foreign_state()) == [device_key, stranger_key]
+}
+
+test devices_of_fails_for_a_second_field_that_is_not_a_key_list() fail {
+  let logic: Data = logic_hash
+  let second: Data = 1
+  devices_of(builtin.constr_data(0, [logic, second])) == []
+}
+
+test generation_of_reads_the_third_field_of_an_account_state() {
+  let data: Data = AccountState { ..state(), grant_generation: 3 }
+  generation_of(data) == 3
+}
+
+test generation_of_reads_the_third_field_of_a_state_of_another_shape() {
+  generation_of(foreign_state()) == 7
+}
+
+test generation_of_fails_for_a_third_field_that_is_not_an_integer() fail {
+  let logic: Data = logic_hash
+  let devices: Data = [device_key]
+  let third: Data = "x"
+  generation_of(builtin.constr_data(0, [logic, devices, third])) == 0
+}
+
+/// A grant datum of another shape: the stable prefix followed by fields
+/// this revision does not know.
+fn foreign_grant() -> Data {
+  let slot: Data = 5
+  let grantee: Data = stranger_key
+  let generation: Data = 9
+  let later: Data = "later fields"
+  builtin.constr_data(0, [slot, grantee, generation, later])
+}
+
+test grant_slot_of_reads_the_first_field_of_a_grant() {
+  let data: Data = Grant { ..grant(), slot: 3 }
+  grant_slot_of(data) == 3
+}
+
+test grant_slot_of_reads_the_first_field_of_a_grant_of_another_shape() {
+  grant_slot_of(foreign_grant()) == 5
+}
+
+test grant_slot_of_fails_for_a_first_field_that_is_not_an_integer() fail {
+  let first: Data = "x"
+  grant_slot_of(builtin.constr_data(0, [first])) == 0
+}
+
+test grant_generation_of_reads_the_third_field_of_a_grant() {
+  let data: Data = Grant { ..grant(), generation: 4 }
+  grant_generation_of(data) == 4
+}
+
+test grant_generation_of_reads_the_third_field_of_a_grant_of_another_shape() {
+  grant_generation_of(foreign_grant()) == 9
+}
+
+test grant_generation_of_fails_for_a_third_field_that_is_not_an_integer() fail {
+  let slot: Data = 0
+  let grantee: Data = stranger_key
+  let third: Data = "x"
+  grant_generation_of(builtin.constr_data(0, [slot, grantee, third])) == 0
+}
+
+test grant_datum_decodes_the_inline_grant() {
+  grant_datum(grant_utxo()) == grant()
+}
+
+test grant_datum_fails_for_a_state_datum() fail {
+  grant_datum(control()) == grant()
+}
+
+test has_device_signature_accepts_any_listed_device() {
+  has_device_signature([device_key, stranger_key], [stranger_key])
+}
+
+test has_device_signature_rejects_an_unlisted_signer() {
+  !has_device_signature([device_key], [stranger_key])
+}
+
+test is_authorised_by_a_device_reads_the_devices_of_a_state_of_another_shape() {
+  let control = input(
+    0,
+    output(
+      test_helpers.account_address(),
+      control_value(stake_script_hash, 2_000_000),
+      InlineDatum(foreign_state()),
+    ),
+  )
+  and {
+    is_authorised_by_a_device(
+      [],
+      [control],
+      [stranger_key],
+      script_hash,
+      stake_script_hash,
+    ),
+    !is_authorised_by_a_device(
+      [],
+      [control],
+      [output_reference(0).transaction_id],
+      script_hash,
+      stake_script_hash,
+    ),
+  }
+}
+
+test find_present_control_finds_a_spent_control() {
+  find_present_control(
+    [input(0, control()), input(1, fund_output(assets.zero))],
+    [],
+    script_hash,
+    stake_script_hash,
+  ) == Some(control())
+}
+
+test find_present_control_finds_a_referenced_control() {
+  find_present_control(
+    [input(1, fund_output(assets.zero))],
+    [input(0, control())],
+    script_hash,
+    stake_script_hash,
+  ) == Some(control())
+}
+
+test find_present_control_returns_none_without_a_control() {
+  find_present_control(
+    [input(1, fund_output(assets.zero)), input(2, grant_utxo())],
+    [],
+    script_hash,
+    stake_script_hash,
+  ) == None
+}
+
+test find_present_control_returns_none_for_a_control_spent_and_referenced() {
+  find_present_control(
+    [input(0, control())],
+    [input(5, control())],
+    script_hash,
+    stake_script_hash,
+  ) == None
+}
+
+test find_present_control_returns_none_for_two_controls_spent() {
+  find_present_control(
+    [input(0, control()), input(1, control())],
+    [],
+    script_hash,
+    stake_script_hash,
+  ) == None
+}
+
+test find_present_control_ignores_another_accounts_control() {
+  let other = output(
+    other_account_address(),
+    control_value(other_stake_script_hash, 2_000_000),
+    test_helpers.state_datum(state()),
+  )
+  find_present_control([input(0, other)], [], script_hash, stake_script_hash) == None
+}
+
+test find_present_control_ignores_the_nft_at_another_address() {
+  let stray = output(
+    other_account_address(),
+    control_value(stake_script_hash, 2_000_000),
+    test_helpers.state_datum(state()),
+  )
+  find_present_control([input(0, stray)], [], script_hash, stake_script_hash) == None
+}
+
+test withdraws_from_accepts_a_withdrawal_of_any_amount() {
+  and {
+    withdraws_from([Pair(Script(logic_hash), 0)], logic_hash),
+    withdraws_from(
+      [Pair(Script(stake_script_hash), 5), Pair(Script(logic_hash), 1)],
+      logic_hash,
+    ),
+  }
+}
+
+test withdraws_from_rejects_a_missing_withdrawal() {
+  !withdraws_from([Pair(Script(next_logic_hash), 0)], logic_hash)
+}
+
+test withdraws_from_rejects_a_key_credential_of_the_same_bytes() {
+  !withdraws_from([Pair(VerificationKey(logic_hash), 0)], logic_hash)
+}
+
+test spend_redeemer_of_reads_the_redeemer_of_the_input() {
+  let device: Data = Device
+  let run: Data = Run
+  let redeemers = [
+    Pair(Withdraw(Script(logic_hash)), run),
+    Pair(Spend(output_reference(3)), device),
+  ]
+  spend_redeemer_of(redeemers, output_reference(3)) == Device
+}
+
+test spend_redeemer_of_fails_without_a_redeemer_for_the_input() fail {
+  spend_redeemer_of([], output_reference(3)) == Device
+}
+
+test spend_redeemer_of_fails_for_a_redeemer_of_another_shape() fail {
+  let foreign: Data = 42
+  spend_redeemer_of(
+    [Pair(Spend(output_reference(3)), foreign)],
+    output_reference(3),
+  ) == Device
+}
+
+test mint_redeemer_of_reads_the_redeemer_of_the_policy() {
+  let issue: Data = IssueGrants
+  mint_redeemer_of([Pair(Mint(script_hash), issue)], script_hash) == IssueGrants
+}
+
+test mint_redeemer_of_fails_without_a_redeemer_for_the_policy() fail {
+  mint_redeemer_of([], script_hash) == IssueGrants
 }

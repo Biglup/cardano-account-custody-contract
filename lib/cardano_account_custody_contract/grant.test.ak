@@ -15,6 +15,7 @@
 
 // USINGS **********************************************************************
 
+use aiken/builtin
 use aiken/collection/list
 use aiken/fuzz
 use aiken/interval
@@ -31,9 +32,9 @@ use cardano_account_custody_contract/grant.{
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
-  grant_output, grant_value, input, other_account_address, other_fund_output,
-  other_stake_script_hash, output, recipient_address, script_hash,
-  stake_script_hash, state_datum, stranger_key,
+  grant_output, grant_value, input, logic_hash, other_account_address,
+  other_fund_output, other_stake_script_hash, output, recipient_address,
+  script_hash, stake_script_hash, state_datum, stranger_key,
 }
 use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
@@ -112,6 +113,7 @@ fn empty_scope() -> Scope {
 /// issued grants.
 fn state() -> AccountState {
   AccountState {
+    logic: logic_hash,
     devices: [device_key],
     grant_generation: 1,
     next_slot: 2,
@@ -401,12 +403,34 @@ test is_current_rejects_a_revoked_slot() {
   !is_current(lovelace_grant(), AccountState { ..state(), revoked: [3, 0] })
 }
 
+/// Whether `grant`, as an inline datum, is dead against `state` within
+/// `validity_range`.
+fn dead(
+  grant: Grant,
+  state: AccountState,
+  validity_range: interval.Interval,
+) -> Bool {
+  let data: Data = grant
+  is_dead(data, state, validity_range)
+}
+
+/// The lovelace grant of `generation` as a datum of another shape: its
+/// four fields followed by a fifth.
+fn padded_lovelace_grant(generation: Int) -> Data {
+  let slot: Data = lovelace_grant().slot
+  let grantee: Data = lovelace_grant().grantee
+  let generation: Data = generation
+  let scope: Data = lovelace_grant().scope
+  let extra_field: Data = 7
+  builtin.constr_data(0, [slot, grantee, generation, scope, extra_field])
+}
+
 test is_dead_rejects_a_live_grant() {
-  !is_dead(lovelace_grant(), state(), interval.before(999))
+  !dead(lovelace_grant(), state(), interval.before(999))
 }
 
 test is_dead_accepts_an_older_generation() {
-  is_dead(
+  dead(
     Grant { ..lovelace_grant(), generation: 0 },
     state(),
     interval.everything,
@@ -414,7 +438,7 @@ test is_dead_accepts_an_older_generation() {
 }
 
 test is_dead_accepts_a_revoked_slot() {
-  is_dead(
+  dead(
     lovelace_grant(),
     AccountState { ..state(), revoked: [0] },
     interval.everything,
@@ -422,11 +446,34 @@ test is_dead_accepts_a_revoked_slot() {
 }
 
 test is_dead_accepts_a_range_starting_after_the_expiry() {
-  is_dead(lovelace_grant(), state(), interval.after(1_001))
+  dead(lovelace_grant(), state(), interval.after(1_001))
 }
 
 test is_dead_rejects_a_range_starting_at_the_expiry() {
-  !is_dead(lovelace_grant(), state(), interval.after(1_000))
+  !dead(lovelace_grant(), state(), interval.after(1_000))
+}
+
+/// A grant of another shape dies by its prefix alone: an older generation
+/// or a revoked slot kills it, and a range past the expiry its scope would
+/// carry does not, since that scope cannot be read.
+test is_dead_accepts_an_older_generation_of_a_grant_of_another_shape() {
+  is_dead(padded_lovelace_grant(0), state(), interval.everything)
+}
+
+test is_dead_accepts_a_revoked_slot_of_a_grant_of_another_shape() {
+  is_dead(
+    padded_lovelace_grant(1),
+    AccountState { ..state(), revoked: [0] },
+    interval.everything,
+  )
+}
+
+test is_dead_ignores_the_expiry_of_a_grant_of_another_shape() {
+  !is_dead(padded_lovelace_grant(1), state(), interval.after(1_001))
+}
+
+test is_dead_fails_for_a_datum_without_the_prefix() fail {
+  is_dead(builtin.constr_data(0, []), state(), interval.everything)
 }
 
 test a_revoked_slot_is_never_current(case via revoked_grant_fuzzer()) {
@@ -442,8 +489,8 @@ test a_revoked_slot_is_never_current(case via revoked_grant_fuzzer()) {
 test a_revoked_slot_is_dead_whatever_the_range(case via revoked_grant_fuzzer()) {
   let (state, grant) = case
   and {
-    is_dead(grant, state, interval.everything),
-    is_dead(grant, state, interval.before(grant.scope.expires_at)),
+    dead(grant, state, interval.everything),
+    dead(grant, state, interval.before(grant.scope.expires_at)),
   }
 }
 
@@ -451,7 +498,7 @@ test an_unrevoked_slot_of_the_generation_is_current(
   case via live_grant_fuzzer(),
 ) {
   let (state, grant) = case
-  is_current(grant, state) && !is_dead(grant, state, interval.everything)
+  is_current(grant, state) && !dead(grant, state, interval.everything)
 }
 
 test a_grant_of_an_older_generation_is_never_current(

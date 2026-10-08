@@ -74,6 +74,7 @@ fn valid_grant() -> Grant {
 /// A well formed state with one device and one issued grant.
 fn valid_state() -> AccountState {
   AccountState {
+    logic: #"00000000000000000000000000000000000000000000000000000008",
     devices: devices(1),
     grant_generation: 0,
     next_slot: 1,

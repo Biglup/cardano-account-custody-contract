@@ -20,17 +20,19 @@ use aiken/primitive/bytearray
 use cardano/address.{Inline, Script}
 use cardano/assets
 use cardano/certificate.{RegisterCredential}
-use cardano/transaction.{InlineDatum, NoDatum, Publish}
+use cardano/transaction.{InlineDatum, Mint, NoDatum, Publish, Spend, Withdraw}
 use cardano_account_custody_contract/account
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
-  grant_output, grant_token, grant_value, input, other_account_address,
-  other_control_output, other_fund_output, other_grant_output,
-  other_stake_script_hash, output_reference, publishing, referencing,
-  registration, script_hash, stake_script_hash, state_nft, stranger_key,
+  grant_output, grant_token, grant_value, input, logic_hash, minting,
+  next_logic_hash, other_account_address, other_control_output,
+  other_fund_output, other_grant_output, other_stake_script_hash,
+  output_reference, publishing, referencing, registration, script_hash, spending,
+  stake_script_hash, state_nft, stranger_key, with_proxy_redeemers, withdrawing,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, Grant, Operate, Scope,
+  AccountState, Asset, BurnGrants, CreateAccount, Device, Fund, Grant,
+  IssueGrants, Operate, Run, Scope, SpendWithGrant, SweepGrant,
 }
 
 // FUNCTIONS *******************************************************************
@@ -39,6 +41,7 @@ use cardano_account_custody_contract/types.{
 /// counters.
 fn state() -> AccountState {
   AccountState {
+    logic: logic_hash,
     devices: [device_key],
     grant_generation: 0,
     next_slot: 0,
@@ -229,4 +232,138 @@ test publishing_appends_the_certificate_and_its_redeemer() {
     ],
     built.extra_signatories == [device_key],
   }
+}
+
+test withdrawing_adds_a_zero_withdrawal_and_its_redeemer_per_logic() {
+  let run: Data = Run
+  let built = test_helpers.transaction(
+    [],
+    [],
+    assets.zero,
+    [device_key],
+    interval.everything,
+  )
+    |> withdrawing([logic_hash, next_logic_hash])
+  and {
+    built.withdrawals == [
+      Pair(Script(logic_hash), 0),
+      Pair(Script(next_logic_hash), 0),
+    ],
+    built.redeemers == [
+      Pair(Withdraw(Script(logic_hash)), run),
+      Pair(Withdraw(Script(next_logic_hash)), run),
+    ],
+  }
+}
+
+/// The redeemers a builder attaches: `Device` on the control UTxO,
+/// `SweepGrant` on a grant UTxO beside it, `Fund` on a deposit, nothing
+/// on an input outside the account, and `BurnGrants` for a burn.
+test with_proxy_redeemers_attaches_the_owner_path_redeemers() {
+  let device: Data = Device
+  let sweep: Data = SweepGrant
+  let fund: Data = Fund
+  let burn: Data = BurnGrants
+  let built = test_helpers.transaction(
+    [
+      input(0, control_output(state(), 2_000_000)),
+      input(1, grant_output(grant(), 2_000_000)),
+      input(2, fund_output(assets.from_lovelace(1))),
+      input(
+        3,
+        transaction.Output {
+          address: address.from_verification_key(stranger_key),
+          value: assets.from_lovelace(1),
+          datum: NoDatum,
+          reference_script: None,
+        },
+      ),
+    ],
+    [],
+    assets.from_asset(
+      script_hash,
+      account.grant_token_name(stake_script_hash, 3),
+      -1,
+    ),
+    [device_key],
+    interval.everything,
+  )
+    |> with_proxy_redeemers()
+  built.redeemers == [
+    Pair(Spend(output_reference(0)), device),
+    Pair(Spend(output_reference(1)), sweep),
+    Pair(Spend(output_reference(2)), fund),
+    Pair(Mint(script_hash), burn),
+  ]
+}
+
+/// Without a control UTxO spent a grant UTxO carries `SpendWithGrant`,
+/// and a mint of a state NFT carries `CreateAccount`.
+test with_proxy_redeemers_attaches_the_agent_path_and_creation_redeemers() {
+  let spend: Data = SpendWithGrant
+  let create: Data = CreateAccount
+  let built = test_helpers.transaction(
+    [input(1, grant_output(grant(), 2_000_000))],
+    [],
+    state_nft(stake_script_hash),
+    [device_key],
+    interval.everything,
+  )
+    |> with_proxy_redeemers()
+  built.redeemers == [
+    Pair(Spend(output_reference(1)), spend),
+    Pair(Mint(script_hash), create),
+  ]
+}
+
+test with_proxy_redeemers_keeps_the_redeemers_already_present() {
+  let fund: Data = Fund
+  let issue: Data = IssueGrants
+  let built = test_helpers.transaction(
+    [input(0, control_output(state(), 2_000_000))],
+    [],
+    grant_token(stake_script_hash, 0),
+    [device_key],
+    interval.everything,
+  )
+    |> spending(0, Fund)
+    |> minting(IssueGrants)
+    |> with_proxy_redeemers()
+  built.redeemers == [
+    Pair(Spend(output_reference(0)), fund),
+    Pair(Mint(script_hash), issue),
+  ]
+}
+
+test spending_replaces_the_redeemer_of_the_input() {
+  let fund: Data = Fund
+  let run: Data = Run
+  let built = test_helpers.transaction(
+    [input(0, control_output(state(), 2_000_000))],
+    [],
+    assets.zero,
+    [device_key],
+    interval.everything,
+  )
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash])
+    |> spending(0, Fund)
+  built.redeemers == [
+    Pair(Withdraw(Script(logic_hash)), run),
+    Pair(Spend(output_reference(0)), fund),
+  ]
+}
+
+test minting_replaces_the_mint_redeemer() {
+  let burn: Data = BurnGrants
+  let built = test_helpers.transaction(
+    [],
+    [],
+    grant_token(stake_script_hash, 0),
+    [device_key],
+    interval.everything,
+  )
+    |> with_proxy_redeemers()
+    |> minting(BurnGrants)
+  built.redeemers == [Pair(Mint(script_hash), burn)]
 }

@@ -62,17 +62,25 @@ pub fn starts_after_expiry(
 }
 
 /// Whether a grant can no longer be spent against the account's current
-/// state: issued under an older generation, revoked by slot, or expired
-/// as the validity range proves.
+/// state, judged from the stable prefix of its datum: issued under an
+/// older generation or revoked by slot. Expiry, as the validity range
+/// proves it, lives in the scope and so counts only when the datum
+/// decodes as a full `Grant`; a grant of another shape, issued under
+/// another revision, dies by generation or revocation alone. Fails on a
+/// datum without the prefix.
 pub fn is_dead(
-  grant: Grant,
+  data: Data,
   state: AccountState,
   validity_range: ValidityRange,
 ) -> Bool {
   or {
-    grant.generation < state.grant_generation,
-    list.has(state.revoked, grant.slot),
-    starts_after_expiry(validity_range, grant.scope.expires_at),
+    account.grant_generation_of(data) < state.grant_generation,
+    list.has(state.revoked, account.grant_slot_of(data)),
+    if data is grant: Grant {
+      starts_after_expiry(validity_range, grant.scope.expires_at)
+    } else {
+      False
+    },
   }
 }
 
