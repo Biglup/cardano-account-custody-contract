@@ -104,10 +104,10 @@ export const MAX_GRANT_BATCH = 8;
  * execution pays to decode the whole transaction context on top of its
  * own work, so each fund input adds a proxy run whose cost grows with the
  * transaction: a spend over twenty five deposits at the largest control
- * state measured about twenty million memory units, above the fourteen
- * million limit, while twelve stay near half of it. A spend needing more
- * is refused with this bound named, and `fundBatches` splits the funds
- * into sweeps of at most this many.
+ * state measured about twenty million memory units, above preprod's
+ * limit of seventeen and a half million, while twelve stay under half of
+ * it. A spend needing more is refused with this bound named, and
+ * `fundBatches` splits the funds into sweeps of at most this many.
  */
 export const MAX_FUND_INPUTS = 12;
 

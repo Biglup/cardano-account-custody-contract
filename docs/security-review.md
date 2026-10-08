@@ -1168,18 +1168,20 @@ decoding of the script context, which every script execution pays on
 chain in proportion to the size of the transaction, so the net figures
 understate the on-chain cost of every execution, and the more so the
 more inputs the transaction has; the on-chain figures below come from
-the preprod run and are the ones to size by. The mainnet limits are
-14,000,000 memory units and 10,000,000,000 CPU steps per transaction and
-62,000,000 memory units and 20,000,000,000 steps per block; a transaction
-pays the sum over every handler it runs, one per script input, mint
-policy, certificate and withdrawal. Under the split a transaction runs
-the proxy once per script input and once for the mint, and the logic
-once through its withdrawal, twice on an upgrade. The tests are named
-`budget_proxy_<fixture>_<handler>`, `budget_logic_<fixture>` and, for
-the upgrade, `budget_old_logic_` and `budget_new_logic_`; `largest_state`
-fills its revoked list with slots 1 to `max_revoked`, puts the largest
-token grant and the largest lovelace grant at `max_revoked` plus 6 and
-plus 7 and its next slot at `max_revoked` plus 8.
+the preprod run and are the ones to size by. Every share of a limit
+below is a share of preprod's limits, the ones the runs read back from
+the chain: 17,500,000 memory units and 10,000,000,000 CPU steps per
+transaction and 77,500,000 memory units and 20,000,000,000 steps per
+block. A transaction pays the sum over every handler it runs, one per
+script input, mint policy, certificate and withdrawal. Under the split
+a transaction runs the proxy once per script input and once for the
+mint, and the logic once through its withdrawal, twice on an upgrade.
+The tests are named `budget_proxy_<fixture>_<handler>`,
+`budget_logic_<fixture>` and, for the upgrade, `budget_old_logic_` and
+`budget_new_logic_`; `largest_state` fills its revoked list with slots
+1 to `max_revoked`, puts the largest token grant and the largest
+lovelace grant at `max_revoked` plus 6 and plus 7 and its next slot at
+`max_revoked` plus 8.
 
 Net memory units and CPU steps per execution over the largest state, in
 millions and billions:
@@ -1216,12 +1218,14 @@ units:
 - Revoke, revoke all or device rewrite: the proxy and the logic, 1.33 M.
 - Upgrade: the proxy, the leaving logic and the arriving logic, 1.62 M.
 - Issuance of one grant: 2.41 M. Eight grants with eight recipients
-  each: 7.71 M, 55 percent of the limit. Sixteen at once: 16.44 M, over
-  the limit, since the logic's issuance grows with the count. The
-  off-chain builder issues at most eight grants per transaction
-  (`MAX_GRANT_BATCH`); grants with fewer recipients are cheaper.
+  each: 7.71 M, 44 percent of the limit. Sixteen at once: 16.44 M, 94
+  percent, since the logic's issuance grows with the count, which leaves
+  less margin than the context decoding the runner does not charge, so
+  sixteen does not fit on chain. The off-chain builder issues at most
+  eight grants per transaction (`MAX_GRANT_BATCH`); grants with fewer
+  recipients are cheaper.
 - Sweep of one dead grant: 2.14 M. Eight at once, with eight proxy
-  executions at the last input's figure: 8.08 M, 58 percent. Sixteen at
+  executions at the last input's figure: 8.08 M, 46 percent. Sixteen at
   once: 19.34 M, over the limit. The builder sweeps at most eight per
   transaction.
 - Agent spend over eight deposits: 4.17 M; over the token scope with one
@@ -1235,9 +1239,9 @@ units:
 On chain. The preprod run of `offchain/scripts/preprod-e2e.ts` read the
 execution units of every confirmed transaction back from the chain. The
 differences from the figures above are the context decoding: an eight
-grant issue measured 47 to 51 percent of the memory limit, an eight
-grant sweep 50 to 70 percent depending on the order of its inputs, and a
-device rewrite or revoke over the largest state 7 to 9 percent. The
+grant issue measured 38 to 41 percent of the memory limit, an eight
+grant sweep 40 to 56 percent depending on the order of its inputs, and a
+device rewrite or revoke over the largest state 6 to 7 percent. The
 agent spend over many deposits is where the method matters most, since
 every `Fund` execution decodes the whole transaction: a grant spend over
 one fund input measured about 1.13 M memory units, over thirteen about
@@ -1255,9 +1259,9 @@ their parked UTxOs and about 1.05 M lovelace with both embedded
 Observations.
 
 - The heaviest single execution of a transaction that fits is the logic
-  over an eight grant issuance at 6.71 M, 48 percent of the limit; the
-  14.78 M over sixteen only occurs in a transaction over the limit. The
-  heaviest owner transaction that fits is the eight grant sweep at
+  over an eight grant issuance at 6.71 M, 38 percent of the limit; the
+  14.78 M over sixteen only occurs in a transaction that does not fit.
+  The heaviest owner transaction that fits is the eight grant sweep at
   8.08 M. The proxy's executions are small, 0.08 M to 1.00 M, and
   bounded by the scans of the inputs and the outputs they make, the
   placement scan over the outputs among them. No path of the owner is
@@ -1551,9 +1555,9 @@ No other attack succeeded.
   datum names, and both logics on an upgrade.
 - Parameter choices. `max_grants` 16, `max_recipients` 8 and
   `max_revoked` 32 put the heaviest single execution that fits, the
-  logic over eight largest grants, at 48 percent of the memory budget in
+  logic over eight largest grants, at 38 percent of the memory budget in
   the `aiken check` runner, and the heaviest owner transaction that
-  fits, an eight grant sweep, at 58 percent locally and 50 to 70 percent
+  fits, an eight grant sweep, at 46 percent locally and 40 to 56 percent
   on preprod. Lower a bound or the batch size if a later measurement
   approaches the limit; the bounds belong to the logic and move with a
   version. Grant caps and expiries are the owner's choice; a grant with

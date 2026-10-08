@@ -48,8 +48,6 @@ import {
   TOKEN_PER_CALL_CAP,
   TOKEN_SPEND_LOVELACE,
   TOKEN_SUPPLY,
-  TRANSACTION_MEMORY_LIMIT,
-  TRANSACTION_STEPS_LIMIT,
   budgetRows,
   classifyFailure,
   evidenceDocument,
@@ -67,6 +65,9 @@ import {
 /* CONSTANTS ******************************************************************/
 
 const TX_ID = 'ab'.repeat(32);
+
+/** The per transaction execution unit limits preprod reports, as a run reads them from the chain. */
+const LIMITS = { memory: 17_500_000n, steps: 10_000_000_000n };
 
 /** The text of a Plutus failure as the ledger prints it, with the script bytes ahead of the error and the context after it. */
 const PLUTUS_FAILURE_TEXT = [
@@ -135,14 +136,17 @@ const measured = (txId: string, spendMemory: bigint): MeasuredTransaction => ({
 /* TESTS **********************************************************************/
 
 describe('SETUP_PLAN', () => {
-  it('registers the logic credential, parks the proxy and the logic, and checks the zero withdrawal both ways', () => {
+  it('registers the logic credential, parks the proxy and the logic, and shows the bare withdrawal refused from a registered and an unregistered credential', () => {
     expect(SETUP_PLAN.map((flow) => flow.step)).toEqual([1, 2, 3, 4, 5]);
     expect(SETUP_PLAN[0]!.description).toContain('register the logic v1 credential');
     expect(SETUP_PLAN[1]!.description).toContain('park the proxy as a reference script');
     expect(SETUP_PLAN[2]!.description).toContain('park logic v1 as a reference script');
     expect(SETUP_PLAN.filter((flow) => /always fail script address/.test(flow.description)).map((flow) => flow.step)).toEqual([2, 3]);
-    expect(SETUP_PLAN[3]!.outcome).toBe('confirmed');
-    expect(SETUP_PLAN[3]!.description).toContain('zero withdrawal from the registered logic v1 credential');
+    expect(SETUP_PLAN[3]!.outcome).toBe('refused by the node');
+    expect(SETUP_PLAN[3]!.description).toContain('bare zero withdrawal from the registered logic v1 credential');
+    expect(SETUP_PLAN[3]!.description).toContain('arrival path');
+    expect(SETUP_PLAN[3]!.expectedMessage?.test('ValidationTagMismatch Phase2Valid (FailedUnexpectedly (PlutusFailure "boom")))')).toBe(true);
+    expect(SETUP_PLAN[3]!.expectedMessage?.test('ConwayCertsFailure (WithdrawalsNotInRewardsCERTS (fromList [...]))')).toBe(false);
     expect(SETUP_PLAN[4]!.outcome).toBe('refused by the node in phase one');
     expect(SETUP_PLAN[4]!.expectedMessage?.test('ConwayCertsFailure (WithdrawalsNotInRewardsCERTS (fromList [...]))')).toBe(true);
     expect(SETUP_PLAN[4]!.expectedMessage?.test('PlutusFailure')).toBe(false);
@@ -235,21 +239,24 @@ describe('FLOW_PLAN', () => {
     expect(FLOW_PLAN.filter((flow) => flow.budget !== undefined).map((flow) => flow.step)).toEqual([27, 28, 29, 30, 31, 32, 33, 39]);
     for (const flow of FLOW_PLAN.filter((candidate) => candidate.budget !== undefined)) {
       for (const reference of flow.budget!) {
-        expect(reference.netMemory).toBeLessThan(Number(TRANSACTION_MEMORY_LIMIT));
-        expect(reference.netSteps).toBeLessThan(Number(TRANSACTION_STEPS_LIMIT));
+        expect(reference.netMemory).toBeLessThan(Number(LIMITS.memory));
+        expect(reference.netSteps).toBeLessThan(Number(LIMITS.steps));
       }
     }
   });
 
-  it('shows one sweep over every deposit refused over the limit, then sweeps at least twenty deposits in bounded batches under a grant wide enough', () => {
+  it('shows a spend over one more fund UTxO than the bound refused by the builder, then sweeps at least twenty deposits in bounded batches under a grant wide enough', () => {
     expect(SMALL_DEPOSIT_COUNT).toBeGreaterThanOrEqual(20);
     expect(SWEEP_BATCH).toBe(MAX_FUND_INPUTS);
     expect(SWEEP_BATCH).toBe(12);
-    expect(SWEEP_BATCH).toBeLessThan(SMALL_DEPOSIT_COUNT);
+    expect(SWEEP_BATCH + 1).toBeLessThan(SMALL_DEPOSIT_COUNT);
     expect(FLOW_PLAN[35]!.description).toContain('twenty UTxOs');
     expect(FLOW_PLAN[37]!.outcome).toBe('refused by the builder');
-    expect(FLOW_PLAN[37]!.expectedMessage?.test('A spend over 25 fund UTxOs evaluates at 20575197 memory units and 7772140129 steps over 26 redeemers, which exceeds the transaction memory limit of 14000000 memory units and 10000000000 steps')).toBe(true);
-    expect(FLOW_PLAN[38]!.description).toContain('at most twelve fund UTxOs');
+    expect(FLOW_PLAN[37]!.description).toContain('13 largest fund UTxOs');
+    expect(FLOW_PLAN[37]!.expectedMessage?.test('The spend needs 13 fund UTxOs, more than the 12 one grant spend may take; sweep the funds in batches of fundBatches first')).toBe(true);
+    expect(FLOW_PLAN[37]!.expectedMessage?.test('The spend needs 13 fund UTxOs, more than the 14 one grant spend may take')).toBe(false);
+    expect(FLOW_PLAN[38]!.description).toContain('at most 12 fund UTxOs');
+    expect(FLOW_PLAN[38]!.description).toContain('the first over exactly 12');
     expect(SWEEP_GRANT_CAP).toBeGreaterThan(DEPOSIT_LOVELACE + BigInt(SMALL_DEPOSIT_COUNT) * SMALL_DEPOSIT_LOVELACE);
   });
 
@@ -277,7 +284,7 @@ describe('FLOW_PLAN', () => {
       15: 'Grant 1 refuses the spend: 11 of the scoped asset exceeds the per call cap of 10',
       19: 'Grant 0 is dead: slot 0 is revoked',
       23: 'Slot 135678122 starts after grant 2 expires',
-      38: 'A spend over 25 fund UTxOs evaluates at 20575197 memory units and 7772140129 steps over 26 redeemers, which exceeds the transaction memory limit of 14000000 memory units and 10000000000 steps',
+      38: 'The spend needs 13 fund UTxOs, more than the 12 one grant spend may take; sweep the funds in batches of fundBatches first',
       47: 'Grant 36 is dead: grant 36 was issued under generation 1 and the account is at 2',
       52: 'The wallet payment key is not a device of the account',
     };
@@ -314,7 +321,7 @@ describe('classifyFailure', () => {
     expect(classifyFailure(new Error('The account has no grant UTxO in slot 0'))).toBe('refusal');
     expect(classifyFailure(new Error('Grant 0 is dead: slot 0 is revoked'))).toBe('refusal');
     expect(classifyFailure(new Error('Slot 100 starts after grant 2 expires'))).toBe('refusal');
-    expect(classifyFailure(new Error('A spend over 25 fund UTxOs evaluates at 20575197 memory units, which exceeds the transaction memory limit of 14000000'))).toBe('refusal');
+    expect(classifyFailure(new Error('The spend needs 13 fund UTxOs, more than the 12 one grant spend may take; sweep the funds in batches of fundBatches first'))).toBe('refusal');
   });
 
   it('recognises the node refusing a script at submission', () => {
@@ -330,7 +337,13 @@ describe('classifyFailure', () => {
   it('never counts a network error as a refusal', () => {
     expect(classifyFailure(new Error('fetch failed'))).toBe('network');
     expect(classifyFailure(new Error('getUnspentOutputs: Network request failed with status 502.'))).toBe('network');
-    expect(classifyFailure(new Error('getParameters: Blockfrost threw "Usage is over limit." 429'))).toBe('network');
+    expect(classifyFailure(new Error('getParameters: Request failed with status 429. Usage is over limit.'))).toBe('network');
+    expect(classifyFailure(new Error('getParameters: Blockfrost threw "rate limit exceeded"'))).toBe('network');
+  });
+
+  it('never counts a refusal naming the number 429 as a network error', () => {
+    expect(classifyFailure(new Error('Slot 429 starts after grant 2 expires'))).toBe('refusal');
+    expect(classifyFailure(new Error('Grant 429 is dead: slot 429 is revoked'))).toBe('refusal');
   });
 
   it('leaves anything else unexplained', () => {
@@ -426,25 +439,27 @@ describe('evidence', () => {
   });
 
   it('lists the heaviest transaction of a step with its share of the limits and its breakdown, and nothing for a step without scripts', () => {
-    const row = unitsRow({ flow: FLOW_PLAN[26]!, txIds: [], measured: [measured('11'.repeat(32), 1_000_000n), measured(TX_ID, 1_200_000n)] });
+    const row = unitsRow({ flow: FLOW_PLAN[26]!, txIds: [], measured: [measured('11'.repeat(32), 1_000_000n), measured(TX_ID, 1_200_000n)] }, LIMITS);
     expect(row).toBe(
-      `| 27 | 2 | [${TX_ID.slice(0, 12)}](${explorerLink(TX_ID)}) | spend, mint | 6,200,000 (44.2%) | 1,800,000,000 (18.0%) | mint 0: 5,000,000 / 1,500,000,000; spend 0: 1,200,000 / 300,000,000 |`,
+      `| 27 | 2 | [${TX_ID.slice(0, 12)}](${explorerLink(TX_ID)}) | spend, mint | 6,200,000 (35.4%) | 1,800,000,000 (18.0%) | mint 0: 5,000,000 / 1,500,000,000; spend 0: 1,200,000 / 300,000,000 |`,
     );
-    expect(unitsRow({ flow: FLOW_PLAN[1]!, txIds: [TX_ID], measured: [] })).toBeUndefined();
+    expect(unitsRow({ flow: FLOW_PLAN[26]!, txIds: [], measured: [measured(TX_ID, 1_200_000n)] }, { memory: 20_000_000n, steps: 10_000_000_000n })).toContain('| 6,200,000 (31.0%) |');
+    expect(unitsRow({ flow: FLOW_PLAN[1]!, txIds: [TX_ID], measured: [] }, LIMITS)).toBeUndefined();
   });
 
   it('compares the heaviest transaction of a measured step with every budget row it names', () => {
-    const rows = budgetRows({ flow: FLOW_PLAN[38]!, txIds: [TX_ID], measured: [measured(TX_ID, 3_000_000n)] });
+    const rows = budgetRows({ flow: FLOW_PLAN[38]!, txIds: [TX_ID], measured: [measured(TX_ID, 3_000_000n)] }, LIMITS);
     expect(rows).toHaveLength(2);
     expect(rows[0]).toContain('| 39 | agent spend over eight deposits | SpendWithGrant and eight Fund |');
-    expect(rows[0]).toContain('| 2 | 8,000,000 | 1,800,000,000 | 3,200,000 | 1,130,000,000 | 57.1% / 18.0% |');
+    expect(rows[0]).toContain('| 2 | 8,000,000 | 1,800,000,000 | 3,200,000 | 1,130,000,000 | 45.7% / 18.0% |');
     expect(rows[1]).toContain('agent spend over forty deposits');
-    expect(budgetRows({ flow: FLOW_PLAN[0]!, txIds: [TX_ID], measured: [measured(TX_ID, 1n)] })).toEqual([]);
-    expect(budgetRows({ flow: FLOW_PLAN[38]!, txIds: [TX_ID] })).toEqual([]);
+    expect(budgetRows({ flow: FLOW_PLAN[0]!, txIds: [TX_ID], measured: [measured(TX_ID, 1n)] }, LIMITS)).toEqual([]);
+    expect(budgetRows({ flow: FLOW_PLAN[38]!, txIds: [TX_ID] }, LIMITS)).toEqual([]);
   });
 
   it('writes the account facts and every table', () => {
     const document = evidenceDocument({
+      limits: LIMITS,
       date: '2026-10-08',
       fundingAddress: 'addr_test1funding',
       ownerAddress: 'addr_test1owner',
@@ -471,6 +486,7 @@ describe('evidence', () => {
     expect(document).toContain(`- Logic v1 hash: \`${'11'.repeat(28)}\``);
     expect(document).toContain(`- Logic v2 hash: \`${'22'.repeat(28)}\``);
     expect(document).toContain('## Setup');
+    expect(document).toContain('refused by the logic in\nphase two');
     expect(document).toContain('| 1 | register the logic v1 credential');
     expect(document).toContain('| 5 | a zero withdrawal from an unregistered logic credential');
     expect(document).toContain('refused by the node in phase one: "WithdrawalsNotInRewardsCERTS"');
@@ -489,7 +505,10 @@ describe('evidence', () => {
     expect(document).toContain('## Flows');
     expect(document).toContain('| 1 | createAccount');
     expect(document).toContain('## Execution units');
+    expect(document).toContain('17,500,000 memory units and 10,000,000,000 steps, as the protocol\nparameters of preprod report it');
     expect(document).toContain('| 32 | 1 |');
+    expect(document).toContain('| 6,100,000 (34.8%) |');
+    expect(document).toContain('at most twelve\nfund UTxOs');
     expect(document).toContain('## Budget comparison');
     expect(document).toContain('| 32 | device rewrite over the largest state | Device |');
     expect(document).toContain('## Supporting transactions');
@@ -501,6 +520,7 @@ describe('evidence', () => {
 
   it('leaves out the logic v2 fact and the setup section while the run records neither', () => {
     const document = evidenceDocument({
+      limits: LIMITS,
       date: '2026-10-08',
       fundingAddress: 'addr_test1funding',
       ownerAddress: 'addr_test1owner',
@@ -521,5 +541,31 @@ describe('evidence', () => {
     expect(document).not.toContain('## Setup');
     expect(document).not.toContain('| ---- | ---- | ------------ | ------- |\n\n');
     expect(document).toContain('| 1 | createAccount');
+  });
+
+  it('titles a devnet run, lists its transactions by id and states the limits it read from the devnet', () => {
+    const document = evidenceDocument({
+      network: 'devnet',
+      limits: LIMITS,
+      date: '2026-10-08',
+      fundingAddress: 'addr_test1funding',
+      ownerAddress: 'addr_test1owner',
+      agentAddress: 'addr_test1agent',
+      recipientAddress: 'addr_test1recipient',
+      accountAddress: 'addr_test1account',
+      scriptHash: 'cd'.repeat(28),
+      stakeScriptHash: 'ef'.repeat(28),
+      rewardAddress: 'stake_test1reward',
+      poolId: 'pool1pool',
+      tokenPolicyId: '99'.repeat(28),
+      logicV1Hash: '11'.repeat(28),
+      records: [{ flow: FLOW_PLAN[31]!, txIds: [TX_ID], measured: [measured(TX_ID, 1_100_000n)] }],
+      supporting: [],
+    });
+    expect(document).toContain('# Devnet evidence');
+    expect(document).toContain('cost models of its own Conway\ngenesis, whose memory prices equal preprod and whose CPU prices for\ninteger division and byte string equality sit below it');
+    expect(document).toContain(`| 32 | ${FLOW_PLAN[31]!.description} | \`${TX_ID.slice(0, 12)}\` | confirmed |`);
+    expect(document).toContain('parameters of devnet report it');
+    expect(document).not.toContain(explorerLink(TX_ID));
   });
 });

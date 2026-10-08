@@ -1,0 +1,66 @@
+# Copyright 2026 IOG.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# The devnet: one yaci-cli container creating a fresh Conway cluster from
+# node.properties on every start, with its store as the Blockfrost shaped
+# API, and the compatibility service in front of it that the runs talk to.
+
+name: cardano-account-custody-devnet
+
+services:
+  devnet:
+    image: bloxbean/yaci-cli:0.12.0-beta5
+    container_name: cardano-account-custody-devnet
+    entrypoint: ["bash", "/app/yaci-cli.sh"]
+    command:
+      - create-node
+      - --overwrite
+      - --start
+      - --era
+      - conway
+      - --block-time
+      - "1"
+      - --slot-length
+      - "1"
+      - --epoch-length
+      - "300"
+    environment:
+      yaci_cli_mode: java
+      YACI_STORE_ENABLED: "true"
+      OGMIOS_ENABLED: "true"
+      STORE_SUBMIT_TX_EVALUATOR_MODE: ogmios
+      KUPO_ENABLED: "false"
+    ports:
+      - "8081:8080"
+      - "1337:1337"
+      - "8090:8090"
+      - "10000:10000"
+      - "3001:3001"
+    volumes:
+      - ./node.properties:/app/config/node.properties:ro
+      - ./run/clusters:/clusters
+
+  blockfrost:
+    image: node:22-alpine
+    container_name: cardano-account-custody-devnet-blockfrost
+    command: ["node", "/srv/blockfrost-compat.mjs"]
+    environment:
+      STORE_URL: http://devnet:8080
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./blockfrost-compat.mjs:/srv/blockfrost-compat.mjs:ro
+    depends_on:
+      - devnet

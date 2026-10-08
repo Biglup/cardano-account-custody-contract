@@ -20,26 +20,29 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { NativeScript, Provider, UTxO, Wallet } from '@biglup/cometa';
+import type { NativeScript, PlutusScript, Provider, UTxO, Wallet } from '@biglup/cometa';
 import { config as loadEnv } from 'dotenv';
 import { accountAddress, paymentKeyHashOf, rewardAddress } from '../src/address.js';
-import { accountScript, accountScriptHash } from '../src/blueprint.js';
+import { CURRENT_LOGIC_TITLE, accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
+import { DEVNET_NETWORK, ENV_PATH, type ProviderConfiguration, loadRunEnvironment, providerConfiguration } from '../src/config.js';
 import { posixTimeToSlot, transactionBodyParts } from '../src/body.js';
-import type { AccountState, Asset, Scope } from '../src/data.js';
+import { type AccountState, type Asset, type Scope, encodeLogicRedeemer } from '../src/data.js';
 import { type AccountRecord, accountByOwner, accountExists } from '../src/discovery.js';
-import { type NetworkScripts, loadNetworkScripts } from '../src/network.js';
+import { type NetworkScripts, type ReferenceScriptRecord, loadNetworkScripts, networkFilePath, referenceOf } from '../src/network.js';
 import { minimumUtxoLovelace } from '../src/output.js';
-import { currentLogicHash } from '../src/logic.js';
+import { currentLogicHash, currentLogicScript, logicScript, logicScriptHash } from '../src/logic.js';
 import { stakeScript, stakeScriptHash } from '../src/stake-script.js';
 import { LOVELACE } from '../src/state.js';
 import {
   type AccountOutput,
+  UNCHECKED_EXECUTION_UNITS,
   addDevice,
   createAccount,
   delegateStake,
   deposit,
   findAccountUtxos,
+  fixedBudgetEvaluator,
   issueGrant,
   removeDevice,
   revokeAllGrants,
@@ -57,6 +60,7 @@ import {
   CAP,
   DEPOSIT_LOVELACE,
   DEVICE_SPEND_LOVELACE,
+  type ExecutionLimits,
   FIRST_LARGEST_SLOT,
   FLOW_PLAN,
   type Flow,
@@ -74,6 +78,7 @@ import {
   RESERVE_LOVELACE,
   REVOKED_SPEND_LOVELACE,
   ROTATION_KEYS,
+  SETUP_PLAN,
   SHORT_GRANT_LIFETIME_MS,
   SHORT_GRANT_SLOT,
   SMALL_DEPOSIT_COUNT,
@@ -94,8 +99,6 @@ import {
   TOKEN_PER_CALL_CAP,
   TOKEN_SPEND_LOVELACE,
   TOKEN_SUPPLY,
-  TRANSACTION_MEMORY_LIMIT,
-  TRANSACTION_STEPS_LIMIT,
   WITHDRAWN_LOVELACE,
   classifyFailure,
   evidenceDocument,
@@ -108,39 +111,45 @@ import {
 
 /** The repository root, where the environment file and the evidence document live. */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const ENV_PATH = resolve(REPO_ROOT, '.env');
-const EVIDENCE_PATH = resolve(REPO_ROOT, 'docs', 'preprod-evidence.md');
 
 /** How long to wait for a transaction to be confirmed and for the provider's view to catch up. */
 const CONFIRMATION_TIMEOUT_MS = 10 * 60 * 1000;
 const UTXO_VIEW_TIMEOUT_MS = 5 * 60 * 1000;
-const UTXO_VIEW_POLL_MS = 5_000;
 
 /** How long to wait for Blockfrost to index the redeemers of a confirmed transaction. */
 const REDEEMER_VIEW_TIMEOUT_MS = 60 * 1000;
 
-/** How far the provider's view of the current slot can lag behind the wall clock on preprod. */
-const PROVIDER_SLOT_VIEW_LAG_MS = 120_000;
+/**
+ * How often the run asks the provider again and how far its view of the
+ * current slot can lag behind the wall clock, per network. A devnet
+ * confirms in about a second and runs beside the process, so it is asked
+ * far more often than the hosted endpoint, which rate limits.
+ */
+const VIEW_POLL_MS: Record<string, number> = { preprod: 5_000, devnet: 250 };
+const SLOT_VIEW_LAG_MS: Record<string, number> = { preprod: 120_000, devnet: 5_000 };
 
 /** The extra time added past the provider's lag before the expiry flow attempts its spend. */
 const EXPIRY_SAFETY_MARGIN_MS = 20_000;
 
-/** How far past a grant's expiry the expiry flow waits before attempting its spend. */
-const EXPIRY_MARGIN_MS = PROVIDER_SLOT_VIEW_LAG_MS + EXPIRY_SAFETY_MARGIN_MS;
+/**
+ * How many slots a grant spend stays valid for and how long the held
+ * spend stays valid while the revoke lands, per network. A validity bound
+ * must fall inside the slots the ledger can still translate to a time,
+ * which reaches far on preprod and only a stability window past the
+ * current epoch on a devnet whose epochs are minutes long.
+ */
+const VALIDITY_WINDOW_SLOTS: Record<string, bigint> = { preprod: 600n, devnet: 90n };
+const HELD_WINDOW_SLOTS: Record<string, bigint> = { preprod: 3_600n, devnet: 120n };
 
-/** How many slots a grant spend stays valid for, how few the expiry attempt asks for, and how long the held spend stays valid while the revoke lands. */
-const VALIDITY_WINDOW_SLOTS = 600n;
+/** How few slots the expiry attempt asks for. */
 const EXPIRED_WINDOW_SLOTS = 5n;
-const HELD_WINDOW_SLOTS = 3_600n;
+
+/** The parameter an unregistered logic credential is derived from in the setup, which is no proxy hash. */
+const UNREGISTERED_LOGIC_PARAMETER = '00'.repeat(28);
 
 /** The message printed when the funding wallet cannot pay for the run. */
 const FUND_MESSAGE = 'Fund this address with tADA from the preprod faucet and rerun';
-
-/** The Blockfrost preprod endpoint, queried directly for what the provider does not expose: pools, reward account status and redeemer units. */
-const BLOCKFROST_URL = 'https://cardano-preprod.blockfrost.io/api/v0';
-
-/** The network whose reference scripts the run uses, when its file records them. */
-const NETWORK = 'preprod';
+const DEVNET_FUND_MESSAGE = 'Fill this address with "npm run devnet:bootstrap" and rerun';
 
 /** How many registered pools are examined before giving up on finding an active one. */
 const POOL_CANDIDATES = 10;
@@ -162,6 +171,21 @@ const ROTATION_OFFSET = 3;
 
 /** The password cometa encrypts the derived keys with, fresh for every process. */
 const password = randomBytes(32);
+
+/**
+ * Where this run submits and reads from and the slot configuration of the
+ * chain behind it, taken from the environment before any flow runs. The
+ * same flows run against preprod or against the devnet by it alone.
+ */
+let target: ProviderConfiguration;
+
+/** How often this run asks the provider again, and how far past an expiry it waits before attempting a spend. */
+let viewPollMs: number;
+let expiryMarginMs: number;
+
+/** How many slots a grant spend and a held spend of this run stay valid for. */
+let validityWindowSlots: bigint;
+let heldWindowSlots: bigint;
 
 /* TYPES **********************************************************************/
 
@@ -224,8 +248,8 @@ const getPassword = (): Promise<Uint8Array> => Promise.resolve(new Uint8Array(pa
 /** Sleeps for a number of milliseconds. */
 const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
-/** The slot the current wall clock time falls in on preprod. */
-const currentSlot = (): bigint => posixTimeToSlot(BigInt(Date.now()));
+/** The slot the current wall clock time falls in on the network this run targets. */
+const currentSlot = (): bigint => posixTimeToSlot(BigInt(Date.now()), target.slotConfig);
 
 /** The mnemonic words of the funding wallet, or undefined when the environment holds none. */
 const fundingMnemonic = (): string[] | undefined => {
@@ -294,14 +318,14 @@ const waitForOutput = async (provider: Provider, address: string, txId: string):
     if (utxos.some((utxo) => utxo.input.txId === txId)) {
       return;
     }
-    await sleep(UTXO_VIEW_POLL_MS);
+    await sleep(viewPollMs);
   }
   throw new Error(`The provider never listed an output of ${txId} at ${address}`);
 };
 
 /** Blockfrost's answer to a query, or undefined when the resource does not exist. */
 const blockfrost = async <T>(projectId: string, path: string): Promise<T | undefined> => {
-  const response = await fetch(`${BLOCKFROST_URL}${path}`, { headers: { project_id: projectId } });
+  const response = await fetch(`${target.baseUrl}${path}`, { headers: { project_id: projectId } });
   if (response.status === 404) {
     return undefined;
   }
@@ -335,7 +359,7 @@ const executionUnitsOf = async (projectId: string, txId: string, expected: numbe
         steps: BigInt(redeemer.unit_steps),
       }));
     }
-    await sleep(UTXO_VIEW_POLL_MS);
+    await sleep(viewPollMs);
   }
 };
 
@@ -384,13 +408,30 @@ const waitForEmpty = async (provider: Provider, address: string): Promise<void> 
     if ((await provider.getUnspentOutputs(address)).length === 0) {
       return;
     }
-    await sleep(UTXO_VIEW_POLL_MS);
+    await sleep(viewPollMs);
   }
   throw new Error(`The provider still lists outputs at ${address}`);
 };
 
-/** Waits for a submitted transaction to be confirmed and for every address it pays to show its outputs. */
-const settle = async (provider: Provider, txId: string, tx: string): Promise<void> => {
+/** Polls the endpoint until it holds a submitted transaction, which it does a block after the submission. */
+const waitForTransaction = async (projectId: string, txId: string): Promise<void> => {
+  const deadline = Date.now() + CONFIRMATION_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if ((await blockfrost<{ hash: string }>(projectId, `/txs/${txId}`)) !== undefined) {
+      return;
+    }
+    await sleep(viewPollMs);
+  }
+};
+
+/**
+ * Waits for a submitted transaction to be confirmed and for every address
+ * it pays to show its outputs. The endpoint is polled for the transaction
+ * first, since the provider's own wait sleeps for twenty seconds between
+ * attempts, which is longer than a devnet block takes to hold it.
+ */
+const settle = async (provider: Provider, projectId: string, txId: string, tx: string): Promise<void> => {
+  await waitForTransaction(projectId, txId);
   const confirmed = await provider.confirmTransaction(txId, CONFIRMATION_TIMEOUT_MS);
   if (!confirmed) {
     throw new Error(`Transaction ${txId} was not confirmed within ${CONFIRMATION_TIMEOUT_MS / 1000} seconds`);
@@ -402,6 +443,12 @@ const settle = async (provider: Provider, txId: string, tx: string): Promise<voi
 
 /** The slots from a first slot on, as many as asked. */
 const slotsFrom = (first: bigint, count: number): bigint[] => Array.from({ length: count }, (_, index) => first + BigInt(index));
+
+/** The execution units one transaction may use on the network this run targets, read from its protocol parameters. */
+const executionLimits = async (provider: Provider): Promise<ExecutionLimits> => {
+  const { maxTxExUnits } = await provider.getParameters();
+  return { memory: BigInt(maxTxExUnits.memory), steps: BigInt(maxTxExUnits.steps) };
+};
 
 /** Runs the flows in order, recording transactions, refusals and execution units for the evidence document. */
 class Run {
@@ -441,7 +488,7 @@ class Run {
     const tx = await build();
     const txId = await submit(signers, tx);
     console.log(`  ${txId} ${description}`);
-    await settle(this.actors.provider, txId, tx);
+    await settle(this.actors.provider, this.actors.projectId, txId, tx);
     record.txIds.push(txId);
     const expected = Cometa.readRedeemersFromTx(tx).length;
     if (expected > 0) {
@@ -459,7 +506,7 @@ class Run {
     const tx = await build();
     const txId = await submit(signers, tx);
     console.log(`  ${txId} ${description}`);
-    await settle(this.actors.provider, txId, tx);
+    await settle(this.actors.provider, this.actors.projectId, txId, tx);
     this.supporting.push({ description, txId });
     return txId;
   }
@@ -597,13 +644,13 @@ class Run {
   /** The parameters every owner transaction shares: the owner key is the account's initial device and the owner of its stake script. */
   private get ownerParams() {
     const { owner, provider, ownerKeyHash, network } = this.actors;
-    return { wallet: owner, provider, owner: ownerKeyHash, network };
+    return { wallet: owner, provider, owner: ownerKeyHash, network, slotConfig: target.slotConfig };
   }
 
   /** The parameters every agent transaction shares: the agent wallet signs and provides the collateral, and the account comes from the persisted record. */
   private get agentParams() {
     const { agent, provider, record, network } = this.actors;
-    return { wallet: agent, provider, record, network };
+    return { wallet: agent, provider, record, network, slotConfig: target.slotConfig };
   }
 
   /**
@@ -632,7 +679,7 @@ class Run {
   private tokenSpend(tokens: bigint, unchecked = false): Promise<string> {
     const { recipientAddress, token } = this.actors;
     const output: AccountOutput = { address: recipientAddress, value: { coins: TOKEN_SPEND_LOVELACE, assets: { [`${token.policyId}${token.assetName}`]: tokens } } };
-    return this.grantSpend(TOKEN_GRANT_SLOT, output, VALIDITY_WINDOW_SLOTS, unchecked);
+    return this.grantSpend(TOKEN_GRANT_SLOT, output, validityWindowSlots, unchecked);
   }
 
   /** Gives a wallet lovelace from the funding wallet unless it holds at least half the amount already. */
@@ -734,37 +781,32 @@ class Run {
   private sweepOf(funds: UTxO[], floor: bigint, unchecked: boolean): Promise<string> {
     const total = funds.reduce((sum, utxo) => sum + utxo.output.value.coins, 0n);
     const output: AccountOutput = { address: this.actors.fundingAddress, value: { coins: total - SWEEP_FEE_BOUND - floor } };
-    return this.grantSpend(SWEEP_GRANT_SLOT, output, VALIDITY_WINDOW_SLOTS, unchecked, SWEEP_FEE_BOUND);
+    return this.grantSpend(SWEEP_GRANT_SLOT, output, validityWindowSlots, unchecked, SWEEP_FEE_BOUND);
   }
 
   /**
-   * Evaluates one sweep over every fund UTxO of the account through the
-   * provider, built unchecked so that it carries fixed budgets instead of
-   * an evaluation the builder would refuse, and raises the measured units
-   * as the refusal when they exceed the transaction limit. Should the
-   * spend fit after all, the built transaction is returned and the step
-   * fails as not refused.
+   * A grant spend over one more fund UTxO than a checked spend may take,
+   * the largest ones, which the builder refuses while selecting the
+   * inputs, before anything is evaluated or submitted. The output asks
+   * for everything those UTxOs hold beyond the fee bound and the change
+   * floor, so the selection, largest first, needs exactly those UTxOs.
    */
-  private async measureWholeSweep(): Promise<string> {
-    const funds = await this.fundsLargestFirst();
-    const tx = await this.sweepOf(funds, await this.changeFloor(), true);
-    const redeemers = await this.actors.provider.evaluateTransaction(tx);
-    const memory = redeemers.reduce((sum, redeemer) => sum + BigInt(redeemer.executionUnits.memory), 0n);
-    const steps = redeemers.reduce((sum, redeemer) => sum + BigInt(redeemer.executionUnits.steps), 0n);
-    if (memory > TRANSACTION_MEMORY_LIMIT || steps > TRANSACTION_STEPS_LIMIT) {
-      throw new Error(
-        `A spend over ${funds.length} fund UTxOs evaluates at ${memory} memory units and ${steps} steps over ${redeemers.length} redeemers, which exceeds the transaction memory limit of ${TRANSACTION_MEMORY_LIMIT} memory units and ${TRANSACTION_STEPS_LIMIT} steps`,
-      );
+  private async overBoundSpend(): Promise<string> {
+    const funds = (await this.fundsLargestFirst()).slice(0, SWEEP_BATCH + 1);
+    if (funds.length !== SWEEP_BATCH + 1) {
+      throw new Error(`The account holds ${funds.length} fund UTxOs, fewer than the ${SWEEP_BATCH + 1} the spend over the bound needs`);
     }
-    return tx;
+    return this.sweepOf(funds, await this.changeFloor(), false);
   }
 
   /**
    * Sweeps every fund UTxO of the account in batches of at most
    * `SWEEP_BATCH`, largest first, as many batches as the count at the
    * start needs; the change of each batch is a fund UTxO the next batch
-   * or the owner's final sweep takes. At least the twenty small deposits
-   * must be spent over the batches.
+   * or the owner's final sweep takes. The first batch spends exactly
+   * `SWEEP_BATCH` fund UTxOs, so the heaviest grant spend the library
+   * submits is confirmed and measured, and at least the twenty small
+   * deposits must be spent over the batches.
    */
   private async sweepFundsInBatches(step: number): Promise<void> {
     const { agent } = this.actors;
@@ -773,6 +815,9 @@ class Run {
     let spent = 0;
     for (let batch = 0; batch < Math.ceil(initial / SWEEP_BATCH); batch += 1) {
       const funds = (await this.fundsLargestFirst()).slice(0, SWEEP_BATCH);
+      if (batch === 0 && funds.length !== SWEEP_BATCH) {
+        throw new Error(`The first sweep batch takes ${funds.length} fund UTxOs instead of ${SWEEP_BATCH}`);
+      }
       await this.confirm(step, `spendWithGrant sweeping ${funds.length} fund UTxOs to the funding wallet`, [agent], async () => {
         const tx = await this.sweepOf(funds, floor, false);
         const inputs = transactionBodyParts(tx).inputs.filter((input) => funds.some((utxo) => utxo.input.txId === input.txId && utxo.input.index === input.index));
@@ -819,19 +864,19 @@ class Run {
       issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: this.scope(GRANT_LIFETIME_MS) }] }),
     );
     await this.confirm(8, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace to the owner`, [agent], () =>
-      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, validityWindowSlots),
     );
     await this.refuseInBuilder(9, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace beyond the remaining cap`, () =>
-      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, validityWindowSlots),
     );
     await this.refuseAtNode(10, `spendWithGrant ${GRANT_SPEND_LOVELACE} lovelace beyond the remaining cap, unchecked`, [agent], () =>
-      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, GRANT_SPEND_LOVELACE, validityWindowSlots, true),
     );
     await this.refuseInBuilder(11, `spendWithGrant ${STRANGER_SPEND_LOVELACE} lovelace to an address outside the recipients`, () =>
-      this.lovelaceSpend(AGENT_GRANT_SLOT, agentAddress, STRANGER_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, agentAddress, STRANGER_SPEND_LOVELACE, validityWindowSlots),
     );
     await this.refuseAtNode(12, `spendWithGrant ${STRANGER_SPEND_LOVELACE} lovelace to an address outside the recipients, unchecked`, [agent], () =>
-      this.lovelaceSpend(AGENT_GRANT_SLOT, agentAddress, STRANGER_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, agentAddress, STRANGER_SPEND_LOVELACE, validityWindowSlots, true),
     );
   }
 
@@ -863,17 +908,17 @@ class Run {
   /** The revoke that lands under a held agent spend, the refusals of the revoked grant, the generation bump and the sweep of both dead grants. */
   private async revocation(): Promise<void> {
     const { owner, agent, ownerAddress } = this.actors;
-    const held = await signedBy([agent], await this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, HELD_WINDOW_SLOTS));
+    const held = await signedBy([agent], await this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, heldWindowSlots));
     console.log(`  the agent holds a signed spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace against slot ${AGENT_GRANT_SLOT}`);
     await this.confirm(18, `revokeGrant slot ${AGENT_GRANT_SLOT} while the agent holds its signed spend`, [owner], () =>
       revokeGrant({ ...this.ownerParams, slot: AGENT_GRANT_SLOT }),
     );
     await this.refuseInPhaseOne(18, `the held spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace`, agent, held);
     await this.refuseInBuilder(19, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant`, () =>
-      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, validityWindowSlots),
     );
     await this.refuseAtNode(20, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the revoked grant, unchecked`, [agent], () =>
-      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
+      this.lovelaceSpend(AGENT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, validityWindowSlots, true),
     );
     await this.confirm(21, 'revokeAllGrants', [owner], () => revokeAllGrants(this.ownerParams));
     await this.confirm(22, `sweepGrant slots ${AGENT_GRANT_SLOT} and ${TOKEN_GRANT_SLOT}`, [owner], () =>
@@ -888,7 +933,7 @@ class Run {
     await this.confirm(23, `issueGrant slot ${SHORT_GRANT_SLOT} expiring in ${SHORT_GRANT_LIFETIME_MS / 1000n} seconds`, [owner], () =>
       issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: shortScope }] }),
     );
-    const resumeAt = Number(shortScope.expiresAt) + EXPIRY_MARGIN_MS;
+    const resumeAt = Number(shortScope.expiresAt) + expiryMarginMs;
     const waitMs = resumeAt - Date.now();
     if (waitMs > 0) {
       console.log(`  waiting ${Math.ceil(waitMs / 1000)} seconds for grant ${SHORT_GRANT_SLOT} to expire`);
@@ -898,10 +943,10 @@ class Run {
       this.lovelaceSpend(SHORT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, EXPIRED_WINDOW_SLOTS),
     );
     await this.refuseAtNode(24, `spendWithGrant ${REVOKED_SPEND_LOVELACE} lovelace with the expired grant, unchecked`, [agent], () =>
-      this.lovelaceSpend(SHORT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, VALIDITY_WINDOW_SLOTS, true),
+      this.lovelaceSpend(SHORT_GRANT_SLOT, ownerAddress, REVOKED_SPEND_LOVELACE, validityWindowSlots, true),
     );
     await this.confirm(25, `sweepGrant slot ${SHORT_GRANT_SLOT} after its expiry`, [owner], () =>
-      sweepGrant({ ...this.ownerParams, slots: [SHORT_GRANT_SLOT], validFromSlot: posixTimeToSlot(shortScope.expiresAt) + 1n }),
+      sweepGrant({ ...this.ownerParams, slots: [SHORT_GRANT_SLOT], validFromSlot: posixTimeToSlot(shortScope.expiresAt, target.slotConfig) + 1n }),
     );
   }
 
@@ -969,7 +1014,7 @@ class Run {
     await this.sweepSlots(33, secondRound);
   }
 
-  /** The agent device spends and withdraws from the persisted record, then the funding wallet deposits twenty UTxOs the agent sweeps under a wide grant, in batches after one whole sweep is shown over the limit. */
+  /** The agent device spends and withdraws from the persisted record, then the funding wallet deposits twenty UTxOs the agent sweeps under a wide grant, in batches after a spend over one more fund UTxO than the bound is shown refused. */
   private async agentDeviceAndSweep(): Promise<void> {
     const { funding, owner, agent, ownerAddress, fundingAddress, agentKeyHash, record } = this.actors;
     await this.confirm(34, `spendWithDevice ${NEW_DEVICE_SPEND_LOVELACE} lovelace signed by the agent device`, [agent], () =>
@@ -988,7 +1033,7 @@ class Run {
     await this.confirm(37, `issueGrant slot ${SWEEP_GRANT_SLOT} to the agent paying the funding wallet`, [owner], () =>
       issueGrant({ ...this.ownerParams, grants: [{ grantee: agentKeyHash, scope: this.scope(GRANT_LIFETIME_MS, [fundingAddress], SWEEP_GRANT_CAP, SWEEP_GRANT_CAP) }] }),
     );
-    await this.refuseInBuilder(38, 'spendWithGrant over every fund UTxO at once', () => this.measureWholeSweep());
+    await this.refuseInBuilder(38, `spendWithGrant over ${SWEEP_BATCH + 1} fund UTxOs`, () => this.overBoundSpend());
     await this.sweepFundsInBatches(39);
   }
 
@@ -1000,6 +1045,10 @@ class Run {
     for (const device of rotation.map((keyed) => keyed.keyHash).filter((keyHash) => state.devices.includes(keyHash))) {
       await this.confirm(41, `removeDevice ${device}`, [owner], () => removeDevice({ ...this.ownerParams, device }));
     }
+    await this.support('revokeAllGrants, which kills the sweep grant', [owner], () => revokeAllGrants(this.ownerParams));
+    await this.support(`sweepGrant slot ${SWEEP_GRANT_SLOT}, the last outstanding grant, so that only the control UTxO is left to sweep`, [owner], () =>
+      sweepGrant({ ...this.ownerParams, slots: [SWEEP_GRANT_SLOT] }),
+    );
     await this.confirm(42, 'spendWithDevice sweeping every fund and reserve UTxO to the funding wallet, sponsored by it', [owner, funding], () =>
       this.sweepAccount(),
     );
@@ -1018,22 +1067,168 @@ class Run {
   }
 }
 
-/** Prints the funding address and the funding request, then ends the process successfully. */
+/**
+ * The address the setup parks the reference scripts at: the logic script
+ * as a payment credential, which has no spend handler, so every spend
+ * from it fails and nobody can take the parked UTxOs.
+ */
+const alwaysFailAddress = (logicHash: string): string =>
+  Cometa.EnterpriseAddress.fromCredentials(Cometa.NetworkId.Testnet, { hash: logicHash, type: Cometa.CredentialType.ScriptHash }).toAddress().toString();
+
+/** The record of a setup flow, printed as it starts. */
+const setupRecord = (step: number, records: FlowRecord[]): FlowRecord => {
+  const flow = SETUP_PLAN.find((candidate) => candidate.step === step);
+  if (!flow) {
+    throw new Error(`The setup plan has no step ${step}`);
+  }
+  const record: FlowRecord = { flow, txIds: [], measured: [] };
+  records.push(record);
+  console.log(`Setup ${step}: ${flow.description}`);
+  return record;
+};
+
+/** Builds, signs, submits and settles a setup transaction that must succeed. */
+const confirmSetup = async (
+  provider: Provider,
+  projectId: string,
+  wallet: Wallet,
+  record: FlowRecord,
+  build: () => Promise<string>,
+): Promise<string> => {
+  const tx = await build();
+  const txId = await submit([wallet], tx);
+  console.log(`  ${txId}`);
+  await settle(provider, projectId, txId, tx);
+  record.txIds.push(txId);
+  return txId;
+};
+
+/** Parks a script in its own UTxO at the always fail address, holding its minimum lovelace. */
+const parkScript = async (wallet: Wallet, address: string, script: PlutusScript, adaPerUtxoByte: bigint): Promise<string> => {
+  const output = { address, value: { coins: 0n }, scriptReference: script };
+  const coins = minimumUtxoLovelace(output, adaPerUtxoByte);
+  return (await wallet.createTransactionBuilder()).addOutput({ ...output, value: { coins } }).build();
+};
+
+/** The record of a parked script, as the network file holds it. */
+const parkedRecord = async (provider: Provider, script: PlutusScript, address: string, txId: string, adaPerUtxoByte: bigint): Promise<ReferenceScriptRecord> => {
+  const utxos = await provider.getUnspentOutputs(address);
+  const parked = utxos.find((utxo) => utxo.input.txId === txId && utxo.output.scriptReference !== undefined);
+  if (!parked) {
+    throw new Error(`The parked script of ${txId} is not at ${address}`);
+  }
+  return {
+    scriptHash: Cometa.computeScriptHash(script),
+    txId,
+    index: parked.input.index,
+    address,
+    lovelace: minimumUtxoLovelace({ address, value: { coins: 0n }, scriptReference: script }, adaPerUtxoByte).toString(),
+  };
+};
+
+/**
+ * A bare zero withdrawal from the credential of a logic script in a
+ * plain transaction of a wallet, built with fixed budgets so that no
+ * evaluation stands in for the node, and signed, ready to submit.
+ */
+const bareWithdrawal = async (wallet: Wallet, logic: PlutusScript): Promise<string> =>
+  signedBy(
+    [wallet],
+    await (await wallet.createTransactionBuilder())
+      .setTxEvaluator(fixedBudgetEvaluator(UNCHECKED_EXECUTION_UNITS))
+      .withdrawRewards({ rewardAddress: rewardAddress(logicScriptHash(logic)), amount: 0n, redeemer: encodeLogicRedeemer() })
+      .addScript(logic)
+      .build(),
+  );
+
+/**
+ * Submits a signed setup transaction the node must refuse, checks that
+ * the refusal is of the kind the flow expects and that its text matches
+ * the flow's pattern, and records it. A transaction the node accepts
+ * instead fails the setup.
+ */
+const refuseSetup = async (wallet: Wallet, record: FlowRecord, signedTx: string, refusedBy: string, isExpected: (error: unknown) => boolean): Promise<void> => {
+  let txId: string;
+  try {
+    txId = await wallet.submitTransaction(signedTx);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isExpected(error) || !record.flow.expectedMessage?.test(message)) {
+      throw new Error(`Setup step ${record.flow.step} failed with ${message} instead of a refusal by the ${refusedBy}`);
+    }
+    record.refusal = nodeRefusalSummary(message);
+    console.log(`  refused by the ${refusedBy}: ${record.refusal}`);
+    return;
+  }
+  throw new Error(`Setup step ${record.flow.step} was not refused: the withdrawal was accepted as ${txId}`);
+};
+
+/**
+ * Runs the setup plan of a network once: the logic credential is
+ * registered with the Conway deposit through the logic publish handler,
+ * the proxy and the logic are parked as reference scripts at the always
+ * fail address, a bare zero withdrawal from the registered credential is
+ * shown refused by the logic in phase two, since with no control UTxO
+ * spent or referenced it takes its arrival path and finds no control
+ * output, and a zero withdrawal from an unregistered credential, the
+ * same logic applied to another parameter, is shown refused by the node
+ * before any script runs. The records it parks are written to the
+ * network file.
+ */
+const setUpNetwork = async (provider: Provider, projectId: string, funding: Wallet, scriptHash: string): Promise<FlowRecord[]> => {
+  const records: FlowRecord[] = [];
+  const proxy = accountScript();
+  const logic = currentLogicScript(scriptHash);
+  const logicHash = logicScriptHash(logic);
+  const parkedAt = alwaysFailAddress(logicHash);
+  const adaPerUtxoByte = BigInt((await provider.getParameters()).adaPerUtxoByte);
+  const reward = rewardAddress(logicHash);
+  console.log(`Network setup: logic ${logicHash} parked at ${parkedAt}`);
+
+  await confirmSetup(provider, projectId, funding, setupRecord(1, records), async () =>
+    (await funding.createTransactionBuilder()).registerStakeAddress({ rewardAddress: reward, redeemer: encodeLogicRedeemer() }).addScript(logic).build(),
+  );
+
+  const references: ReferenceScriptRecord[] = [];
+  for (const [step, script] of [[2, proxy] as const, [3, logic] as const]) {
+    const txId = await confirmSetup(provider, projectId, funding, setupRecord(step, records), () => parkScript(funding, parkedAt, script, adaPerUtxoByte));
+    references.push(await parkedRecord(provider, script, parkedAt, txId, adaPerUtxoByte));
+  }
+
+  await refuseSetup(funding, setupRecord(4, records), await bareWithdrawal(funding, logic), 'node', isNodeScriptRefusal);
+
+  const stranger = logicScript(logicValidator(loadBlueprint(), CURRENT_LOGIC_TITLE), UNREGISTERED_LOGIC_PARAMETER);
+  await refuseSetup(funding, setupRecord(5, records), await bareWithdrawal(funding, stranger), 'node in phase one', isNodePhaseOneRefusal);
+
+  const path = networkFilePath(target.network);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ network: target.network, references }, null, 2)}\n`);
+  console.log(`Network file written to ${path}`);
+  return records;
+};
+
+/** Prints the funding address and the funding request of the network, then ends the process successfully. */
 const askForFunds = (address: string): never => {
   console.log(address);
-  console.log(FUND_MESSAGE);
+  console.log(target.network === DEVNET_NETWORK ? DEVNET_FUND_MESSAGE : FUND_MESSAGE);
   process.exit(0);
 };
 
-/** Runs every flow against preprod and writes the evidence document. */
+/** Runs every flow against the network the environment names and writes the evidence document. */
 const main = async (): Promise<void> => {
-  loadEnv({ path: ENV_PATH });
+  loadRunEnvironment(loadEnv as (options: { path: string; override?: boolean }) => unknown);
   await Cometa.ready();
-  const projectId = process.env['BLOCKFROST_PREPROD_PROJECT_ID'];
-  if (!projectId) {
-    throw new Error('BLOCKFROST_PREPROD_PROJECT_ID is not set in the environment file');
-  }
-  const provider = new Cometa.BlockfrostProvider({ network: Cometa.NetworkMagic.Preprod, projectId });
+  target = providerConfiguration();
+  viewPollMs = VIEW_POLL_MS[target.network] ?? 5_000;
+  expiryMarginMs = (SLOT_VIEW_LAG_MS[target.network] ?? 120_000) + EXPIRY_SAFETY_MARGIN_MS;
+  validityWindowSlots = VALIDITY_WINDOW_SLOTS[target.network] ?? 600n;
+  heldWindowSlots = HELD_WINDOW_SLOTS[target.network] ?? 3_600n;
+  const evidencePath = resolve(REPO_ROOT, 'docs', `${target.network}-evidence.md`);
+  const { projectId } = target;
+  const provider = new Cometa.BlockfrostProvider({ network: target.networkMagic, projectId, baseUrl: target.baseUrl });
+  console.log(`Network: ${target.network} at ${target.baseUrl}`);
+  const limits = await executionLimits(provider);
+  console.log(`Execution unit limits: ${limits.memory} memory units and ${limits.steps} steps per transaction`);
 
   let mnemonics = fundingMnemonic();
   const generated = mnemonics === undefined;
@@ -1051,6 +1246,9 @@ const main = async (): Promise<void> => {
   }
 
   const scriptHash = accountScriptHash(accountScript());
+  const recorded = loadNetworkScripts(target.network);
+  const setUpAlready = referenceOf(recorded, scriptHash) !== undefined && referenceOf(recorded, currentLogicHash(scriptHash)) !== undefined;
+  const setup = setUpAlready ? undefined : await setUpNetwork(provider, projectId, funding, scriptHash);
   const { owner, ownerAccount, ownerAddress, ownerKeyHash, stakeCredential, reward } = await freshOwner(provider, projectId, mnemonics, scriptHash);
   const address = accountAddress(scriptHash, stakeCredential).toString();
   const discovered = accountByOwner(ownerKeyHash);
@@ -1067,7 +1265,7 @@ const main = async (): Promise<void> => {
   const tokenScript: NativeScript = { type: Cometa.ScriptType.Native, kind: Cometa.NativeScriptKind.RequireSignature, keyHash: fundingKeyHash };
   const token: Asset = { policyId: Cometa.computeScriptHash(tokenScript), assetName: TOKEN_NAME_HEX };
   const poolId = await firstActivePool(projectId);
-  const network = loadNetworkScripts(NETWORK);
+  const network = loadNetworkScripts(target.network);
   const actors: Actors = {
     provider,
     projectId,
@@ -1117,11 +1315,14 @@ const main = async (): Promise<void> => {
     throw new Error(`Blockfrost no longer lists ${reward} as registered`);
   }
 
-  mkdirSync(dirname(EVIDENCE_PATH), { recursive: true });
+  mkdirSync(dirname(evidencePath), { recursive: true });
   writeFileSync(
-    EVIDENCE_PATH,
+    evidencePath,
     evidenceDocument({
+      network: target.network,
+      limits,
       date: new Date().toISOString().slice(0, 10),
+      ...(setup === undefined ? {} : { setup }),
       fundingAddress,
       ownerAddress,
       agentAddress,
@@ -1137,7 +1338,7 @@ const main = async (): Promise<void> => {
       supporting: run.supporting,
     }),
   );
-  console.log(`Evidence written to ${EVIDENCE_PATH}`);
+  console.log(`Evidence written to ${evidencePath}`);
 };
 
 /* MAIN ***********************************************************************/

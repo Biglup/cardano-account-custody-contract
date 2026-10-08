@@ -12,7 +12,13 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "e2e": "tsx scripts/preprod-e2e.ts"
+    "e2e": "tsx scripts/preprod-e2e.ts",
+    "devnet:parameters": "tsx scripts/devnet-parameters.ts",
+    "devnet:start": "devnet/start.sh",
+    "devnet:stop": "devnet/stop.sh",
+    "devnet:reset": "devnet/reset.sh",
+    "devnet:e2e": "CARDANO_NETWORK=devnet tsx scripts/preprod-e2e.ts",
+    "devnet:bootstrap": "CARDANO_NETWORK=devnet tsx scripts/devnet-bootstrap.ts"
   },
   "dependencies": {
     "@biglup/cometa": "^1.2.0",
@@ -24,6 +30,7 @@
     "@eslint/js": "^9.26.0",
     "@types/node": "^22.15.0",
     "eslint": "^9.26.0",
+    "globals": "^17.13.0",
     "tsx": "^4.23.15",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.32.0",

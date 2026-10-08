@@ -16,6 +16,7 @@
 
 /* IMPORTS ********************************************************************/
 
+import { DEVNET_NETWORK, PREPROD_NETWORK } from '../src/config.js';
 import { MAX_FUND_INPUTS } from '../src/transactions.js';
 
 /* CONSTANTS ******************************************************************/
@@ -26,8 +27,16 @@ const NODE_REFUSAL_MESSAGE = /ValidationTagMismatch|PlutusFailure/;
 /** The pattern the node's refusal message must match when a spent reference input fails a transaction in phase one. */
 const PHASE_ONE_REFUSAL_MESSAGE = /BadInputsUTxO/;
 
-/** The pattern the node's refusal message must match when a withdrawal draws from a credential the ledger has no reward account for. */
-const UNREGISTERED_WITHDRAWAL_MESSAGE = /WithdrawalsNotInRewards/;
+/** The pattern the builder's refusal must match when a grant spend needs more fund UTxOs than one checked spend may take. */
+const OVER_BOUND_SPEND_MESSAGE = new RegExp(`more than the ${MAX_FUND_INPUTS} one grant spend may take`);
+
+/**
+ * The pattern the node's refusal message must match when a withdrawal
+ * draws from a credential the ledger has no reward account for. Earlier
+ * Conway ledger versions name that failure `WithdrawalsNotInRewards` and
+ * later ones `ConwayWithdrawalsMissingAccounts`, so both are accepted.
+ */
+const UNREGISTERED_WITHDRAWAL_MESSAGE = /WithdrawalsNotInRewards|WithdrawalsMissingAccounts/;
 
 /** The lovelace in one tADA. */
 export const TADA = 1_000_000n;
@@ -146,8 +155,9 @@ export const SWEEP_FEE_BOUND = 2n * TADA;
  * applies to a checked grant spend. On chain every script execution pays
  * a fixed cost for the transaction context on top of the handler's own
  * work, so each Fund execution of a spend over twenty five deposits costs
- * about 0.7 M memory units and the whole spend about 20.6 M, above the
- * 14 M limit; twelve deposits beside the grant spend stay near half of it.
+ * about 0.7 M memory units and the whole spend about 20.6 M on preprod,
+ * above its limit of 17.5 M; twelve deposits beside the grant spend stay
+ * well inside it.
  */
 export const SWEEP_BATCH = MAX_FUND_INPUTS;
 
@@ -180,10 +190,6 @@ export const UPGRADE_DEPOSIT_LOVELACE = 30n * TADA;
 export const GENERATION_BEFORE_UPGRADE = 1n;
 export const GENERATION_AFTER_UPGRADE = 2n;
 
-/** The execution units a preprod transaction may use, as the protocol parameters set them. */
-export const TRANSACTION_MEMORY_LIMIT = 14_000_000n;
-export const TRANSACTION_STEPS_LIMIT = 10_000_000_000n;
-
 /** One million memory units and one billion steps, the units the budget table counts in. */
 const MEGA = 1_000_000;
 const GIGA = 1_000_000_000;
@@ -193,16 +199,23 @@ const GIGA = 1_000_000_000;
  * recorded in `offchain/networks/<network>.json`: the logic credential is
  * registered with the Conway deposit through the logic's publish handler,
  * which anyone may do, the proxy and the logic are parked as reference
- * scripts at an always fail script address nobody can spend from, and a
- * zero withdrawal from the registered credential is shown accepted while
- * one from an unregistered credential is refused by the node before any
- * script runs. A run reuses the recorded setup when the file exists.
+ * scripts at an always fail script address nobody can spend from, a bare
+ * zero withdrawal from the registered credential is shown refused by the
+ * logic itself, since with no control UTxO spent or referenced it takes
+ * its arrival path and finds no control output, and one from an
+ * unregistered credential is refused by the node before any script runs.
+ * A run reuses the recorded setup when the file exists.
  */
 export const SETUP_PLAN: Flow[] = [
   { step: 1, description: 'register the logic v1 credential with the Conway deposit through the logic publish handler, paid by the funding wallet', outcome: 'confirmed' },
   { step: 2, description: 'park the proxy as a reference script in its own UTxO at the always fail script address, holding its minimum lovelace', outcome: 'confirmed' },
   { step: 3, description: 'park logic v1 as a reference script in its own UTxO at the always fail script address, holding its minimum lovelace', outcome: 'confirmed' },
-  { step: 4, description: 'a zero withdrawal from the registered logic v1 credential in a plain transaction of the funding wallet, running the logic as an arrival over no account, which the ledger accepts', outcome: 'confirmed' },
+  {
+    step: 4,
+    description: 'a bare zero withdrawal from the registered logic v1 credential in a plain transaction of the funding wallet, with no control UTxO spent or referenced, built unchecked, signed and submitted: the logic takes its arrival path, which expects exactly one control output, and finds none',
+    outcome: 'refused by the node',
+    expectedMessage: NODE_REFUSAL_MESSAGE,
+  },
   {
     step: 5,
     description: 'a zero withdrawal from an unregistered logic credential, logic v1 applied to another parameter, in a plain transaction of the funding wallet',
@@ -298,13 +311,13 @@ export const FLOW_PLAN: Flow[] = [
   { step: 37, description: 'issueGrant slot 35 to the agent key: 1,000 tADA per call and in total, the funding wallet as the only recipient', outcome: 'confirmed' },
   {
     step: 38,
-    description: 'spendWithGrant over every fund UTxO of the account at once, the twenty deposits among them, built unchecked and evaluated through the provider: the execution units exceed the transaction limit, so it is refused before submission',
+    description: `spendWithGrant over the ${MAX_FUND_INPUTS + 1} largest fund UTxOs of the account, one more than the ${MAX_FUND_INPUTS} a checked grant spend may take, refused by the builder before anything is evaluated or submitted`,
     outcome: 'refused by the builder',
-    expectedMessage: /exceeds the transaction memory limit/,
+    expectedMessage: OVER_BOUND_SPEND_MESSAGE,
   },
   {
     step: 39,
-    description: 'spendWithGrant sweeping every fund UTxO of the account to the funding wallet in batches of at most twelve fund UTxOs per transaction, each referencing the largest control state',
+    description: `spendWithGrant sweeping every fund UTxO of the account to the funding wallet in batches of at most ${MAX_FUND_INPUTS} fund UTxOs per transaction, the first over exactly ${MAX_FUND_INPUTS}, each referencing the largest control state, with the execution units of the heaviest batch read back and set against the limit of the chain`,
     outcome: 'confirmed',
     budget: [
       { path: 'agent spend over eight deposits', handlers: 'SpendWithGrant and eight Fund', netMemory: 3.2 * MEGA, netSteps: 1.13 * GIGA },
@@ -347,16 +360,17 @@ const SCRIPT_BYTES = /Base64-encoded script bytes:\s*"[^"]*"\s*/;
 const CONTEXT_DUMP = /\s*The protocol version is:.*$/;
 
 /** Errors raised while talking to the network, which never count as a refusal. */
-const NETWORK_FAILURE = /fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket hang up|status 5\d\d|429|rate limit|Could not parse response/i;
+const NETWORK_FAILURE = /fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket hang up|status 5\d\d|status 429|rate limit|Could not parse response/i;
 
 /**
  * Errors that show the contract, or the builder applying its rules ahead of
  * the chain, refusing the spend: the builder's own scope, recipient,
- * liveness and expiry checks, the node's phase two script failures as
- * Blockfrost reports them at submission or evaluation, and the node's
- * phase one refusal of a transaction whose reference input was spent.
+ * liveness, expiry and fund input checks, the node's phase two script
+ * failures as Blockfrost reports them at submission or evaluation, and the
+ * node's phase one refusal of a transaction whose reference input was
+ * spent.
  */
-const REFUSAL = /refuses the spend|is not a recipient of grant|has no grant UTxO in slot|is dead:|starts after grant .* expires|exceeds the transaction memory limit|ScriptFailure|PlutusFailure|ValidationTagMismatch|BadInputsUTxO|script integrity|evaluateTransaction|not well formed|does not hold enough funds/i;
+const REFUSAL = /refuses the spend|is not a recipient of grant|has no grant UTxO in slot|is dead:|starts after grant .* expires|one grant spend may take|ScriptFailure|PlutusFailure|ValidationTagMismatch|BadInputsUTxO|script integrity|evaluateTransaction|not well formed|does not hold enough funds/i;
 
 /* TYPES **********************************************************************/
 
@@ -416,6 +430,12 @@ export interface MeasuredTransaction {
   redeemers: RedeemerUnits[];
 }
 
+/** The execution units one transaction may use, as the protocol parameters of the network the run targets report them. */
+export interface ExecutionLimits {
+  memory: bigint;
+  steps: bigint;
+}
+
 /** The record of one flow after the run: its transactions, the refusal observed, and the execution units of its script transactions. */
 export interface FlowRecord {
   flow: Flow;
@@ -432,6 +452,10 @@ export interface SupportingTransaction {
 
 /** The facts of a run the evidence document states. */
 export interface EvidenceFacts {
+  /** The network the run exercised, which decides the title and whether the transactions link to an explorer. */
+  network?: string;
+  /** The per transaction execution unit limits of that network, read from its protocol parameters, which every share in the tables is taken over. */
+  limits: ExecutionLimits;
   date: string;
   fundingAddress: string;
   ownerAddress: string;
@@ -548,8 +572,13 @@ export const classifyFailure = (error: unknown): FailureKind => {
 /** The link to a transaction on the preprod explorer. */
 export const explorerLink = (txId: string): string => `https://preprod.cardanoscan.io/transaction/${txId}`;
 
-/** A transaction id as a short explorer link. */
-const link = (txId: string): string => `[${txId.slice(0, 12)}](${explorerLink(txId)})`;
+/**
+ * A transaction id as the evidence of a network shows it: a short explorer
+ * link on preprod and the short id alone on a devnet, whose chain no
+ * explorer serves.
+ */
+const link = (txId: string, network: string = PREPROD_NETWORK): string =>
+  network === DEVNET_NETWORK ? `\`${txId.slice(0, 12)}\`` : `[${txId.slice(0, 12)}](${explorerLink(txId)})`;
 
 /** Text as a markdown table cell holds it, with pipes escaped. */
 const cell = (text: string): string => text.replace(/\|/g, '\\|');
@@ -590,14 +619,14 @@ const redeemerBreakdown = (transaction: MeasuredTransaction): string =>
     .join('; ');
 
 /** The markdown row of a flow in the evidence table. */
-export const evidenceRow = ({ flow, txIds, refusal }: FlowRecord): string => {
-  const links = txIds.map(link).join(', ');
+export const evidenceRow = ({ flow, txIds, refusal }: FlowRecord, network: string = PREPROD_NETWORK): string => {
+  const links = txIds.map((txId) => link(txId, network)).join(', ');
   const result = flow.outcome === 'confirmed' ? 'confirmed' : `${flow.outcome}: "${cell(refusal ?? '')}"`;
   return `| ${flow.step} | ${flow.description} | ${links || 'none'} | ${result} |`;
 };
 
 /** The markdown row of the heaviest script transaction of a flow in the execution units table. */
-export const unitsRow = (record: FlowRecord): string | undefined => {
+export const unitsRow = (record: FlowRecord, limits: ExecutionLimits, network: string = PREPROD_NETWORK): string | undefined => {
   const heaviest = heaviestOf(record);
   if (!heaviest) {
     return undefined;
@@ -605,11 +634,11 @@ export const unitsRow = (record: FlowRecord): string | undefined => {
   const count = (record.measured ?? []).length;
   const memory = memoryOf(heaviest);
   const steps = stepsOf(heaviest);
-  return `| ${record.flow.step} | ${count} | ${link(heaviest.txId)} | ${redeemerSummary(heaviest)} | ${grouped(memory)} (${percent(memory, TRANSACTION_MEMORY_LIMIT)}) | ${grouped(steps)} (${percent(steps, TRANSACTION_STEPS_LIMIT)}) | ${redeemerBreakdown(heaviest)} |`;
+  return `| ${record.flow.step} | ${count} | ${link(heaviest.txId, network)} | ${redeemerSummary(heaviest)} | ${grouped(memory)} (${percent(memory, limits.memory)}) | ${grouped(steps)} (${percent(steps, limits.steps)}) | ${redeemerBreakdown(heaviest)} |`;
 };
 
 /** The markdown rows comparing the heaviest transaction of a measured flow with the budget rows it names. */
-export const budgetRows = (record: FlowRecord): string[] => {
+export const budgetRows = (record: FlowRecord, limits: ExecutionLimits, network: string = PREPROD_NETWORK): string[] => {
   const heaviest = heaviestOf(record);
   if (!heaviest || !record.flow.budget) {
     return [];
@@ -618,39 +647,63 @@ export const budgetRows = (record: FlowRecord): string[] => {
   const steps = stepsOf(heaviest);
   return record.flow.budget.map(
     (reference) =>
-      `| ${record.flow.step} | ${reference.path} | ${reference.handlers} | ${link(heaviest.txId)} | ${heaviest.redeemers.length} | ${grouped(memory)} | ${grouped(steps)} | ${grouped(BigInt(Math.round(reference.netMemory)))} | ${grouped(BigInt(Math.round(reference.netSteps)))} | ${percent(memory, TRANSACTION_MEMORY_LIMIT)} / ${percent(steps, TRANSACTION_STEPS_LIMIT)} |`,
+      `| ${record.flow.step} | ${reference.path} | ${reference.handlers} | ${link(heaviest.txId, network)} | ${heaviest.redeemers.length} | ${grouped(memory)} | ${grouped(steps)} | ${grouped(BigInt(Math.round(reference.netMemory)))} | ${grouped(BigInt(Math.round(reference.netSteps)))} | ${percent(memory, limits.memory)} / ${percent(steps, limits.steps)} |`,
   );
 };
 
 /** The markdown row of a supporting transaction. */
-export const supportingRow = ({ description, txId }: SupportingTransaction): string => `| ${description} | ${link(txId)} |`;
+export const supportingRow = ({ description, txId }: SupportingTransaction, network: string = PREPROD_NETWORK): string => `| ${description} | ${link(txId, network)} |`;
 
 /** The setup section of the evidence document, or nothing while the run records no setup flows. */
-const setupSection = (setup: FlowRecord[] | undefined): string[] =>
+const setupSection = (setup: FlowRecord[] | undefined, network: string): string[] =>
   setup === undefined
     ? []
     : [
         '## Setup',
         '',
         'The one time setup of the network for logic v1: the logic credential',
-        'registered, the proxy and the logic parked as reference scripts, and',
-        'the zero withdrawal checked against a registered and an unregistered',
-        'credential. Recorded in the network file and reused by later runs.',
+        'registered, the proxy and the logic parked as reference scripts, a bare',
+        'zero withdrawal from the registered credential refused by the logic in',
+        'phase two, since with no control UTxO spent or referenced it takes its',
+        'arrival path and finds no control output, and a zero withdrawal from an',
+        'unregistered credential refused by the node in phase one. Recorded in',
+        'the network file and reused by later runs.',
         '',
         '| Step | Flow | Transactions | Outcome |',
         '| ---- | ---- | ------------ | ------- |',
-        ...setup.map(evidenceRow),
+        ...setup.map((record) => evidenceRow(record, network)),
         '',
       ];
 
 /** The markdown evidence document of a run. */
-export const evidenceDocument = (facts: EvidenceFacts): string =>
-  [
-    '# Preprod evidence',
+export const evidenceDocument = (facts: EvidenceFacts): string => {
+  const network = facts.network ?? PREPROD_NETWORK;
+  const devnet = network === DEVNET_NETWORK;
+  return [
+    devnet ? '# Devnet evidence' : '# Preprod evidence',
     '',
-    'Every flow of the account custody contract exercised on the Cardano preprod',
-    'network through Blockfrost. Confirmed flows link to their transactions on',
-    'the preprod explorer. Flows refused by the builder quote the check that',
+    ...(devnet
+      ? [
+          'Every flow of the account custody contract exercised on the local devnet',
+          'through its Blockfrost compatible API. The devnet runs Conway at the',
+          'protocol version of preprod, with the parameters the COPIED_PARAMETERS',
+          'list of scripts/devnet-parameters.ts names copied from preprod into its',
+          'genesis, the fee, size, deposit, pool, collateral and execution unit',
+          'limit parameters among them, and with the cost models of its own Conway',
+          'genesis, whose memory prices equal preprod and whose CPU prices for',
+          'integer division and byte string equality sit below it, so the memory',
+          'budgets below are what preprod charges for the same work and the step',
+          'budgets a little under it; see README, Running the devnet. Its',
+          'chain has one second blocks, so a run costs nothing and confirms in',
+          'about a second. Its transactions are listed by id, since no explorer',
+          'serves the chain.',
+        ]
+      : [
+          'Every flow of the account custody contract exercised on the Cardano preprod',
+          'network through Blockfrost. Confirmed flows link to their transactions on',
+          'the preprod explorer.',
+        ]),
+    'Flows refused by the builder quote the check that',
     'stopped them before anything reached the chain. Flows refused by the node',
     'were built without those checks, signed and submitted, and quote the',
     'ledger error Blockfrost returned when the validator failed in phase two;',
@@ -703,12 +756,12 @@ export const evidenceDocument = (facts: EvidenceFacts): string =>
     `- Logic v1 hash: \`${facts.logicV1Hash}\``,
     ...(facts.logicV2Hash === undefined ? [] : [`- Logic v2 hash: \`${facts.logicV2Hash}\``]),
     '',
-    ...setupSection(facts.setup),
+    ...setupSection(facts.setup, network),
     '## Flows',
     '',
     '| Step | Flow | Transactions | Outcome |',
     '| ---- | ---- | ------------ | ------- |',
-    ...facts.records.map(evidenceRow),
+    ...facts.records.map((record) => evidenceRow(record, network)),
     '',
     '## Execution units',
     '',
@@ -716,13 +769,14 @@ export const evidenceDocument = (facts: EvidenceFacts): string =>
     'transaction of every step that ran one, read back from the redeemers of',
     'the confirmed transaction. Memory is in memory units and steps in CPU',
     'steps, each followed by its share of the per transaction limit of',
-    `${grouped(TRANSACTION_MEMORY_LIMIT)} memory units and ${grouped(TRANSACTION_STEPS_LIMIT)} steps. The`,
-    'breakdown lists every redeemer of the transaction by purpose and index,',
-    'heaviest first, as memory / steps.',
+    `${grouped(facts.limits.memory)} memory units and ${grouped(facts.limits.steps)} steps, as the protocol`,
+    `parameters of ${network} report it at the time of the run. The breakdown`,
+    'lists every redeemer of the transaction by purpose and index, heaviest',
+    'first, as memory / steps.',
     '',
     '| Step | Transactions | Heaviest | Redeemers | Memory | Steps | Breakdown |',
     '| ---- | ------------ | -------- | --------- | ------ | ----- | --------- |',
-    ...facts.records.map(unitsRow).filter((row): row is string => row !== undefined),
+    ...facts.records.map((record) => unitsRow(record, facts.limits, network)).filter((row): row is string => row !== undefined),
     '',
     '## Budget comparison',
     '',
@@ -735,18 +789,21 @@ export const evidenceDocument = (facts: EvidenceFacts): string =>
     'heaviest agent sweep batch is set against the eight and forty deposit',
     'rows of the review; its input count is in the Redeemers column, one Fund',
     'execution per deposit beside the SpendWithGrant execution. The forty',
-    'deposit row is not reachable on chain: the whole sweep refused in the',
-    'flows table above quotes the units a single spend over every deposit',
-    'evaluated at.',
+    'deposit row is not reachable on chain: the builder takes at most twelve',
+    'fund UTxOs in one checked grant spend, as the refusal in the flows table',
+    'above shows, so the batch over exactly twelve is the heaviest agent',
+    'spend the library submits, and its share of the limit is the margin',
+    'that bound leaves.',
     '',
     '| Step | Path | Handlers | Transaction | Redeemers | On-chain memory | On-chain steps | Review net memory | Review net steps | Share of the limits |',
     '| ---- | ---- | -------- | ----------- | --------- | --------------- | -------------- | ----------------- | ---------------- | ------------------- |',
-    ...facts.records.flatMap(budgetRows),
+    ...facts.records.flatMap((record) => budgetRows(record, facts.limits, network)),
     '',
     '## Supporting transactions',
     '',
     '| Purpose | Transaction |',
     '| ------- | ----------- |',
-    ...facts.supporting.map(supportingRow),
+    ...facts.supporting.map((transaction) => supportingRow(transaction, network)),
     '',
   ].join('\n');
+};

@@ -1023,7 +1023,7 @@ surface.
   carrying any datum as a reserve and the rest as funds; a deposit with a
   datum is owner only.
 
-## Running the preprod script
+## Running the flow script
 
 ```sh
 cd offchain
@@ -1052,8 +1052,124 @@ a batched agent sweep of many deposits and an upgrade to a second logic.
 The script reads the network file, runs the flows through the largest
 state and the agent sweep against the live network, reads the execution
 units of every confirmed transaction back from the chain and rewrites
-`docs/preprod-evidence.md` with the result; the setup and the upgrade
-steps of the plan are not run by the script as it stands.
+`docs/preprod-evidence.md` with the result; the upgrade steps of the plan
+are not run by the script as it stands. Before the flows it runs the setup
+of the network when `offchain/networks/<network>.json` does not already
+record the proxy and the current logic: it registers the logic credential,
+parks the proxy and the logic as reference scripts at the address of the
+logic script, which has no spend handler and so can never be spent from,
+and shows two zero withdrawals refused by the node: a bare one from the
+registered credential, which with neither a control input nor a control
+reference input makes the logic take its arrival path, where it expects
+exactly one control output and a transaction that creates no account has
+none, and one from an unregistered logic credential, which the node
+refuses in phase one before any script runs.
+
+`CARDANO_NETWORK` picks the network the script runs against, `preprod` by
+default and `devnet` for the local devnet below; `PROVIDER_BASE_URL`
+overrides the endpoint of either. The network magic, the slot
+configuration, the validity windows and how often the script asks the
+provider again follow it, and the evidence is written to
+`docs/<network>-evidence.md`. The devnet chain itself runs network magic
+42 with testnet addresses, the magic of the cluster the devnet image
+creates; the library is still given preprod's magic, which is fine
+because cometa uses a magic only to pick the testnet network id of the
+addresses it derives and a slot configuration for the wallet, which the
+run replaces with the one read from the devnet genesis, and the node
+checks nothing against it on submission.
+
+## Running the devnet
+
+The devnet is a single Cardano node with a Blockfrost compatible API in
+front of it, running Conway at the protocol version of preprod over a
+chain of its own with one second blocks and five minute epochs. A flow
+that takes about an hour on preprod takes 4 minutes 43 seconds on it and
+costs nothing. How far its parameters and its cost models follow
+preprod's is below.
+
+```sh
+cd offchain
+npm run devnet:start
+npm run devnet:bootstrap
+npm run devnet:e2e
+npm run devnet:stop
+```
+
+`devnet:start` brings the containers up on a fresh chain, waits until the
+API answers and copies the Shelley genesis of the chain it created to
+`offchain/devnet/run`, from which the scripts read the slot configuration.
+The devnet creates its cluster from scratch on every start, so a start
+deletes the chain of the previous one and the network file that recorded
+its reference scripts; that is also what a run needs, since an account is
+permanent and the owner keys are the same on every devnet.
+`devnet:bootstrap` fills the funding wallet from the wallet the devnet
+genesis funds and confirms one plain transaction through the provider.
+`devnet:e2e` runs the setup and the flows and writes
+`docs/devnet-evidence.md`. `devnet:stop` stops the containers and
+`devnet:reset` stops them and deletes the chain, its database and the
+network file.
+
+The committed devnet configuration is in `offchain/devnet`:
+`node.properties` holds the genesis parameters, written from the preprod
+parameters endpoint by `npm run devnet:parameters`, which also records
+what it read in `preprod-parameters.json`; `devnet.env` holds the keys and
+the network name of a devnet run, which are not secret;
+`blockfrost-compat.mjs` is the service in front of the devnet store that
+corrects the answers the store gives differently from the hosted API.
+
+Continuous integration stays on the unit suites: a devnet run needs a
+container image of about four gigabytes, a container runtime and five
+minutes of chain time. Run the devnet locally with the commands above.
+
+What the devnet copies from preprod is the list `COPIED_PARAMETERS` in
+`offchain/scripts/devnet-parameters.ts` holds: `min_fee_a`, `min_fee_b`,
+`max_block_size`, `max_tx_size`, `max_block_header_size`, `key_deposit`,
+`pool_deposit`, `e_max`, `n_opt`, `min_pool_cost`, `max_val_size`,
+`collateral_percent`, `max_collateral_inputs`, `max_tx_ex_mem`,
+`max_tx_ex_steps`, `max_block_ex_mem`, `max_block_ex_steps`,
+`protocol_major_ver`, `protocol_minor_ver` and
+`min_fee_ref_script_cost_per_byte`, with `coins_per_utxo_size`,
+`price_mem` and `price_step` converted to the cost per word and the price
+fractions the genesis takes. Nothing else is copied. The monetary
+expansion rate and the treasury growth rate come out equal to preprod's
+0.003 and 0.2 because those are the image's own defaults, not because
+they are copied. The pool pledge influence is 0 against preprod's 0.3 and
+the minimum committee size 0 against 3; no transaction of this contract
+depends on either.
+
+The cost models are the devnet's own. Its Conway genesis carries the 251
+entry Plutus V3 model while preprod reports 350 entries, and 7 of the 251
+entries they share differ: the division coefficients at indexes 54
+(`divideInteger`), 119 (`modInteger`), 135 (`quotientInteger`) and 146
+(`remainderInteger`) are 549 on the devnet against 960 on preprod, and
+the three `equalsByteString` CPU entries at indexes 64, 65 and 66, the
+constant, the intercept and the slope, are 24548, 29498 and 38 against
+30623, 28755 and 75. The Plutus V1 model has 166 entries against
+preprod's 332 and the V2 model 175 against 332, each differing in the
+same three byte string equality entries, and the devnet's parameters
+endpoint reports no V2 model at all. Every differing entry is a CPU
+entry, so the memory budget, the binding figure in these documents, is
+priced identically on both chains; integer division and byte string
+equality over more than a couple of bytes cost fewer steps on the devnet
+than on preprod, so a step budget measured on the devnet is close to
+what preprod charges for the same work and a little below it.
+
+Preprod's full cost models ship in the image at
+`/app/config/plutus-costmodels-v11.json` and neither route the image
+offers puts them on the chain. Replacing `plutusV3CostModel` in the
+cluster's `node/genesis/conway-genesis.json` with those 350 entries and
+starting the node over it, `/app/cardano-bin/cardano-node run --config
+configuration.json --topology topology.json --database-path db
+--socket-path node.sock --port 3001`, ends in
+`CardanoProtocolInstantiationConwayGenesisReadError (GenesisDecodeError
+"./genesis/conway-genesis.json" "Error in $: Number of parameters
+supplied 350 does not match the expected number of 251")`, since
+cardano-node 11.0.1 reads the Conway genesis model at 251 entries. The
+image's other route submits that file as a parameter change governance
+action on the first run of a cluster and logs
+`Plutus cost models update failed: Cannot invoke "String.length()"
+because "hexString" is null` on every start, so the proposal never
+reaches the chain.
 
 ## Security review and preprod evidence
 
@@ -1127,12 +1243,14 @@ for that reason.
   slots and 8 recipients per grant; the bounds are constants in
   `state.ak`. Issuing sixteen grants in one transaction costs about
   16.4 M memory units net over the largest state in the test runner and
-  sweeping sixteen about 19.3 M, both over the 14 M limit, while batches
-  of eight cost about 7.7 M and 8.1 M; on preprod an eight grant issue
-  measured 47 to 51 percent of the limit and an eight grant sweep 50 to
-  70 percent depending on input order, so the builder batches at most 8
-  grant issues or sweeps per transaction. A device rewrite or revoke over
-  the largest state measured 7 to 9 percent on preprod.
+  sweeping sixteen about 19.3 M, against preprod's limit of 17.5 M, which
+  the runner understates since it charges nothing for decoding the
+  transaction context, so neither fits on chain; batches of eight cost
+  about 7.7 M and 8.1 M. On preprod an eight grant issue measured 38 to
+  41 percent of the limit and an eight grant sweep 40 to 56 percent
+  depending on input order, so the builder batches at most 8 grant issues
+  or sweeps per transaction. A device rewrite or revoke over the largest
+  state measured 6 to 7 percent on preprod.
 - Every script execution on chain pays to decode the whole transaction
   context, which the test runner does not charge, so each fund input of
   an agent spend costs more on chain than the runner measures. On preprod
