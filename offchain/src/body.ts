@@ -32,6 +32,7 @@ const BODY_INPUTS = 0n;
 const BODY_OUTPUTS = 1n;
 const BODY_FEE = 2n;
 const BODY_TTL = 3n;
+const BODY_WITHDRAWALS = 5n;
 const BODY_VALIDITY_START = 8n;
 const BODY_MINT = 9n;
 const BODY_REQUIRED_SIGNERS = 14n;
@@ -54,6 +55,13 @@ export interface ValidityRange {
   upperBound: IntervalBound;
 }
 
+/** A withdrawal of a transaction: the hash of the credential it draws from, whether a script's, and the amount. */
+export interface Withdrawal {
+  credential: string;
+  script: boolean;
+  amount: bigint;
+}
+
 /** The parts of a transaction body the builders and the evidence read back. */
 export interface TransactionBodyParts {
   inputs: TxIn[];
@@ -63,6 +71,7 @@ export interface TransactionBodyParts {
   mint: AssetAmounts;
   requiredSigners: string[];
   referenceInputs: TxIn[];
+  withdrawals: Withdrawal[];
 }
 
 /* FUNCTIONS ******************************************************************/
@@ -173,11 +182,32 @@ const readMint = (reader: CborReader): AssetAmounts => {
 };
 
 /**
- * The inputs, outputs, fee, validity interval, mint, required signers and
- * reference inputs of a transaction, read from its CBOR. Inputs and
- * reference inputs are returned in the order the ledger presents them,
- * sorted by transaction id and index, and the validity interval is
- * converted to the POSIX time range the script context shows.
+ * Reads the withdrawals as reward account bytes mapped to amounts, in the
+ * order the ledger indexes their redeemers: by the bytes of the reward
+ * account, whose header byte marks a script credential.
+ */
+const readWithdrawals = (reader: CborReader): Withdrawal[] => {
+  const entries: { account: string; amount: bigint }[] = [];
+  readItems(
+    reader,
+    () => {
+      const account = Cometa.uint8ArrayToHex(reader.readByteString());
+      entries.push({ account, amount: BigInt(reader.readUnsignedInt().toString()) });
+    },
+    { map: true },
+  );
+  return entries
+    .sort((a, b) => compareHex(a.account, b.account))
+    .map(({ account, amount }) => ({ credential: account.slice(2), script: (parseInt(account.slice(0, 2), 16) & 0xf0) === 0xf0, amount }));
+};
+
+/**
+ * The inputs, outputs, fee, validity interval, mint, required signers,
+ * reference inputs and withdrawals of a transaction, read from its CBOR.
+ * Inputs, reference inputs and withdrawals are returned in the order the
+ * ledger presents them, by transaction id and index or by reward account,
+ * and the validity interval is converted to the POSIX time range the
+ * script context shows.
  */
 export const transactionBodyParts = (
   txCbor: string,
@@ -193,6 +223,7 @@ export const transactionBodyParts = (
     mint: {},
     requiredSigners: [],
     referenceInputs: [],
+    withdrawals: [],
   };
   let invalidBefore: bigint | undefined;
   let invalidHereafter: bigint | undefined;
@@ -212,6 +243,9 @@ export const transactionBodyParts = (
           break;
         case BODY_TTL:
           invalidHereafter = BigInt(reader.readUnsignedInt().toString());
+          break;
+        case BODY_WITHDRAWALS:
+          parts.withdrawals = readWithdrawals(reader);
           break;
         case BODY_VALIDITY_START:
           invalidBefore = BigInt(reader.readUnsignedInt().toString());

@@ -21,7 +21,7 @@ import { posixTimeToSlot, slotToPosixTime, transactionBodyParts, upperBoundTime,
 import { Cometa } from '../src/cometa.js';
 import { encodeAccountState, withoutCborCache } from '../src/data.js';
 import { createAccount } from '../src/transactions.js';
-import { OWNER_PAYMENT_KEY, initialState, nftAssetId, scenario, script } from './support/account.js';
+import { OWNER_PAYMENT_KEY, initialState, logicV1Hash, nftAssetId, scenario, script } from './support/account.js';
 
 /* TESTS **********************************************************************/
 
@@ -61,6 +61,7 @@ describe('transaction body parts', () => {
     expect(parts.mint).toEqual({ [nftAssetId]: 1n });
     expect(parts.requiredSigners).toEqual([OWNER_PAYMENT_KEY]);
     expect(parts.referenceInputs).toEqual([]);
+    expect(parts.withdrawals).toEqual([{ credential: logicV1Hash, script: true, amount: 0n }]);
     expect(parts.validityRange).toEqual(validityRangeFromSlots({}));
     const control = parts.outputs.find((output) => output.datum !== undefined);
     expect(control?.value.assets).toEqual({ [nftAssetId]: 1n });
@@ -80,6 +81,16 @@ describe('transaction body parts', () => {
     expect(parts.referenceInputs).toEqual([
       { txId: 'cc'.repeat(32), index: 0 },
       { txId: 'dd'.repeat(32), index: 1 },
+    ]);
+    expect(parts.withdrawals).toEqual([]);
+  });
+
+  it('reads the withdrawals in reward account order, telling script credentials from key credentials', () => {
+    const tx = '84a400d9010281825820' + 'aa'.repeat(32) + '000180021a000f424005a3581df0' + 'cc'.repeat(28) + '00581de0' + 'bb'.repeat(28) + '05581df0' + '11'.repeat(28) + '00a0f5f6';
+    expect(transactionBodyParts(tx).withdrawals).toEqual([
+      { credential: 'bb'.repeat(28), script: false, amount: 5n },
+      { credential: '11'.repeat(28), script: true, amount: 0n },
+      { credential: 'cc'.repeat(28), script: true, amount: 0n },
     ]);
   });
 });

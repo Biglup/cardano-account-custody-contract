@@ -28,7 +28,9 @@ import { Cometa } from '../src/cometa.js';
 import { posixTimeToSlot, transactionBodyParts } from '../src/body.js';
 import type { AccountState, Asset, Scope } from '../src/data.js';
 import { type AccountRecord, accountByOwner, accountExists } from '../src/discovery.js';
+import { type NetworkScripts, loadNetworkScripts } from '../src/network.js';
 import { minimumUtxoLovelace } from '../src/output.js';
+import { currentLogicHash } from '../src/logic.js';
 import { stakeScript, stakeScriptHash } from '../src/stake-script.js';
 import { LOVELACE } from '../src/state.js';
 import {
@@ -137,6 +139,9 @@ const FUND_MESSAGE = 'Fund this address with tADA from the preprod faucet and re
 /** The Blockfrost preprod endpoint, queried directly for what the provider does not expose: pools, reward account status and redeemer units. */
 const BLOCKFROST_URL = 'https://cardano-preprod.blockfrost.io/api/v0';
 
+/** The network whose reference scripts the run uses, when its file records them. */
+const NETWORK = 'preprod';
+
 /** How many registered pools are examined before giving up on finding an active one. */
 const POOL_CANDIDATES = 10;
 
@@ -195,6 +200,8 @@ interface Actors {
   rotation: Keyed[];
   /** What the agent persists to find the account: it never holds the owner key or wallet. */
   record: AccountRecord;
+  /** The reference scripts recorded for the network, or none, in which case the builders embed the scripts. */
+  network: NetworkScripts;
   poolId: string;
   /** The native policy of the test token, requiring the funding wallet's signature, and the token's asset. */
   tokenScript: NativeScript;
@@ -589,14 +596,14 @@ class Run {
 
   /** The parameters every owner transaction shares: the owner key is the account's initial device and the owner of its stake script. */
   private get ownerParams() {
-    const { owner, provider, ownerKeyHash } = this.actors;
-    return { wallet: owner, provider, owner: ownerKeyHash };
+    const { owner, provider, ownerKeyHash, network } = this.actors;
+    return { wallet: owner, provider, owner: ownerKeyHash, network };
   }
 
   /** The parameters every agent transaction shares: the agent wallet signs and provides the collateral, and the account comes from the persisted record. */
   private get agentParams() {
-    const { agent, provider, record } = this.actors;
-    return { wallet: agent, provider, record };
+    const { agent, provider, record, network } = this.actors;
+    return { wallet: agent, provider, record, network };
   }
 
   /**
@@ -785,7 +792,7 @@ class Run {
   /** Creation, deposits, the first owner spend and the stake operations of the owner device. */
   private async basics(): Promise<void> {
     const { funding, owner, ownerAddress, ownerKeyHash, poolId } = this.actors;
-    const initialState: AccountState = { devices: [ownerKeyHash], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
+    const initialState: Omit<AccountState, 'logic'> = { devices: [ownerKeyHash], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
 
     await this.confirm(1, 'createAccount sponsored by the funding wallet', [owner, funding], () =>
       createAccount({ ...this.ownerParams, sponsor: funding, state: initialState }),
@@ -1060,6 +1067,7 @@ const main = async (): Promise<void> => {
   const tokenScript: NativeScript = { type: Cometa.ScriptType.Native, kind: Cometa.NativeScriptKind.RequireSignature, keyHash: fundingKeyHash };
   const token: Asset = { policyId: Cometa.computeScriptHash(tokenScript), assetName: TOKEN_NAME_HEX };
   const poolId = await firstActivePool(projectId);
+  const network = loadNetworkScripts(NETWORK);
   const actors: Actors = {
     provider,
     projectId,
@@ -1075,6 +1083,7 @@ const main = async (): Promise<void> => {
     agentKeyHash,
     rotation,
     record,
+    network,
     poolId,
     tokenScript,
     token,
@@ -1123,6 +1132,7 @@ const main = async (): Promise<void> => {
       rewardAddress: reward,
       poolId,
       tokenPolicyId: token.policyId,
+      logicV1Hash: currentLogicHash(scriptHash),
       records: run.records,
       supporting: run.supporting,
     }),

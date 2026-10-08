@@ -16,13 +16,15 @@
 
 /* IMPORTS ********************************************************************/
 
-import type { PlutusData, UTxO, Value } from '@biglup/cometa';
+import type { PlutusData, PlutusScript, UTxO, Value } from '@biglup/cometa';
 import { accountAddress, grantAssetId, rewardAddress, stateNftAssetId } from '../../src/address.js';
-import { accountScript, accountScriptHash } from '../../src/blueprint.js';
+import { accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../../src/blueprint.js';
 import { Cometa } from '../../src/cometa.js';
 import { transactionBodyParts } from '../../src/body.js';
-import { type AccountState, type Grant, type Scope, encodeAccountState, encodeGrant, encodeReserveDatum } from '../../src/data.js';
-import { stakeScript, stakeScriptHash } from '../../src/stake-script.js';
+import { type AccountState, type Grant, type Scope, bytes, encodeAccountState, encodeGrant, encodeReserveDatum } from '../../src/data.js';
+import { currentLogicScript, logicScriptHash } from '../../src/logic.js';
+import { type NetworkScripts, type ReferenceScriptRecord } from '../../src/network.js';
+import { applyParameters, stakeScript, stakeScriptHash } from '../../src/stake-script.js';
 import { FakeProvider, FakeWallet, utxo } from './fake.js';
 
 /* CONSTANTS ******************************************************************/
@@ -44,6 +46,21 @@ export const VALID_UNTIL_SLOT = 100_000_000n;
 export const CONTROL_LOVELACE = 2_000_000n;
 export const GRANT_LOVELACE = 2_000_000n;
 
+/**
+ * The parameter the second logic version of the tests is applied to. The
+ * fixture is the current logic applied to this hash in place of the proxy
+ * hash: it has its own script hash and its own credential, which is all
+ * the builders and the fake evaluator read of a logic, so it stands for a
+ * later version in every upgrade test without a second compiled
+ * validator. On chain such a script answers to another proxy, so it is a
+ * fixture only.
+ */
+export const LOGIC_V2_PARAMETER = '02'.repeat(28);
+
+/** The always fail script hash the tests park reference scripts under, and the lovelace each parked UTxO holds. */
+export const PARKING_SCRIPT_HASH = 'ab'.repeat(28);
+export const PARKED_LOVELACE = 30_000_000n;
+
 /** The scripts and derived identifiers of the account under test, whose owner is the owner wallet's payment key. */
 export const script = accountScript();
 export const scriptHash = accountScriptHash(script);
@@ -53,8 +70,27 @@ export const nftAssetId = stateNftAssetId(scriptHash, ownerStakeScriptHash);
 export const address = accountAddress(scriptHash, ownerStakeScriptHash).toString();
 export const ownerRewardAddress = rewardAddress(ownerStakeScriptHash).toBech32();
 
-/** The state of a freshly created account. */
-export const initialState: AccountState = { devices: [OWNER_PAYMENT_KEY], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
+/** The current logic applied to the proxy hash, which every fixture account runs, and the reward account its zero withdrawal draws from. */
+export const logicV1: PlutusScript = currentLogicScript(scriptHash);
+export const logicV1Hash = logicScriptHash(logicV1);
+export const logicV1RewardAddress = rewardAddress(logicV1Hash).toBech32();
+
+/** The second logic version of the tests, applied to `LOGIC_V2_PARAMETER`, and the reward account its zero withdrawal draws from. */
+export const logicV2: PlutusScript = {
+  type: Cometa.ScriptType.Plutus,
+  bytes: applyParameters(logicValidator(loadBlueprint()).compiledCode, [bytes(LOGIC_V2_PARAMETER)]),
+  version: Cometa.PlutusLanguageVersion.V3,
+};
+export const logicV2Hash = logicScriptHash(logicV2);
+export const logicV2RewardAddress = rewardAddress(logicV2Hash).toBech32();
+
+/** The always fail script address the tests park reference scripts at. */
+export const parkingAddress = Cometa.EnterpriseAddress.fromCredentials(Cometa.NetworkId.Testnet, { hash: PARKING_SCRIPT_HASH, type: Cometa.CredentialType.ScriptHash })
+  .toAddress()
+  .toString();
+
+/** The state of a freshly created account under the current logic. */
+export const initialState: AccountState = { logic: logicV1Hash, devices: [OWNER_PAYMENT_KEY], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
 
 /** The transaction ids of the UTxOs each wallet and the account hold in a scenario. */
 export const CONTROL_UTXO_TX = '11'.repeat(32);
@@ -64,6 +100,7 @@ export const AGENT_UTXO_TX = '44'.repeat(32);
 export const SPONSOR_UTXO_TX = '55'.repeat(32);
 export const GRANT_UTXO_TX = '66'.repeat(32);
 export const RESERVE_UTXO_TX = '77'.repeat(32);
+export const REFERENCE_UTXO_TX = '88'.repeat(32);
 
 /* TYPES **********************************************************************/
 
@@ -154,7 +191,40 @@ export const grantUtxo = (grant: Grant, coins = GRANT_LOVELACE): UTxO =>
 /** The grant UTxOs of the fixture grants. */
 export const grantedUtxos = (): UTxO[] => fixtureGrants.map((grant) => grantUtxo(grant));
 
-/** A funded owner, agent and sponsor wallet plus the account's UTxOs beyond its control UTxO, served by one fake provider. */
+/**
+ * The scripts parked as reference scripts in every scenario: the proxy
+ * and both logic versions, each in its own UTxO at the parking address,
+ * indexed in this order under the reference transaction.
+ */
+export const parkedScripts: PlutusScript[] = [script, logicV1, logicV2];
+
+/** The reference script UTxO of a parked script, as the network setup leaves it and the fake provider serves it. */
+export const referenceUtxo = (parked: PlutusScript): UTxO => ({
+  input: { txId: REFERENCE_UTXO_TX, index: parkedScripts.indexOf(parked) },
+  output: { address: parkingAddress, value: { coins: PARKED_LOVELACE }, scriptReference: parked },
+});
+
+/** The record of a parked script as the network file carries it. */
+export const referenceRecord = (parked: PlutusScript): ReferenceScriptRecord => ({
+  scriptHash: Cometa.computeScriptHash(parked),
+  txId: REFERENCE_UTXO_TX,
+  index: parkedScripts.indexOf(parked),
+  address: parkingAddress,
+  lovelace: PARKED_LOVELACE.toString(),
+});
+
+/** The reference scripts of the test network: the given scripts, every parked one when none are named. */
+export const networkScripts = (parked: PlutusScript[] = parkedScripts): NetworkScripts => ({
+  network: 'fake',
+  references: parked.map(referenceRecord),
+});
+
+/**
+ * A funded owner, agent and sponsor wallet plus the account's UTxOs beyond
+ * its control UTxO, served by one fake provider that also holds the
+ * parked reference scripts, so that a builder given the network's records
+ * finds the UTxOs it references.
+ */
 export const scenario = (state: AccountState | undefined, utxos: UTxO[]): Scenario => {
   const provider = new FakeProvider();
   const owner = new FakeWallet(provider, OWNER_PAYMENT_KEY, OWNER_STAKE_KEY);
@@ -163,6 +233,9 @@ export const scenario = (state: AccountState | undefined, utxos: UTxO[]): Scenar
   provider.addUtxo(utxo(OWNER_UTXO_TX, 0, owner.address.toString(), { coins: 50_000_000n }));
   provider.addUtxo(utxo(AGENT_UTXO_TX, 0, agent.address.toString(), { coins: 20_000_000n }));
   provider.addUtxo(utxo(SPONSOR_UTXO_TX, 0, sponsor.address.toString(), { coins: 60_000_000n }));
+  for (const parked of parkedScripts) {
+    provider.addUtxo(referenceUtxo(parked));
+  }
   if (state) {
     provider.addUtxo(controlUtxo(state));
   }

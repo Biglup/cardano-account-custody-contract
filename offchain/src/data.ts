@@ -44,28 +44,45 @@ export interface Scope {
 }
 
 /**
+ * The stable prefix of a grant: its slot, its grantee and the generation it
+ * was issued under, the first three fields of every grant datum whatever
+ * logic version issued it. A sweep of a dead grant reads nothing else, so
+ * the owner can sweep a grant issued under a logic this library does not
+ * know the scope shape of once it is dead by generation or revocation;
+ * the expiry lives in the scope, so a grant known by its prefix alone is
+ * never swept by expiry.
+ */
+export interface GrantPrefix {
+  slot: bigint;
+  grantee: string;
+  generation: bigint;
+}
+
+/**
  * A revocable permission living in its own grant UTxO under the grant
  * token of its slot. The grantee is the hash of the Ed25519 key that must
  * sign to use it; the generation is the account's grant generation at
  * issuance, and the grant dies when the account moves past it or revokes
  * its slot.
  */
-export interface Grant {
-  slot: bigint;
-  grantee: string;
-  generation: bigint;
+export interface Grant extends GrantPrefix {
   scope: Scope;
 }
 
 /**
- * The account's on-chain state in the control UTxO: its devices and the
- * grant bookkeeping. The generation only ever grows and kills every grant
+ * The account's on-chain state in the control UTxO: the logic that governs
+ * the account, its devices and the grant bookkeeping. The logic is the
+ * hash of the logic script whose rules apply to the account; a device
+ * rewrite that changes it is an upgrade and needs both the old and the new
+ * logic to run. The generation only ever grows and kills every grant
  * issued under an older value; the next slot is the one the next issued
  * grant takes; the revoked list names the slots of the current generation
  * revoked one by one; outstanding counts grant tokens minted and not yet
- * burned.
+ * burned. The logic, the devices and the generation are the stable prefix
+ * every logic version keeps first.
  */
 export interface AccountState {
+  logic: string;
   devices: string[];
   grantGeneration: bigint;
   nextSlot: bigint;
@@ -73,10 +90,10 @@ export interface AccountState {
   outstanding: bigint;
 }
 
-/** The redeemer of the account validator's spend handler. */
+/** The redeemer of the account proxy's spend handler. */
 export type AccountRedeemer = { kind: 'device' } | { kind: 'spendWithGrant' } | { kind: 'sweepGrant' } | { kind: 'fund' };
 
-/** The redeemer of the account validator's mint handler. */
+/** The redeemer of the account proxy's mint handler. */
 export type MintRedeemer = { kind: 'createAccount' } | { kind: 'issueGrants' } | { kind: 'burnGrants' };
 
 /* FUNCTIONS ******************************************************************/
@@ -245,24 +262,42 @@ export const decodeScope = (data: PlutusData, networkId?: NetworkId): Scope => {
   };
 };
 
+/** The fields of constructor 0 holding at least a stable prefix of the given length. */
+const expectPrefix = (data: PlutusData, length: number, what: string): PlutusData[] => {
+  if (!Cometa.isPlutusDataConstr(data) || Number(data.constructor) !== 0 || data.fields.items.length < length) {
+    throw new Error(`Expected ${what} as constructor 0 with at least ${length} fields`);
+  }
+  return data.fields.items;
+};
+
 /** A grant as Plutus data: the slot, the grantee key hash, the generation and the scope. */
 export const encodeGrant = (grant: Grant): ConstrPlutusData =>
   constr(0, [grant.slot, bytes(grant.grantee), grant.generation, encodeScope(grant.scope)]);
 
-/** The grant a Plutus data value stands for. */
-export const decodeGrant = (data: PlutusData, networkId?: NetworkId): Grant => {
-  const fields = expectConstr(data, 0, 4, 'a grant');
+/**
+ * The stable prefix a grant datum carries in its first three fields, read
+ * without decoding the rest: the slot, the grantee and the generation, as
+ * a sweep needs them whatever logic issued the grant.
+ */
+export const decodeGrantPrefix = (data: PlutusData): GrantPrefix => {
+  const fields = expectPrefix(data, 3, 'a grant');
   return {
     slot: expectInt(field(fields, 0), 'a slot'),
     grantee: expectBytes(field(fields, 1), 'a grantee key hash'),
     generation: expectInt(field(fields, 2), 'a generation'),
-    scope: decodeScope(field(fields, 3), networkId),
   };
 };
 
-/** An account state as the inline datum of the control UTxO, with its fields in declaration order. */
+/** The grant a Plutus data value stands for, in the shape the current logic issues. */
+export const decodeGrant = (data: PlutusData, networkId?: NetworkId): Grant => {
+  const fields = expectConstr(data, 0, 4, 'a grant');
+  return { ...decodeGrantPrefix(data), scope: decodeScope(field(fields, 3), networkId) };
+};
+
+/** An account state as the inline datum of the control UTxO, with its fields in declaration order, the logic first. */
 export const encodeAccountState = (state: AccountState): ConstrPlutusData =>
   constr(0, [
+    bytes(state.logic),
     { items: state.devices.map((device) => bytes(device)) },
     state.grantGeneration,
     state.nextSlot,
@@ -270,15 +305,23 @@ export const encodeAccountState = (state: AccountState): ConstrPlutusData =>
     state.outstanding,
   ]);
 
-/** The account state a Plutus data value stands for. */
+/**
+ * The logic hash a control datum names in its first field, read without
+ * decoding the rest of the state, as the proxy reads it: the field that
+ * every logic version keeps first.
+ */
+export const decodeLogicHash = (data: PlutusData): string => expectBytes(field(expectPrefix(data, 1, 'a control datum'), 0), 'a logic hash');
+
+/** The account state a Plutus data value stands for, in the shape the current logic keeps. */
 export const decodeAccountState = (data: PlutusData): AccountState => {
-  const fields = expectConstr(data, 0, 5, 'an account state');
+  const fields = expectConstr(data, 0, 6, 'an account state');
   return {
-    devices: expectList(field(fields, 0), 'devices').map((device) => expectBytes(device, 'a device key hash')),
-    grantGeneration: expectInt(field(fields, 1), 'a grant generation'),
-    nextSlot: expectInt(field(fields, 2), 'a next slot'),
-    revoked: expectList(field(fields, 3), 'revoked slots').map((slot) => expectInt(slot, 'a revoked slot')),
-    outstanding: expectInt(field(fields, 4), 'an outstanding count'),
+    logic: expectBytes(field(fields, 0), 'a logic hash'),
+    devices: expectList(field(fields, 1), 'devices').map((device) => expectBytes(device, 'a device key hash')),
+    grantGeneration: expectInt(field(fields, 2), 'a grant generation'),
+    nextSlot: expectInt(field(fields, 3), 'a next slot'),
+    revoked: expectList(field(fields, 4), 'revoked slots').map((slot) => expectInt(slot, 'a revoked slot')),
+    outstanding: expectInt(field(fields, 5), 'an outstanding count'),
   };
 };
 
@@ -349,3 +392,11 @@ export const withoutCborCache = (data: PlutusData): PlutusData => {
  * value, constructor 0 with no fields.
  */
 export const encodeStakeRedeemer = (): ConstrPlutusData => constr(0);
+
+/**
+ * The redeemer of a logic script's withdraw and publish handlers as Plutus
+ * data. The logic learns what it validates from the control UTxO naming it
+ * and the proxy redeemers beside its own, so the redeemer carries no
+ * choice: `Run` is its only value, constructor 0 with no fields.
+ */
+export const encodeLogicRedeemer = (): ConstrPlutusData => constr(0);

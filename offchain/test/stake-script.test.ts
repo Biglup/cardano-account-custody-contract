@@ -30,22 +30,25 @@ import { OWNER_PAYMENT_KEY } from './support/account.js';
 /**
  * The fixture was produced once with the Aiken CLI from the committed
  * blueprint, applying the owner key hash `aa` repeated 28 times and then
- * the account script hash `6f275cca0cc4433e6a798d78a2db2934df60dc4fd989274a2d9bb434`,
+ * the account proxy hash `ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253`,
  * each given as the CBOR of its bytes:
  *
  *   aiken blueprint apply -m account_stake -o step1.json 581caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
- *   aiken blueprint apply -i step1.json -m account_stake -o step2.json 581c6f275cca0cc4433e6a798d78a2db2934df60dc4fd989274a2d9bb434
+ *   aiken blueprint apply -i step1.json -m account_stake -o step2.json 581ced61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253
  *   aiken blueprint hash -i step2.json -m account_stake
  *
- * The hash printed for step2.json is `APPLIED_HASH`, the hash step1.json
- * reports is `OWNER_APPLIED_HASH`, and `APPLIED_CODE_DIGEST` is the
- * SHA-256 digest of the compiled code step2.json carries, which pins
- * the applied bytes without embedding them.
+ * `UNAPPLIED_HASH` is the hash the committed blueprint reports for the
+ * stake validator before any parameter is applied, the hash step1.json
+ * reports is `OWNER_APPLIED_HASH`, the hash printed for step2.json is
+ * `APPLIED_HASH`, and `APPLIED_CODE_DIGEST` is the SHA-256 digest of the
+ * compiled code step2.json carries, which pins the applied bytes without
+ * embedding them.
  */
-const ACCOUNT_HASH = '6f275cca0cc4433e6a798d78a2db2934df60dc4fd989274a2d9bb434';
-const OWNER_APPLIED_HASH = '9dd1e39d6530b018cca0f773e46332c35a2b59a060bcb41924772157';
-const APPLIED_HASH = '6d3dcfd41caf993158118689d8196c3401eb8244070335d2e3bd6b5d';
-const APPLIED_CODE_DIGEST = 'b49c09920f866a051c5414f14d35a9413f20a9b0c9b6db0623daf2c91041b5a0';
+const ACCOUNT_HASH = 'ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253';
+const UNAPPLIED_HASH = 'edcfa41389b7b924916ad7408cd2d0f75a7a3dae8717f9bbf1a668c6';
+const OWNER_APPLIED_HASH = 'a8b42d69bd1bdd24ecf0c92613f85a126941b6907f2dea2930284da1';
+const APPLIED_HASH = '4dd785711df2a1a2f5338b73a88e3cd199ed08a6f98e25d13d4db854';
+const APPLIED_CODE_DIGEST = 'a34a30b8b9025f789c2b8386f3f73b770af9768529ace791ed435be9fb22b8d1';
 
 /* FUNCTIONS ******************************************************************/
 
@@ -78,6 +81,7 @@ describe('stake script', () => {
 
   it('leaves the unapplied code as the blueprint reports it', () => {
     const validator = stakeValidator(blueprint);
+    expect(validator.hash).toBe(UNAPPLIED_HASH);
     expect(applyParameters(validator.compiledCode, [])).toBe(validator.compiledCode);
     expect(stakeScriptHash({ type: Cometa.ScriptType.Plutus, bytes: validator.compiledCode, version: Cometa.PlutusLanguageVersion.V3 })).toBe(
       validator.hash,

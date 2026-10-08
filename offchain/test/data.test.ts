@@ -26,19 +26,22 @@ import {
   decodeAccountState,
   decodeAddress,
   decodeGrant,
+  decodeGrantPrefix,
+  decodeLogicHash,
   decodeMintRedeemer,
   decodeScope,
   encodeAccountRedeemer,
   encodeAccountState,
   encodeAddress,
   encodeGrant,
+  encodeLogicRedeemer,
   encodeMintRedeemer,
   encodeReserveDatum,
   encodeScope,
   encodeStakeRedeemer,
   withoutCborCache,
 } from '../src/data.js';
-import { AGENT_PAYMENT_KEY, OWNER_PAYMENT_KEY, address, fixtureGrants, grantedState, lovelaceScope, recipientAddress } from './support/account.js';
+import { AGENT_PAYMENT_KEY, OWNER_PAYMENT_KEY, address, fixtureGrants, grantedState, logicV1Hash, logicV2Hash, lovelaceScope, recipientAddress } from './support/account.js';
 
 /* FUNCTIONS ******************************************************************/
 
@@ -48,22 +51,32 @@ const cbor = (data: Parameters<typeof Cometa.plutusDataToCbor>[0]): string => Co
 /* TESTS **********************************************************************/
 
 describe('account state', () => {
-  it('encodes a fresh state with constructor 0 and the devices, generation, next slot, revoked list and outstanding count in order', () => {
-    const state: AccountState = { devices: [OWNER_PAYMENT_KEY], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
-    expect(cbor(encodeAccountState(state))).toBe(`d8799f9f581c${OWNER_PAYMENT_KEY}ff00008000ff`);
+  it('encodes a fresh state with constructor 0 and the logic, devices, generation, next slot, revoked list and outstanding count in order', () => {
+    const state: AccountState = { logic: logicV1Hash, devices: [OWNER_PAYMENT_KEY], grantGeneration: 0n, nextSlot: 0n, revoked: [], outstanding: 0n };
+    expect(cbor(encodeAccountState(state))).toBe(`d8799f581c${logicV1Hash}9f581c${OWNER_PAYMENT_KEY}ff00008000ff`);
   });
 
   it('round trips a state with counters and revoked slots', () => {
     const state: AccountState = { ...grantedState, grantGeneration: 2n, revoked: [1n, 40n] };
-    expect(cbor(encodeAccountState(state))).toBe(`d8799f9f581c${OWNER_PAYMENT_KEY}ff02039f011828ff03ff`);
+    expect(cbor(encodeAccountState(state))).toBe(`d8799f581c${logicV1Hash}9f581c${OWNER_PAYMENT_KEY}ff02039f011828ff03ff`);
     expect(decodeAccountState(Cometa.cborToPlutusData(cbor(encodeAccountState(state))))).toEqual(state);
+  });
+
+  it('reads the logic from the first field of any control datum, as the proxy does, without decoding the rest', () => {
+    expect(decodeLogicHash(encodeAccountState(grantedState))).toBe(logicV1Hash);
+    expect(decodeLogicHash({ constructor: 0n, fields: { items: [Cometa.hexToUint8Array(logicV2Hash), 7n] } })).toBe(logicV2Hash);
+    expect(decodeLogicHash({ constructor: 0n, fields: { items: [Cometa.hexToUint8Array(logicV2Hash), 7n, { items: [] }, Cometa.hexToUint8Array('ab'), 1n, 2n, 3n] } })).toBe(logicV2Hash);
+    expect(() => decodeLogicHash({ constructor: 0n, fields: { items: [] } })).toThrow(/control datum/);
+    expect(() => decodeLogicHash({ constructor: 0n, fields: { items: [0n] } })).toThrow(/logic hash/);
+    expect(() => decodeLogicHash(0n)).toThrow(/control datum/);
   });
 
   it('refuses data that is not a state', () => {
     expect(() => decodeAccountState(0n)).toThrow(/account state/);
     expect(() => decodeAccountState({ constructor: 1n, fields: { items: [] } })).toThrow(/account state/);
-    expect(() => decodeAccountState({ constructor: 0n, fields: { items: [{ items: [] }, 0n, 0n, { items: [] }] } })).toThrow(/account state/);
-    expect(() => decodeAccountState({ constructor: 0n, fields: { items: [{ items: [] }, 0n, 0n, { items: [0n, { items: [] }] }, 0n] } })).toThrow(/revoked slot/);
+    expect(() => decodeAccountState({ constructor: 0n, fields: { items: [{ items: [] }, 0n, 0n, { items: [] }, 0n] } })).toThrow(/account state/);
+    expect(() => decodeAccountState({ constructor: 0n, fields: { items: [{ items: [] }, { items: [] }, 0n, 0n, { items: [] }, 0n] } })).toThrow(/logic hash/);
+    expect(() => decodeAccountState({ constructor: 0n, fields: { items: [Cometa.hexToUint8Array(logicV1Hash), { items: [] }, 0n, 0n, { items: [0n, { items: [] }] }, 0n] } })).toThrow(/revoked slot/);
   });
 });
 
@@ -74,6 +87,20 @@ describe('grant', () => {
     expect(cbor(encodeGrant({ ...grant, slot: 7n, generation: 3n })).startsWith(`d8799f07581c${AGENT_PAYMENT_KEY}03d8799f`)).toBe(true);
     expect(() => decodeGrant({ constructor: 0n, fields: { items: [0n, { constructor: 0n, fields: { items: [] } }, 0n, encodeScope(grant.scope)] } })).toThrow(/grantee/);
     expect(() => decodeGrant({ constructor: 0n, fields: { items: [0n, Cometa.hexToUint8Array(AGENT_PAYMENT_KEY), encodeScope(grant.scope)] } })).toThrow(/grant/);
+  });
+
+  it('reads the stable prefix of a grant whatever follows it, and refuses a grant of another shape as a whole', () => {
+    const grant = fixtureGrants[1]!;
+    const prefix = { slot: 1n, grantee: AGENT_PAYMENT_KEY, generation: 0n };
+    expect(decodeGrantPrefix(encodeGrant(grant))).toEqual(prefix);
+    const extended = { constructor: 0n, fields: { items: [...encodeGrant(grant).fields.items, 99n] } };
+    expect(decodeGrantPrefix(extended)).toEqual(prefix);
+    expect(() => decodeGrant(extended)).toThrow(/a grant as constructor 0 with 4 fields/);
+    const reshaped = { constructor: 0n, fields: { items: [1n, Cometa.hexToUint8Array(AGENT_PAYMENT_KEY), 0n, { items: [1n, 2n] }] } };
+    expect(decodeGrantPrefix(reshaped)).toEqual(prefix);
+    expect(() => decodeGrant(reshaped)).toThrow(/scope/);
+    expect(() => decodeGrantPrefix({ constructor: 0n, fields: { items: [1n, Cometa.hexToUint8Array(AGENT_PAYMENT_KEY)] } })).toThrow(/at least 3 fields/);
+    expect(() => decodeGrantPrefix({ constructor: 0n, fields: { items: [1n, 2n, 0n] } })).toThrow(/grantee/);
   });
 });
 
@@ -156,9 +183,13 @@ describe('redeemers', () => {
   });
 });
 
-describe('stake redeemer and reserve datum', () => {
+describe('stake redeemer, logic redeemer and reserve datum', () => {
   it('encodes Operate as constructor 0 with no fields', () => {
     expect(cbor(encodeStakeRedeemer())).toBe('d87980');
+  });
+
+  it('encodes Run as constructor 0 with no fields', () => {
+    expect(cbor(encodeLogicRedeemer())).toBe('d87980');
   });
 
   it('writes constructor 0 with no fields on a reserve', () => {

@@ -24,8 +24,18 @@ import { Cometa } from './cometa.js';
 
 /* CONSTANTS ******************************************************************/
 
-/** The title every handler of the account validator shares. */
+/** The title every handler of the account proxy validator shares. */
 const ACCOUNT_VALIDATOR_TITLE = 'account.account';
+
+/** The prefix of the module title of every logic version: `logic_v1`, `logic_v2` and so on. */
+const LOGIC_MODULE_PREFIX = 'logic_';
+
+/**
+ * The title of the logic version this library pins: the one a new account
+ * runs unless its creator names another, and the one the builders apply to
+ * the proxy hash to attach the logic.
+ */
+export const CURRENT_LOGIC_TITLE = 'logic_v1.logic_v1';
 
 /** The blueprint `aiken build` writes at the repository root. */
 export const DEFAULT_BLUEPRINT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plutus.json');
@@ -54,10 +64,13 @@ export interface Blueprint {
 export const loadBlueprint = (path: string = DEFAULT_BLUEPRINT_PATH): Blueprint =>
   JSON.parse(readFileSync(path, 'utf8')) as Blueprint;
 
+/** The module title of a validator entry: everything before its handler name. */
+const moduleTitleOf = (validator: BlueprintValidator): string => validator.title.slice(0, validator.title.lastIndexOf('.'));
+
 /**
- * The account validator entry of a blueprint. Every handler of a multi
- * purpose validator carries the same compiled code and hash, so the first
- * entry titled after the account validator is representative.
+ * The account proxy validator entry of a blueprint. Every handler of a
+ * multi purpose validator carries the same compiled code and hash, so the
+ * first entry titled after the proxy is representative.
  */
 export const accountValidator = (blueprint: Blueprint): BlueprintValidator => {
   const validator = blueprint.validators.find((entry) => entry.title.startsWith(`${ACCOUNT_VALIDATOR_TITLE}.`));
@@ -67,7 +80,7 @@ export const accountValidator = (blueprint: Blueprint): BlueprintValidator => {
   return validator;
 };
 
-/** The account validator as a Plutus V3 script cometa can attach to a transaction. */
+/** The account proxy as a Plutus V3 script cometa can attach to a transaction. */
 export const accountScript = (blueprint: Blueprint = loadBlueprint()): PlutusScript => ({
   type: Cometa.ScriptType.Plutus,
   bytes: accountValidator(blueprint).compiledCode,
@@ -75,7 +88,33 @@ export const accountScript = (blueprint: Blueprint = loadBlueprint()): PlutusScr
 });
 
 /**
- * The hash of the account script, which is both the payment credential of
- * every account address and the policy id of every state NFT.
+ * The hash of the account proxy, which is both the payment credential of
+ * every account address and the policy id of every account token.
  */
 export const accountScriptHash = (script: PlutusScript): string => Cometa.computeScriptHash(script);
+
+/**
+ * The logic validator entries of a blueprint, one per logic version in
+ * module order, each still parameterised by the proxy hash. Every handler
+ * of a version carries the same compiled code, so the first entry of each
+ * module is representative.
+ */
+export const logicValidators = (blueprint: Blueprint): BlueprintValidator[] => {
+  const versions = new Map<string, BlueprintValidator>();
+  for (const validator of blueprint.validators) {
+    const title = moduleTitleOf(validator);
+    if (title.startsWith(LOGIC_MODULE_PREFIX) && !versions.has(title)) {
+      versions.set(title, validator);
+    }
+  }
+  return [...versions.values()];
+};
+
+/** The logic validator entry of a blueprint with the given module title, the current version's when none is given. */
+export const logicValidator = (blueprint: Blueprint, title: string = CURRENT_LOGIC_TITLE): BlueprintValidator => {
+  const validator = logicValidators(blueprint).find((entry) => moduleTitleOf(entry) === title);
+  if (!validator) {
+    throw new Error(`The blueprint has no logic validator titled ${title}`);
+  }
+  return validator;
+};

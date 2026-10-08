@@ -16,7 +16,7 @@
 
 /* IMPORTS ********************************************************************/
 
-import type { NetworkId, Provider, UTxO } from '@biglup/cometa';
+import type { NetworkId, PlutusData, Provider, UTxO } from '@biglup/cometa';
 import {
   accountAddress,
   grantTokenNamesOf,
@@ -27,7 +27,7 @@ import {
 } from './address.js';
 import { type Blueprint, accountScript, accountScriptHash, loadBlueprint } from './blueprint.js';
 import { Cometa } from './cometa.js';
-import { type AccountState, type Grant, decodeAccountState, decodeGrant } from './data.js';
+import { type AccountState, type Grant, type GrantPrefix, decodeAccountState, decodeGrant, decodeGrantPrefix, decodeLogicHash } from './data.js';
 import { stakeScript, stakeScriptHash } from './stake-script.js';
 import { grantDeathReason } from './state.js';
 
@@ -53,16 +53,31 @@ export interface DiscoveredAccount extends AccountRecord {
   stateNftAssetId: string;
 }
 
-/** The control UTxO of a live account and the state it carries. */
+/**
+ * The control UTxO of a live account, the state it carries and the hash of
+ * the logic governing it, read from the first field of the datum as the
+ * proxy reads it, so it is known even for a state shape a later logic
+ * keeps.
+ */
 export interface LiveAccount {
   control: UTxO;
   state: AccountState;
+  logic: string;
 }
 
-/** A grant UTxO of an account: the UTxO, the grant it carries and the asset id of its grant token. */
+/**
+ * A grant UTxO of an account: the UTxO, the stable prefix every grant
+ * datum carries, the whole grant when its datum has the shape the current
+ * logic issues, and the asset id of its grant token. A grant issued under
+ * a logic with another scope shape is known by its prefix alone: the owner
+ * can sweep it once it is dead by generation, which an upgrade makes it,
+ * or by revocation, never by expiry, since the expiry lives in the scope,
+ * and no agent spend is built against it.
+ */
 export interface GrantUtxo {
   utxo: UTxO;
-  grant: Grant;
+  prefix: GrantPrefix;
+  grant: Grant | undefined;
   assetId: string;
 }
 
@@ -131,17 +146,30 @@ export const stateNftOf = (record: AccountRecord): string => {
 /** Whether a UTxO holds exactly one state NFT of the account. */
 const holdsStateNft = (utxo: UTxO, nftAssetId: string): boolean => (utxo.output.value.assets?.[nftAssetId] ?? 0n) === 1n;
 
-/** The grant a grant UTxO carries, decoded from its inline datum and checked against its token's slot. */
-const grantOf = (utxo: UTxO, name: string, networkId: NetworkId): Grant => {
+/** The grant a datum carries in the shape the current logic issues, or undefined when it has another shape. */
+const wholeGrantOf = (datum: PlutusData, networkId: NetworkId): Grant | undefined => {
+  try {
+    return decodeGrant(datum, networkId);
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * The grant a grant UTxO carries, decoded from its inline datum and
+ * checked against its token's slot: the stable prefix always, the whole
+ * grant when the datum has the shape the current logic issues.
+ */
+const grantOf = (utxo: UTxO, name: string, networkId: NetworkId): Pick<GrantUtxo, 'prefix' | 'grant'> => {
   if (utxo.output.datum === undefined) {
     throw new Error(`The grant UTxO ${utxo.input.txId}#${utxo.input.index} carries no inline datum`);
   }
-  const grant = decodeGrant(utxo.output.datum, networkId);
+  const prefix = decodeGrantPrefix(utxo.output.datum);
   const slot = slotOfGrantTokenName(name);
-  if (grant.slot !== slot) {
-    throw new Error(`The grant UTxO of slot ${slot} carries a grant of slot ${grant.slot}`);
+  if (prefix.slot !== slot) {
+    throw new Error(`The grant UTxO of slot ${slot} carries a grant of slot ${prefix.slot}`);
   }
-  return grant;
+  return { prefix, grant: wholeGrantOf(utxo.output.datum, networkId) };
 };
 
 /**
@@ -149,8 +177,8 @@ const grantOf = (utxo: UTxO, name: string, networkId: NetworkId): Grant => {
  * NFT is the control UTxO, one holding a grant token of the account is a
  * grant UTxO, one carrying any datum without an account token is a
  * reserve, and the rest are funds. Fails when the address holds more than
- * one control UTxO or a grant UTxO whose datum is not the grant of its
- * token.
+ * one control UTxO or a grant UTxO whose datum does not carry the stable
+ * prefix of the grant of its token.
  */
 export const classifyAccountUtxos = (
   utxos: UTxO[],
@@ -172,7 +200,7 @@ export const classifyAccountUtxos = (
       if (names.length > 1) {
         throw new Error(`The UTxO ${utxo.input.txId}#${utxo.input.index} holds several grant tokens`);
       }
-      kinds.grants.push({ utxo, grant: grantOf(utxo, name, networkId), assetId: `${scriptHash}${name}` });
+      kinds.grants.push({ utxo, ...grantOf(utxo, name, networkId), assetId: `${scriptHash}${name}` });
     } else if (utxo.output.datum !== undefined || utxo.output.datumHash !== undefined) {
       kinds.reserves.push(utxo);
     } else {
@@ -196,27 +224,38 @@ const stateOf = (control: UTxO): AccountState => {
   return decodeAccountState(control.output.datum);
 };
 
+/** The logic hash a control UTxO names in the first field of its datum; fails when it carries no inline datum. */
+export const logicOf = (control: UTxO): string => {
+  if (control.output.datum === undefined) {
+    throw new Error('The control UTxO carries no inline datum');
+  }
+  return decodeLogicHash(control.output.datum);
+};
+
 /**
  * Whether an account is live on chain: its control UTxO, the one holding
- * the state NFT at the account address, with the state it carries
- * decoded, or null when no such UTxO exists. Fails when the address holds
- * more than one such UTxO or the control UTxO carries no inline state.
+ * the state NFT at the account address, with the state it carries decoded
+ * and the logic it names, or null when no such UTxO exists. Fails when the
+ * address holds more than one such UTxO or the control UTxO carries no
+ * inline state.
  */
 export const accountExists = async (provider: Provider, record: AccountRecord): Promise<LiveAccount | null> => {
   const { control } = await accountUtxosOf(provider, record);
-  return control ? { control, state: stateOf(control) } : null;
+  return control ? { control, state: stateOf(control), logic: logicOf(control) } : null;
 };
 
 /** The grant UTxOs of an account, live or dead, in slot order. */
 export const grantsOf = async (provider: Provider, record: AccountRecord): Promise<GrantUtxo[]> => {
   const { grants } = await accountUtxosOf(provider, record);
-  return grants.sort((a, b) => Number(a.grant.slot - b.grant.slot));
+  return grants.sort((a, b) => Number(a.prefix.slot - b.prefix.slot));
 };
 
 /**
  * The grant UTxOs of an account that the owner can sweep: issued under an
  * older generation, revoked by slot, or expired at the given time, which
- * defaults to now. Fails when the account has no control UTxO.
+ * defaults to now. A grant known by its stable prefix alone is dead by
+ * generation or revocation only, never by expiry, since its scope is not
+ * read. Fails when the account has no control UTxO.
  */
 export const deadGrantsOf = async (provider: Provider, record: AccountRecord, now: bigint = BigInt(Date.now())): Promise<GrantUtxo[]> => {
   const { control, grants } = await accountUtxosOf(provider, record);
@@ -224,5 +263,5 @@ export const deadGrantsOf = async (provider: Provider, record: AccountRecord, no
     throw new Error(`No control UTxO at ${record.address}`);
   }
   const state = stateOf(control);
-  return grants.filter(({ grant }) => grantDeathReason(grant, state, now) !== undefined).sort((a, b) => Number(a.grant.slot - b.grant.slot));
+  return grants.filter(({ grant, prefix }) => grantDeathReason(grant ?? prefix, state, now) !== undefined).sort((a, b) => Number(a.prefix.slot - b.prefix.slot));
 };

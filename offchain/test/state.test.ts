@@ -36,6 +36,7 @@ import {
   stateAfterSweep,
   stateDefect,
   stateWithDevice,
+  stateWithLogic,
   stateWithNextGeneration,
   stateWithRevokedSlot,
   stateWithoutDevice,
@@ -48,6 +49,7 @@ import {
   fixtureGrants,
   grantedState,
   initialState,
+  logicV2Hash,
   lovelaceScope,
   recipientAddress,
   tokenScope,
@@ -66,6 +68,9 @@ describe('well formedness', () => {
   });
 
   it('names each defect', () => {
+    expect(stateDefect({ ...initialState, logic: '' })).toMatch(/logic must be a script hash/);
+    expect(stateDefect({ ...initialState, logic: `${logicV2Hash}00` })).toMatch(/logic must be a script hash/);
+    expect(stateDefect({ ...initialState, logic: 'zz'.repeat(28) })).toMatch(/logic must be a script hash/);
     expect(stateDefect({ ...initialState, devices: [] })).toMatch(/at least one device/);
     expect(stateDefect({ ...initialState, devices: Array.from({ length: MAX_DEVICES + 1 }, (_, i) => `${i}`.padStart(56, '0')) })).toMatch(/at most/);
     expect(stateDefect({ ...initialState, devices: [OWNER_PAYMENT_KEY, OWNER_PAYMENT_KEY] })).toMatch(/distinct/);
@@ -103,6 +108,14 @@ describe('transitions', () => {
     expect(stateAfterSweep(grantedState, 2)).toEqual({ ...grantedState, outstanding: 1n });
   });
 
+  it('points the state at another logic with the generation bumped and the revoked list cleared', () => {
+    const upgraded = stateWithLogic({ ...grantedState, revoked: [1n] }, logicV2Hash);
+    expect(upgraded).toEqual({ ...grantedState, logic: logicV2Hash, grantGeneration: 1n, revoked: [] });
+    expect(upgraded.nextSlot).toBe(grantedState.nextSlot);
+    expect(upgraded.outstanding).toBe(grantedState.outstanding);
+    expect(isWellFormed(upgraded)).toBe(true);
+  });
+
   it('appends revoked slots until the list is full, then bumps the generation', () => {
     const revoked = stateWithRevokedSlot(grantedState, 1n);
     expect(revoked.revoked).toEqual([1n]);
@@ -131,6 +144,14 @@ describe('grant liveness', () => {
     expect(grantDeathReason(grant, stateWithRevokedSlot(grantedState, 0n))).toMatch(/slot 0 is revoked/);
     expect(grantDeathReason(grant, grantedState, EXPIRY)).toBeUndefined();
     expect(grantDeathReason(grant, grantedState, EXPIRY + 1n)).toMatch(/expired at/);
+  });
+
+  it('judges a grant known by its prefix alone by generation and slot, never by expiry', () => {
+    const prefix = { slot: 0n, grantee: grant.grantee, generation: 0n };
+    expect(isGrantCurrent(prefix, grantedState)).toBe(true);
+    expect(grantDeathReason(prefix, grantedState, EXPIRY + 1n)).toBeUndefined();
+    expect(grantDeathReason(prefix, stateWithLogic(grantedState, logicV2Hash))).toMatch(/issued under generation 0 and the account is at 1/);
+    expect(grantDeathReason(prefix, stateWithRevokedSlot(grantedState, 0n))).toMatch(/slot 0 is revoked/);
   });
 });
 

@@ -19,11 +19,14 @@
 import { describe, expect, it } from 'vitest';
 import { loadBlueprint } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
-import { accountByOwner, accountExists, classifyAccountUtxos, deadGrantsOf, grantsOf, stateNftOf } from '../src/discovery.js';
+import { encodeGrant } from '../src/data.js';
+import { accountByOwner, accountExists, classifyAccountUtxos, deadGrantsOf, grantsOf, logicOf, stateNftOf } from '../src/discovery.js';
 import { createAccount, spendWithDevice, withdrawRewards } from '../src/transactions.js';
-import { stateWithNextGeneration, stateWithRevokedSlot } from '../src/state.js';
+import { stateWithLogic, stateWithNextGeneration, stateWithRevokedSlot } from '../src/state.js';
 import {
   EXPIRY,
+  GRANT_LOVELACE,
+  GRANT_UTXO_TX,
   OWNER_PAYMENT_KEY,
   address,
   controlUtxo,
@@ -34,6 +37,9 @@ import {
   grantedState,
   grantedUtxos,
   initialState,
+  logicV1Hash,
+  logicV1RewardAddress,
+  logicV2Hash,
   nftAssetId,
   ownerRewardAddress,
   ownerStakeScriptHash,
@@ -53,6 +59,13 @@ const record = { owner: OWNER_PAYMENT_KEY, stakeScriptHash: ownerStakeScriptHash
 
 /** The key hash of the fixture's second device, used as a stand-in agent device key. */
 const agentKey = (): string => 'cc'.repeat(28);
+
+/** The grant UTxO of a slot whose datum appends a field after the scope, as a later logic version may issue it. */
+const extendedGrantUtxo = (slot: bigint) => {
+  const grant = { ...fixtureGrants[0]!, slot };
+  const datum = encodeGrant(grant);
+  return utxo(GRANT_UTXO_TX, Number(slot), address, { coins: GRANT_LOVELACE, assets: { [grantAssetIdOf(slot)]: 1n } }, { ...datum, fields: { items: [...datum.fields.items, 99n] } });
+};
 
 /* TESTS **********************************************************************/
 
@@ -88,9 +101,19 @@ describe('classifyAccountUtxos', () => {
     const kinds = classifyAccountUtxos(utxos, scriptHash, ownerStakeScriptHash);
     expect(kinds.control?.input).toEqual({ txId: '11'.repeat(32), index: 0 });
     expect(kinds.grants.map(({ grant }) => grant)).toEqual(fixtureGrants);
+    expect(kinds.grants.map(({ prefix }) => prefix)).toEqual(fixtureGrants.map(({ slot, grantee, generation }) => ({ slot, grantee, generation })));
     expect(kinds.grants.map(({ assetId }) => assetId)).toEqual([grantAssetIdOf(0n), grantAssetIdOf(1n), grantAssetIdOf(2n)]);
     expect(kinds.reserves.map((reserve) => reserve.input.index)).toEqual([0]);
     expect(kinds.funds.map((fund) => fund.input.index)).toEqual([0]);
+  });
+
+  it('lists a grant of another shape by its stable prefix alone', () => {
+    const kinds = classifyAccountUtxos([extendedGrantUtxo(5n), grantUtxo(fixtureGrants[0]!)], scriptHash, ownerStakeScriptHash);
+    expect(kinds.grants.map(({ prefix, grant }) => [prefix.slot, grant === undefined])).toEqual([
+      [5n, true],
+      [0n, false],
+    ]);
+    expect(kinds.grants[0]!.prefix).toEqual({ slot: 5n, grantee: fixtureGrants[0]!.grantee, generation: 0n });
   });
 
   it('treats any UTxO with a datum and no account token as a reserve', () => {
@@ -107,15 +130,21 @@ describe('classifyAccountUtxos', () => {
     const mislabelled = grantUtxo({ ...fixtureGrants[0]!, slot: 2n });
     expect(() => classifyAccountUtxos([{ ...mislabelled, output: { ...mislabelled.output, value: { coins: 2_000_000n, assets: { [grantAssetIdOf(0n)]: 1n } } } }], scriptHash, ownerStakeScriptHash)).toThrow(/slot 0 carries a grant of slot 2/);
     expect(() => classifyAccountUtxos([utxo('66'.repeat(32), 9, address, { coins: 2_000_000n, assets: { [grantAssetIdOf(0n)]: 1n } })], scriptHash, ownerStakeScriptHash)).toThrow(/no inline datum/);
+    expect(() => classifyAccountUtxos([utxo('66'.repeat(32), 9, address, { coins: 2_000_000n, assets: { [grantAssetIdOf(0n)]: 1n } }, { items: [] })], scriptHash, ownerStakeScriptHash)).toThrow(/at least 3 fields/);
   });
 });
 
 describe('accountExists', () => {
-  it('resolves the control UTxO and the state of a live account', async () => {
+  it('resolves the control UTxO, the state and the logic of a live account', async () => {
     const { provider } = scenario(grantedState, [fundUtxo(0, { coins: 10_000_000n }), ...grantedUtxos()]);
     const live = await accountExists(provider, record);
     expect(live?.control.input).toEqual({ txId: '11'.repeat(32), index: 0 });
     expect(live?.state).toEqual(grantedState);
+    expect(live?.logic).toBe(logicV1Hash);
+    const upgraded = scenario(stateWithLogic(grantedState, logicV2Hash), []);
+    expect((await accountExists(upgraded.provider, record))?.logic).toBe(logicV2Hash);
+    expect(logicOf(controlUtxo(stateWithLogic(grantedState, logicV2Hash)))).toBe(logicV2Hash);
+    expect(() => logicOf(fundUtxo(0, { coins: 1n }))).toThrow(/no inline datum/);
   });
 
   it('is null before the account exists and refuses two control UTxOs', async () => {
@@ -131,18 +160,25 @@ describe('grants of an account', () => {
   it('lists the grant UTxOs in slot order', async () => {
     const { provider } = scenario(grantedState, [...grantedUtxos().reverse(), fundUtxo(0, { coins: 10_000_000n })]);
     const grants = await grantsOf(provider, record);
-    expect(grants.map(({ grant }) => grant.slot)).toEqual([0n, 1n, 2n]);
+    expect(grants.map(({ prefix }) => prefix.slot)).toEqual([0n, 1n, 2n]);
     expect(grants.map(({ utxo: each }) => each.input.index)).toEqual([0, 1, 2]);
     expect(await grantsOf(scenario(initialState, []).provider, record)).toEqual([]);
   });
 
   it('lists the dead grants: older generation, revoked slot or expired', async () => {
     const revoked = scenario(stateWithRevokedSlot(grantedState, 1n), grantedUtxos());
-    expect((await deadGrantsOf(revoked.provider, record, EXPIRY)).map(({ grant }) => grant.slot)).toEqual([1n]);
-    expect((await deadGrantsOf(revoked.provider, record, EXPIRY + 1n)).map(({ grant }) => grant.slot)).toEqual([0n, 1n, 2n]);
+    expect((await deadGrantsOf(revoked.provider, record, EXPIRY)).map(({ prefix }) => prefix.slot)).toEqual([1n]);
+    expect((await deadGrantsOf(revoked.provider, record, EXPIRY + 1n)).map(({ prefix }) => prefix.slot)).toEqual([0n, 1n, 2n]);
     const bumped = scenario(stateWithNextGeneration(grantedState), [...grantedUtxos(), grantUtxo({ ...fixtureGrants[0]!, slot: 3n, generation: 1n })]);
-    expect((await deadGrantsOf(bumped.provider, record, EXPIRY)).map(({ grant }) => grant.slot)).toEqual([0n, 1n, 2n]);
+    expect((await deadGrantsOf(bumped.provider, record, EXPIRY)).map(({ prefix }) => prefix.slot)).toEqual([0n, 1n, 2n]);
     await expect(deadGrantsOf(scenario(undefined, grantedUtxos()).provider, record)).rejects.toThrow(/No control UTxO/);
+  });
+
+  it('lists a grant of another shape as dead once the generation moved past it, and never by expiry', async () => {
+    const live = scenario(grantedState, [extendedGrantUtxo(5n)]);
+    expect(await deadGrantsOf(live.provider, record, EXPIRY + 1n)).toEqual([]);
+    const upgraded = scenario(stateWithLogic(grantedState, logicV2Hash), [extendedGrantUtxo(5n)]);
+    expect((await deadGrantsOf(upgraded.provider, record, EXPIRY)).map(({ prefix, grant }) => [prefix.slot, grant])).toEqual([[5n, undefined]]);
   });
 });
 
@@ -155,7 +191,9 @@ describe('builders given a record', () => {
     const spent = await spendWithDevice({ wallet: agent, provider, record, outputs: [{ address: recipientAddress, value: { coins: 1_000_000n } }], script });
     expect((Cometa.inspectTx(spent) as { body: { required_signers?: string[] } }).body.required_signers).toEqual([agentKey()]);
     const withdrawn = await withdrawRewards({ wallet: agent, provider, record, amount: 0n, script });
-    expect((Cometa.inspectTx(withdrawn) as { body: { withdrawals?: { key: string }[] } }).body.withdrawals).toEqual([{ key: ownerRewardAddress, value: '0' }]);
+    expect((Cometa.inspectTx(withdrawn) as { body: { withdrawals?: { key: string }[] } }).body.withdrawals?.map((withdrawal) => withdrawal.key).sort()).toEqual(
+      [ownerRewardAddress, logicV1RewardAddress].sort(),
+    );
   });
 
   it('refuse a record whose stake credential does not belong to its owner', async () => {

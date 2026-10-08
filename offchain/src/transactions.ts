@@ -30,14 +30,13 @@ import type {
   SlotConfig,
   TransactionBuilder,
   TxEvaluator,
-  TxIn,
   TxOut,
   UTxO,
   Value,
   Wallet,
 } from '@biglup/cometa';
 import { accountAddress, grantAssetId, paymentKeyHashOf, rewardAddress, stateNftAssetId } from './address.js';
-import { accountScript } from './blueprint.js';
+import { accountScript, loadBlueprint } from './blueprint.js';
 import { Cometa } from './cometa.js';
 import {
   type AccountState,
@@ -48,12 +47,15 @@ import {
   encodeAccountState,
   encodeAddress,
   encodeGrant,
+  encodeLogicRedeemer,
   encodeMintRedeemer,
   encodeReserveDatum,
   encodeStakeRedeemer,
 } from './data.js';
-import { compareInputs, slotToPosixTime, transactionBodyParts } from './body.js';
+import { slotToPosixTime, transactionBodyParts } from './body.js';
 import { type AccountRecord, type GrantUtxo, classifyAccountUtxos } from './discovery.js';
+import { type LogicCatalog, currentLogicHash, logicCatalog } from './logic.js';
+import { type NetworkScripts, type ScriptSource, attachScript, resolveScriptSource } from './network.js';
 import { DEFAULT_ADA_PER_UTXO_BYTE, minimumUtxoLovelace } from './output.js';
 import { stakeScript, stakeScriptHash } from './stake-script.js';
 import {
@@ -68,6 +70,7 @@ import {
   stateAfterIssue,
   stateAfterSweep,
   stateWithDevice,
+  stateWithLogic,
   stateWithNextGeneration,
   stateWithRevokedSlot,
   stateWithoutDevice,
@@ -97,29 +100,47 @@ export const DEFAULT_CONTROL_LOVELACE = 2_000_000n;
 export const MAX_GRANT_BATCH = 8;
 
 /**
+ * The most fund UTxOs one checked grant spend takes. On chain every script
+ * execution pays to decode the whole transaction context on top of its
+ * own work, so each fund input adds a proxy run whose cost grows with the
+ * transaction: a spend over twenty five deposits at the largest control
+ * state measured about twenty million memory units, above the fourteen
+ * million limit, while twelve stay near half of it. A spend needing more
+ * is refused with this bound named, and `fundBatches` splits the funds
+ * into sweeps of at most this many.
+ */
+export const MAX_FUND_INPUTS = 12;
+
+/**
  * The lovelace a grant spend reduces the grant's remaining caps by on top
  * of its outputs, ahead of the fee it will pay. The fee of a grant spend
- * over a handful of fund UTxOs measures at about eight hundred thousand
- * lovelace, most of it the size of the account script attached as a
- * witness, so the bound leaves room for a good many more inputs; a spend
+ * over a handful of fund UTxOs measures at about 760,000 lovelace with
+ * the proxy and the logic referenced from their parked UTxOs and about
+ * 1,050,000 with both embedded as witnesses, most of it the size of the
+ * logic, so the bound leaves room for more inputs on either path; a spend
  * whose fee ends above it is refused before submission.
  */
 export const DEFAULT_GRANT_FEE_BOUND = 1_500_000n;
 
 /**
- * The execution budgets an unchecked grant spend carries in place of an
- * evaluation: the grant UTxO's spend gets the grant budget, which covers
- * the heaviest grant spend over a handful of inputs with margin, and
- * every other redeemer the fund budget. A provider evaluating a spend the
- * validator refuses reports the refusal instead of a budget, so a spend
- * built to show that refusal on chain cannot be evaluated. The budgets
- * are kept for the unchecked path only; every checked builder has the
- * provider evaluate the scripts for real.
+ * The execution budgets an unchecked transaction carries in place of an
+ * evaluation: the logic's withdrawal gets the logic budget, which covers
+ * the heaviest grant spend over a handful of inputs with margin since the
+ * logic runs the grant rules once over the whole transaction, and every
+ * other redeemer, the proxy spends among them, the proxy budget. A
+ * provider evaluating a transaction a validator refuses reports the
+ * refusal instead of a budget, so a transaction built to show that refusal
+ * on chain cannot be evaluated. The budgets are kept for the unchecked
+ * path only; every checked builder has the provider evaluate the scripts
+ * for real.
  */
-export const UNCHECKED_EXECUTION_UNITS: { grant: ExUnits; fund: ExUnits } = {
-  grant: { memory: 3_500_000, steps: 1_500_000_000 },
-  fund: { memory: 500_000, steps: 200_000_000 },
+export const UNCHECKED_EXECUTION_UNITS: { logic: ExUnits; proxy: ExUnits } = {
+  logic: { memory: 4_000_000, steps: 1_500_000_000 },
+  proxy: { memory: 500_000, steps: 200_000_000 },
 };
+
+/** The text cometa reports when a build fails, without the reason the evaluator gave. */
+const BUILD_FAILURE = /^Transaction build failed/;
 
 /** The most times an owner transaction drawing its fee from a reserve is rebuilt while the fee settles. */
 const MAX_BALANCING_ROUNDS = 4;
@@ -137,6 +158,12 @@ const burnGrantsRedeemer = encodeMintRedeemer({ kind: 'burnGrants' });
 
 /** The redeemer of every stake script run, which carries no data. */
 const operateRedeemer = encodeStakeRedeemer();
+
+/** The redeemer of every logic run, which carries no data. */
+const runRedeemer = encodeLogicRedeemer();
+
+/** The lovelace a logic withdrawal draws: the logic credential earns nothing, and the ledger runs the script on any amount. */
+const LOGIC_WITHDRAWAL = 0n;
 
 /**
  * A coin selector that spends nothing beyond the inputs the builder was
@@ -182,10 +209,24 @@ export type AccountParams = AccountIdentity & {
    * to pay from yet, is paid by the device wallet.
    */
   sponsor?: Wallet;
-  /** The account script; the blueprint's validator when omitted. */
+  /** The account proxy script; the blueprint's when omitted. */
   script?: PlutusScript;
   /** The network the account address lives on; the testnet when omitted. */
   networkId?: NetworkId;
+  /**
+   * The reference scripts recorded for the network, as `loadNetworkScripts`
+   * reads them: the proxy and each logic version parked on it are then
+   * referenced instead of embedded. When omitted, or for a script the
+   * network records none for, the script is embedded in the witness set.
+   */
+  network?: NetworkScripts;
+  /**
+   * Logic scripts beyond the versions the blueprint carries, already
+   * applied to the proxy hash, so that an account running one of them can
+   * be served. A control UTxO names its logic by hash and the builder
+   * refuses an account whose logic it cannot attach.
+   */
+  logics?: PlutusScript[];
 };
 
 /** Account parameters for builders that must read the account's UTxOs. */
@@ -228,10 +269,17 @@ export type DeviceParams = AccountUtxoParams & {
   validUntilSlot?: bigint;
 };
 
+/** The initial state of an account: the state without its logic, which defaults to the version this library pins. */
+export type InitialState = Omit<AccountState, 'logic'> & { logic?: string };
+
 /** Parameters of account creation. */
 export type CreateAccountParams = AccountParams & {
-  /** The initial state, which must be well formed with zero counters. */
-  state: AccountState;
+  /**
+   * The initial state, which must be well formed with zero counters. Its
+   * logic names the version the account runs and must be one the builder
+   * can attach; the version this library pins is used when it is omitted.
+   */
+  state: InitialState;
   /** The lovelace the control UTxO carries, raised to its minimum UTxO value when too low. */
   lovelace?: bigint;
   /**
@@ -302,7 +350,11 @@ export type SpendWithGrantParams = AccountUtxoParams & {
   unchecked?: boolean;
 };
 
-/** The identifiers derived from the account script and the owner of an account. */
+/**
+ * The identifiers derived from the account proxy and the owner of an
+ * account, with the logic scripts the builder can attach and where the
+ * network parks its reference scripts.
+ */
 interface Account {
   script: PlutusScript;
   scriptHash: string;
@@ -313,6 +365,8 @@ interface Account {
   rewardAddress: RewardAddress;
   nftAssetId: string;
   networkId: NetworkId;
+  logics: LogicCatalog;
+  network: NetworkScripts | undefined;
 }
 
 /**
@@ -361,19 +415,27 @@ interface GrantIssue {
   coins: bigint;
 }
 
+/** Where a transaction takes the proxy and each logic it runs from, keyed by logic hash. */
+interface ScriptSources {
+  proxy: ScriptSource;
+  logics: Map<string, ScriptSource>;
+}
+
 /* FUNCTIONS ******************************************************************/
 
 /**
  * Derives the account identifiers from the builder parameters, applying
- * the stake script to the owner and the account script. A record names
- * the same owner, so the derivation is the same either way; the stake
- * script is always rebuilt since the record cannot carry it.
+ * the stake script to the owner and the proxy hash and the blueprint's
+ * logic versions to the proxy hash. A record names the same owner, so the
+ * derivation is the same either way; the stake script is always rebuilt
+ * since the record cannot carry it.
  */
 const resolveAccount = (params: AccountParams): Account => {
-  const { script = accountScript(), networkId = Cometa.NetworkId.Testnet, record } = params;
+  const blueprint = loadBlueprint();
+  const { script = accountScript(blueprint), networkId = Cometa.NetworkId.Testnet, record } = params;
   const owner = record ? record.owner : params.owner;
   const scriptHash = Cometa.computeScriptHash(script);
-  const stake = stakeScript(owner, scriptHash);
+  const stake = stakeScript(owner, scriptHash, blueprint);
   const stakeHash = stakeScriptHash(stake);
   if (record && record.stakeScriptHash !== stakeHash) {
     throw new Error(`The record's stake credential ${record.stakeScriptHash} does not match the owner ${record.owner}`);
@@ -388,7 +450,52 @@ const resolveAccount = (params: AccountParams): Account => {
     rewardAddress: rewardAddress(stakeHash, networkId),
     nftAssetId: stateNftAssetId(scriptHash, stakeHash),
     networkId,
+    logics: logicCatalog(scriptHash, params.logics ?? [], blueprint),
+    network: params.network,
   };
+};
+
+/** The logic script of a hash the builder can attach; fails naming the hash when neither the blueprint nor the given logics carry it. */
+const logicScriptOf = (account: Account, logic: string): PlutusScript => {
+  const script = account.logics.get(logic);
+  if (!script) {
+    throw new Error(`The logic ${logic} is not a version this library can attach: neither the blueprint nor the logics given carry it`);
+  }
+  return script;
+};
+
+/**
+ * Where the proxy and the logics a transaction runs come from: their
+ * reference UTxOs on the network, checked through the provider when one
+ * is given so that a stale record is refused before anything is built, or
+ * the scripts themselves. Resolved once per transaction, ahead of the
+ * builds a fee may take to settle.
+ */
+const resolveSources = async (account: Account, logics: string[], provider?: Provider): Promise<ScriptSources> => ({
+  proxy: await resolveScriptSource(provider, account.network, account.script),
+  logics: new Map(
+    await Promise.all([...new Set(logics)].map(async (logic): Promise<[string, ScriptSource]> => [logic, await resolveScriptSource(provider, account.network, logicScriptOf(account, logic))])),
+  ),
+});
+
+/**
+ * Runs a logic over the transaction: a zero withdrawal from the logic
+ * credential with the `Run` redeemer, which the proxy requires whenever a
+ * control UTxO naming that logic is spent or referenced and the ledger
+ * answers by running the script once, with the logic made available
+ * through its reference UTxO or embedded. Fails on a logic the sources
+ * were not resolved for.
+ */
+const runLogic = (builder: TransactionBuilder, account: Account, sources: ScriptSources, logic: string): TransactionBuilder => {
+  const source = sources.logics.get(logic);
+  if (!source) {
+    throw new Error(`The logic ${logic} was not resolved for this transaction`);
+  }
+  return attachScript(builder, source).withdrawRewards({
+    rewardAddress: rewardAddress(logic, account.networkId),
+    amount: LOGIC_WITHDRAWAL,
+    redeemer: runRedeemer,
+  });
 };
 
 /** The account state a control UTxO carries; fails when it carries no inline datum. */
@@ -543,41 +650,109 @@ const assertAccountAbsent = async (provider: Provider, account: Account): Promis
 };
 
 /**
+ * An evaluator that assigns a fixed budget per redeemer instead of running
+ * the scripts: the logic's withdrawal gets the logic budget and every
+ * other redeemer the proxy budget. An unchecked transaction needs it,
+ * since a provider reports a validator's refusal of such a transaction as
+ * a failure instead of returning a budget.
+ */
+export const fixedBudgetEvaluator = (budgets: { logic: ExUnits; proxy: ExUnits }): TxEvaluator => ({
+  getName: () => 'Fixed budget evaluator',
+  evaluate: (tx) =>
+    Promise.resolve(
+      Cometa.readRedeemersFromTx(tx).map((redeemer) => ({
+        ...redeemer,
+        executionUnits: redeemer.purpose === Cometa.RedeemerPurpose.withdrawal ? budgets.logic : budgets.proxy,
+      })),
+    ),
+});
+
+/**
+ * Builds a checked transaction and, when the build fails, explains why.
+ * cometa reports a failed evaluation as a bare build failure, so the same
+ * transaction is built again with fixed budgets in place of the evaluation
+ * and evaluated through the provider: the validator's refusal the
+ * provider reports, or the units it measured when the transaction only
+ * exceeds a limit, are rethrown with the failure so that a refusal is
+ * readable. A build that fails for another reason, or whose unchecked
+ * form cannot be built either, is rethrown as it was.
+ */
+export const buildChecked = async (provider: Provider, make: () => Promise<TransactionBuilder>): Promise<string> => {
+  try {
+    return await (await make()).build();
+  } catch (error) {
+    if (!(error instanceof Error) || !BUILD_FAILURE.test(error.message)) {
+      throw error;
+    }
+    let unchecked: string;
+    try {
+      unchecked = await (await make()).setTxEvaluator(fixedBudgetEvaluator(UNCHECKED_EXECUTION_UNITS)).build();
+    } catch {
+      throw error;
+    }
+    let reason: string;
+    try {
+      const redeemers = await provider.evaluateTransaction(unchecked);
+      const memory = redeemers.reduce((total, redeemer) => total + BigInt(redeemer.executionUnits.memory), 0n);
+      const steps = redeemers.reduce((total, redeemer) => total + BigInt(redeemer.executionUnits.steps), 0n);
+      reason = `the provider evaluates the transaction at ${memory} memory units and ${steps} steps over ${redeemers.length} redeemers`;
+    } catch (evaluation) {
+      reason = evaluation instanceof Error ? evaluation.message : String(evaluation);
+    }
+    throw new Error(`${error.message.replace(/:?\s*$/, '')}: ${reason}`);
+  }
+};
+
+/**
  * Builds the transaction that creates an account: it registers the
  * account's stake credential with the deposit the protocol parameters
  * set, which the stake script authorises on the owner's signature, mints
- * the state NFT named after that credential, and locks it at the account
- * address with the initial state inline. The state must be well formed
- * with zero counters, as the validator demands of every new account, and
- * must list the owner among its devices, as the stake script demands of
- * the registration so that no account is created its owner is locked out
- * of. The control output holds the requested lovelace or its minimum UTxO value,
- * whichever is higher, with the sponsor, or the wallet when there is
- * none, paying for it and for the deposit while the owner only signs. The
- * ledger refuses to register a credential twice, so the account can be
- * created only once for as long as it exists; when a provider is given,
- * creation is also refused ahead of the chain while a UTxO holding the
- * state NFT sits at the address.
+ * the state NFT named after that credential, locks it at the account
+ * address with the initial state inline, and runs the logic the state
+ * names through a zero withdrawal, as the proxy demands so that the
+ * initial logic validates the state. The state must be well formed with
+ * zero counters, as every new account starts, and must list the owner
+ * among its devices, as the stake script demands of the registration so
+ * that no account is created its owner is locked out of; its logic is
+ * the version this library pins unless it names another the builder can
+ * attach. The logic credential must be registered on the network, which
+ * the network setup does once per version. The control output holds the
+ * requested lovelace or its minimum UTxO value, whichever is higher, with
+ * the sponsor, or the wallet when there is none, paying for it and for
+ * the deposit while the owner only signs. The ledger refuses to register
+ * a credential twice, so the account can be created only once for as long
+ * as it exists; when a provider is given, creation is also refused ahead
+ * of the chain while a UTxO holding the state NFT sits at the address,
+ * the reference UTxOs the network records are checked to still carry
+ * the proxy and the logic, and a failed build is explained through the
+ * provider.
  */
 export const createAccount = async (params: CreateAccountParams): Promise<string> => {
   const account = resolveAccount(params);
-  const state = assertWellFormed(params.state);
+  const state = assertWellFormed({ ...params.state, logic: params.state.logic ?? currentLogicHash(account.scriptHash) });
   if (!hasZeroCounters(state)) {
     throw new Error('The initial state must have zero counters and no revoked slot');
   }
   if (!state.devices.includes(account.owner)) {
     throw new Error(`The initial state must list the owner ${account.owner} among its devices, or the stake script refuses the registration`);
   }
+  logicScriptOf(account, state.logic);
   let adaPerUtxoByte = DEFAULT_ADA_PER_UTXO_BYTE;
   if (params.provider) {
     await assertAccountAbsent(params.provider, account);
     adaPerUtxoByte = adaPerUtxoByteOf(await params.provider.getParameters());
   }
-  const builder = await (params.sponsor ?? params.wallet).createTransactionBuilder();
-  builder.registerStakeAddress({ rewardAddress: account.rewardAddress, redeemer: operateRedeemer });
-  builder.mintToken({ assetIdHex: account.nftAssetId, amount: 1n, redeemer: createAccountRedeemer });
-  inlineState(builder, account, controlLovelace(account, params.lovelace ?? DEFAULT_CONTROL_LOVELACE, state, adaPerUtxoByte), state);
-  return builder.addSigner(account.owner).addScript(account.script).addScript(account.stakeScript).build();
+  const coins = controlLovelace(account, params.lovelace ?? DEFAULT_CONTROL_LOVELACE, state, adaPerUtxoByte);
+  const sources = await resolveSources(account, [state.logic], params.provider);
+  const make = async (): Promise<TransactionBuilder> => {
+    const builder = await (params.sponsor ?? params.wallet).createTransactionBuilder();
+    builder.registerStakeAddress({ rewardAddress: account.rewardAddress, redeemer: operateRedeemer });
+    builder.mintToken({ assetIdHex: account.nftAssetId, amount: 1n, redeemer: createAccountRedeemer });
+    inlineState(builder, account, coins, state);
+    runLogic(builder, account, sources, state.logic);
+    return attachScript(builder.addSigner(account.owner).addScript(account.stakeScript), sources.proxy);
+  };
+  return params.provider ? buildChecked(params.provider, make) : (await make()).build();
 };
 
 /** Throws when both a sponsor and a collateral wallet are given, since each asks for a different payer. */
@@ -687,7 +862,7 @@ const grantIssues = (account: Account, state: AccountState, next: AccountState, 
     return { grant, assetId, coins: minimumUtxoLovelace(grantOutput(account, assetId, 0n, grant), adaPerUtxoByte) };
   });
 
-/** Throws unless the recreated state's counters follow the grant tokens the operation mints and burns, as the validator checks. */
+/** Throws unless the recreated state's counters follow the grant tokens the operation mints and burns, as the logic checks. */
 const assertCountersFollow = (state: AccountState, next: AccountState, issued: number, swept: number): void => {
   if (next.grantGeneration < state.grantGeneration) {
     throw new Error('The grant generation cannot decrease');
@@ -697,6 +872,26 @@ const assertCountersFollow = (state: AccountState, next: AccountState, issued: n
   }
   if (next.outstanding !== state.outstanding + BigInt(issued) - BigInt(swept)) {
     throw new Error(`The outstanding count must move by the ${issued} grants issued and the ${swept} swept`);
+  }
+};
+
+/**
+ * Throws unless a rewrite that names another logic is an upgrade the
+ * arriving logic accepts: the generation grows strictly so that every
+ * grant issued under the old logic is dead, the devices stay the same,
+ * nothing is minted or burned under the policy and the next logic is one
+ * the builder can attach, as the arriving logic validates the state.
+ */
+const assertUpgradeAdmissible = (account: Account, state: AccountState, next: AccountState, issued: number, swept: number): void => {
+  logicScriptOf(account, next.logic);
+  if (next.grantGeneration <= state.grantGeneration) {
+    throw new Error('An upgrade must bump the grant generation, so that every grant issued under the old logic is dead');
+  }
+  if (next.devices.length !== state.devices.length || !next.devices.every((device, index) => device === state.devices[index])) {
+    throw new Error('An upgrade cannot change the devices');
+  }
+  if (issued > 0 || swept > 0) {
+    throw new Error('An upgrade cannot issue or sweep grants in the same transaction');
   }
 };
 
@@ -732,7 +927,14 @@ const assertBatchSize = (count: number, what: string): void => {
  * and the sponsor pays the fee and the control output's growth and
  * receives the change. A stake operation, when given, rides on the same
  * transaction with the stake script attached, the spent control UTxO
- * showing the stake script the device that signs.
+ * showing the stake script the device that signs. The logic the control
+ * UTxO names runs through its zero withdrawal, as the proxy demands, and
+ * when the next state names another logic that one runs as well, the old
+ * approving the leave and the new validating the arrival. The proxy and
+ * the logics are referenced from the network's parked UTxOs when it
+ * records them, each checked through the provider to still carry its
+ * script, and embedded otherwise, and a failed build is explained
+ * through the provider.
  */
 const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation): Promise<string> => {
   assertOnePayer(params);
@@ -746,7 +948,12 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   const adaPerUtxoByte = adaPerUtxoByteOf(parameters);
   const issued = grantIssues(account, state, next, operation.issued?.(state) ?? [], adaPerUtxoByte);
   const swept = operation.swept?.(utxos) ?? [];
-  assertCountersFollow(state, next, issued.length, swept.length);
+  if (next.logic === state.logic) {
+    assertCountersFollow(state, next, issued.length, swept.length);
+  } else {
+    assertUpgradeAdmissible(account, state, next, issued.length, swept.length);
+  }
+  const sources = await resolveSources(account, [state.logic, next.logic], params.provider);
   const coins = controlLovelace(account, control.output.value.coins, next, adaPerUtxoByte);
   const growth = coins - control.output.value.coins;
   const freed = addBalances(...swept.map(({ utxo, assetId }) => toBalance({ ...utxo.output.value, assets: { ...utxo.output.value.assets, [assetId]: 0n } })));
@@ -781,18 +988,24 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
     if (params.validUntilSlot !== undefined) {
       builder.setInvalidAfter(params.validUntilSlot);
     }
-    return builder.addSigner(device).addScript(account.script);
+    runLogic(builder, account, sources, state.logic);
+    if (next.logic !== state.logic) {
+      runLogic(builder, account, sources, next.logic);
+    }
+    return attachScript(builder.addSigner(device), sources.proxy);
   };
 
   if (params.sponsor) {
     const need = subtractBalances(requested, freed);
     const selection = selectWithChangeFloor(floor, (minimumChange) => selectFundUtxos(funds, positivePart(need), minimumChange, reserves));
     const returned = addBalances(selection.remainder, positivePart(subtractBalances(freed, requested)));
-    const builder = await params.sponsor.createTransactionBuilder();
-    if (!isZeroBalance(returned)) {
-      builder.sendValue({ address: account.address, value: toValue(returned) });
-    }
-    return assemble(builder, selection.selected, undefined, 0n).build();
+    return buildChecked(params.provider, async () => {
+      const builder = await params.sponsor!.createTransactionBuilder();
+      if (!isZeroBalance(returned)) {
+        builder.sendValue({ address: account.address, value: toValue(returned) });
+      }
+      return assemble(builder, selection.selected, undefined, 0n);
+    });
   }
 
   const feeReserve = pickFeeReserve(reserves, parameters, floor({}));
@@ -802,7 +1015,7 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
     const { selected } = selectWithChangeFloor(floor, (minimumChange) =>
       selectFundUtxos(funds, addBalances(required, { [LOVELACE_ASSET_ID]: minimumChange }), 0n, pool),
     );
-    return assemble(await accountPaidBuilder(params, account), selected, undefined, 0n).build();
+    return buildChecked(params.provider, async () => assemble(await accountPaidBuilder(params, account), selected, undefined, 0n));
   }
 
   const required = positivePart(subtractBalances(addBalances(requested, { [LOVELACE_ASSET_ID]: growth }), freed));
@@ -811,11 +1024,15 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   let reserveCoins = minimumUtxoLovelace(reserveOutput(feeReserve, 0n), adaPerUtxoByte);
   let assumedFee: bigint | undefined;
   for (let round = 0; round < MAX_BALANCING_ROUNDS; round += 1) {
-    const builder = await accountPaidBuilder(params, account);
-    if (assumedFee !== undefined) {
-      builder.setMinimumFee(assumedFee);
-    }
-    const tx = await assemble(builder, selected, feeReserve, reserveCoins).build();
+    const minimumFee = assumedFee;
+    const coinsForReserve = reserveCoins;
+    const tx = await buildChecked(params.provider, async () => {
+      const builder = await accountPaidBuilder(params, account);
+      if (minimumFee !== undefined) {
+        builder.setMinimumFee(minimumFee);
+      }
+      return assemble(builder, selected, feeReserve, coinsForReserve);
+    });
     const fee = transactionBodyParts(tx).fee;
     if (fee === assumedFee) {
       return tx;
@@ -833,10 +1050,39 @@ export const spendWithDevice = (params: DeviceParams & { outputs: AccountOutput[
 /**
  * Builds an owner transaction that only rewrites the account state. The
  * counters must stay as they are, since no grant token is minted or
- * burned, and the generation cannot decrease.
+ * burned, and the generation cannot decrease. A state naming another
+ * logic is an upgrade and must be what `upgradeLogic` builds: the
+ * generation bumped and the devices unchanged.
  */
 export const rewriteState = (params: DeviceParams & { newState: AccountState }): Promise<string> =>
   buildDeviceSpend(params, { outputs: [], nextState: () => params.newState });
+
+/**
+ * Builds the owner transaction that points the account at another logic:
+ * the control UTxO is rewritten with the new logic in its first field
+ * and the generation bumped, carrying a zero withdrawal from the old
+ * logic, which approves the leave on a device signature, and from the
+ * new one, which validates the arriving state as fresh under its rules.
+ * Every grant issued under the old logic is dead by generation from then
+ * on: the owner sweeps them with `sweepGrant`, which reads nothing of a
+ * grant but its stable prefix, so a grant of another shape is swept by
+ * generation or revocation and never by expiry, and issues the survivors
+ * again under the new logic from the requests `survivingGrantRequests`
+ * lists, each step its own transaction. The new logic must be one the builder can attach, from the
+ * blueprint or the logics given, and must differ from the one the account
+ * runs; a downgrade is a change like any other, which only the signing
+ * device gates.
+ */
+export const upgradeLogic = (params: DeviceParams & { newLogic: string }): Promise<string> =>
+  buildDeviceSpend(params, {
+    outputs: [],
+    nextState: (state) => {
+      if (state.logic === params.newLogic) {
+        throw new Error(`The account already runs logic ${params.newLogic}`);
+      }
+      return stateWithLogic(state, params.newLogic);
+    },
+  });
 
 /** Builds an owner transaction adding a device key. */
 export const addDevice = (params: DeviceParams & { device: string }): Promise<string> =>
@@ -891,16 +1137,20 @@ export const revokeGrant = (params: DeviceParams & { slot: bigint }): Promise<st
   });
 
 /**
- * The grants to issue again after a revoke bumps the generation: every
- * grant live before the revoke other than the revoked slot, with the caps
- * it had left and its expiry, as `issueGrant` takes them. Grants expired
- * at the given time, which defaults to now, are left out.
+ * The grants to issue again after a revoke or an upgrade bumps the
+ * generation: every grant live under the state before the bump other
+ * than the revoked slot, when one is given, with the caps it had left and
+ * its expiry, as `issueGrant` takes them. Grants expired at the given
+ * time, which defaults to now, are left out, as are grants known by their
+ * stable prefix alone: their scope is not read, so they are never issued
+ * again, only swept once dead by generation or revocation.
  */
-export const survivingGrantRequests = (grants: GrantUtxo[], state: AccountState, revokedSlot: bigint, now: bigint = BigInt(Date.now())): GrantRequest[] =>
+export const survivingGrantRequests = (grants: GrantUtxo[], state: AccountState, revokedSlot?: bigint, now: bigint = BigInt(Date.now())): GrantRequest[] =>
   grants
-    .filter(({ grant }) => grant.slot !== revokedSlot && isGrantCurrent(grant, state) && grant.scope.expiresAt > now)
-    .sort((a, b) => Number(a.grant.slot - b.grant.slot))
-    .map(({ grant }) => ({ grantee: grant.grantee, scope: grant.scope }));
+    .flatMap(({ grant }) => (grant === undefined ? [] : [grant]))
+    .filter((grant) => grant.slot !== revokedSlot && isGrantCurrent(grant, state) && grant.scope.expiresAt > now)
+    .sort((a, b) => Number(a.slot - b.slot))
+    .map((grant) => ({ grantee: grant.grantee, scope: grant.scope }));
 
 /** Builds an owner transaction revoking every grant by bumping the grant generation, which also clears the revoked list. */
 export const revokeAllGrants = (params: DeviceParams): Promise<string> =>
@@ -911,9 +1161,14 @@ export const revokeAllGrants = (params: DeviceParams): Promise<string> =>
  * spent with the sweep redeemer, its token burned, its lovelace freed to
  * the account and the control output's outstanding count lowered by the
  * number swept. A grant is dead when it was issued under an older
- * generation, when its slot is revoked, or when it expired before the
- * slot the transaction becomes valid at, which `validFromSlot` sets. At
- * most `MAX_GRANT_BATCH` grants go in one transaction.
+ * generation, which every grant issued before an upgrade was, when its
+ * slot is revoked, or when it expired before the slot the transaction
+ * becomes valid at, which `validFromSlot` sets. The sweep reads nothing
+ * of a grant but its stable prefix, the slot and the generation, and the
+ * expiry lives in the scope, so a grant known by its prefix alone, issued
+ * under a logic whose scope shape this library does not read, is swept
+ * by generation or revocation and never by expiry. At most
+ * `MAX_GRANT_BATCH` grants go in one transaction.
  */
 export const sweepGrant = async (params: SweepGrantParams): Promise<string> => {
   assertBatchSize(params.slots.length, 'swept');
@@ -921,11 +1176,11 @@ export const sweepGrant = async (params: SweepGrantParams): Promise<string> => {
   const validityStart = params.validFromSlot === undefined ? undefined : slotToPosixTime(params.validFromSlot, slotConfig);
   const swept = ({ state, grants }: AccountUtxos): GrantUtxo[] =>
     params.slots.map((slot) => {
-      const found = grants.find(({ grant }) => grant.slot === slot);
+      const found = grants.find(({ prefix }) => prefix.slot === slot);
       if (!found) {
         throw new Error(`The account has no grant UTxO in slot ${slot}`);
       }
-      if (grantDeathReason(found.grant, state, validityStart) === undefined) {
+      if (grantDeathReason(found.grant ?? found.prefix, state, validityStart) === undefined) {
         throw new Error(
           `Grant ${slot} is live: it was issued under the current generation and its slot is not revoked${
             validityStart === undefined ? '; a grant that has expired needs validFromSlot past its expiry' : ', and the validity range starts before it expires'
@@ -971,25 +1226,22 @@ export const delegateStake = (params: DeviceParams & { poolId: string }): Promis
   });
 
 /**
- * An evaluator that assigns a fixed budget per redeemer instead of running
- * the scripts: the grant UTxO's spend gets the grant budget and every
- * other redeemer the fund budget. An unchecked grant spend needs it,
- * since a provider reports the validator's refusal of such a spend as a
- * failure instead of returning a budget.
+ * Splits fund UTxOs into the batches a sequence of grant spends sweeps,
+ * largest first, each of at most `MAX_FUND_INPUTS` UTxOs, so that every
+ * batch stays within the execution budget a spend over many inputs costs
+ * on chain. The change of each sweep is a fund UTxO the next may take.
  */
-export const fixedBudgetEvaluator = (grant: TxIn, budgets: { grant: ExUnits; fund: ExUnits }): TxEvaluator => ({
-  getName: () => 'Fixed budget evaluator',
-  evaluate: (tx) => {
-    const inputs = transactionBodyParts(tx).inputs;
-    const grantIndex = inputs.findIndex((input) => compareInputs(input, grant) === 0);
-    return Promise.resolve(
-      Cometa.readRedeemersFromTx(tx).map((redeemer) => ({
-        ...redeemer,
-        executionUnits: redeemer.purpose === Cometa.RedeemerPurpose.spend && redeemer.index === grantIndex ? budgets.grant : budgets.fund,
-      })),
-    );
-  },
-});
+export const fundBatches = (funds: UTxO[], size: number = MAX_FUND_INPUTS): UTxO[][] => {
+  if (!Number.isInteger(size) || size < 1 || size > MAX_FUND_INPUTS) {
+    throw new Error(`A fund batch holds between one and ${MAX_FUND_INPUTS} UTxOs, not ${size}`);
+  }
+  const sorted = [...funds].sort((a, b) => Number(b.output.value.coins - a.output.value.coins));
+  const batches: UTxO[][] = [];
+  for (let start = 0; start < sorted.length; start += size) {
+    batches.push(sorted.slice(start, start + size));
+  }
+  return batches;
+};
 
 /** Whether two addresses are equal as the validator compares them, ignoring the network id. */
 const sameAddress = (a: string, b: string): boolean => Cometa.deepEqualsPlutusData(encodeAddress(a), encodeAddress(b));
@@ -1047,21 +1299,37 @@ const assertGrantCurrent = (grant: Grant, state: AccountState): void => {
  * covers the outputs, the bound and the change floor, so the change is
  * always a sound output.
  *
- * The liveness, scope, recipient and expiry checks mirror the validator's
- * rules so that a spend the validator would refuse never reaches the
- * chain; the unchecked option drops them to build such a spend on
- * purpose, which shows the validator refusing it.
+ * The logic the control UTxO names runs through its zero withdrawal, as
+ * the proxy demands of every grant spend, so the agent runs the rules the
+ * owner chose; the proxy and the logic are referenced from the network's
+ * parked UTxOs when it records them, each checked through the provider
+ * to still carry its script, and embedded otherwise. A checked spend
+ * takes at most `MAX_FUND_INPUTS` fund UTxOs, since each adds a
+ * proxy run that pays to decode the whole transaction; `fundBatches`
+ * splits a larger sweep. A failed checked build is explained through the
+ * provider.
+ *
+ * The liveness, scope, recipient and expiry checks mirror the logic's
+ * rules so that a spend the logic would refuse never reaches the chain;
+ * the unchecked option drops them to build such a spend on purpose, which
+ * shows the logic refusing it. A grant known by its stable prefix alone,
+ * issued under a logic whose scope shape this library does not read, is
+ * refused either way.
  */
 export const spendWithGrant = async (params: SpendWithGrantParams): Promise<string> => {
   assertNoSponsor(params);
   const account = resolveAccount(params);
   const { control, state, grants, funds } = await findAccountUtxos(params.provider, params);
-  const found = grants.find(({ grant }) => grant.slot === params.slot);
+  const found = grants.find(({ prefix }) => prefix.slot === params.slot);
   if (!found) {
     throw new Error(`The account has no grant UTxO in slot ${params.slot}`);
   }
+  if (found.grant === undefined) {
+    throw new Error(`Grant ${params.slot} was issued under a logic whose scope shape this library does not read; it can only be swept`);
+  }
   const { grant, utxo: grantUtxo } = found;
   assertGranteeMatches(grant, params.grantee);
+  const sources = await resolveSources(account, [state.logic], params.provider);
   const slotConfig = params.slotConfig ?? Cometa.CARDANO_PREPROD_SLOT_CONFIG;
   const feeBound = params.feeBound ?? DEFAULT_GRANT_FEE_BOUND;
   const requested = sumOutputs(params.outputs);
@@ -1082,19 +1350,26 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
   const { selected } = selectWithChangeFloor(floor, (minimumChange) =>
     selectFundUtxos(funds, addBalances(bounded, { [LOVELACE_ASSET_ID]: minimumChange }), 0n),
   );
-  const builder = await accountPaidBuilder(params, account);
-  if (params.unchecked) {
-    builder.setTxEvaluator(fixedBudgetEvaluator(grantUtxo.input, UNCHECKED_EXECUTION_UNITS));
+  if (!params.unchecked && selected.length > MAX_FUND_INPUTS) {
+    throw new Error(`The spend needs ${selected.length} fund UTxOs, more than the ${MAX_FUND_INPUTS} one grant spend may take; sweep the funds in batches of fundBatches first`);
   }
-  builder.addReferenceInput(control).addInput({ utxo: grantUtxo, redeemer: spendWithGrantRedeemer });
-  for (const utxo of selected) {
-    builder.addInput({ utxo, redeemer: fundRedeemer });
-  }
-  builder.lockValue({ scriptAddress: account.address, value: grantUtxo.output.value, datum: inlineDatum(encodeGrant(grantAfterSpend(grant, bounded))) });
-  for (const output of params.outputs) {
-    builder.sendValue(output);
-  }
-  const tx = await builder.addSigner(params.grantee).setInvalidAfter(params.validUntilSlot).addScript(account.script).build();
+  const make = async (): Promise<TransactionBuilder> => {
+    const builder = await accountPaidBuilder(params, account);
+    if (params.unchecked) {
+      builder.setTxEvaluator(fixedBudgetEvaluator(UNCHECKED_EXECUTION_UNITS));
+    }
+    builder.addReferenceInput(control).addInput({ utxo: grantUtxo, redeemer: spendWithGrantRedeemer });
+    for (const utxo of selected) {
+      builder.addInput({ utxo, redeemer: fundRedeemer });
+    }
+    builder.lockValue({ scriptAddress: account.address, value: grantUtxo.output.value, datum: inlineDatum(encodeGrant(grantAfterSpend(grant, bounded))) });
+    for (const output of params.outputs) {
+      builder.sendValue(output);
+    }
+    runLogic(builder, account, sources, state.logic);
+    return attachScript(builder.addSigner(params.grantee).setInvalidAfter(params.validUntilSlot), sources.proxy);
+  };
+  const tx = params.unchecked ? await (await make()).build() : await buildChecked(params.provider, make);
   const fee = transactionBodyParts(tx).fee;
   if (!params.unchecked && fee > feeBound) {
     throw new Error(`The fee of ${fee} lovelace exceeds the fee bound of ${feeBound} the caps were reduced by; raise feeBound`);

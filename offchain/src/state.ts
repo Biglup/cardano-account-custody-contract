@@ -17,7 +17,7 @@
 /* IMPORTS ********************************************************************/
 
 import { Cometa } from './cometa.js';
-import { type AccountState, type Asset, type Grant, type Scope, encodeScope } from './data.js';
+import { type AccountState, type Asset, type Grant, type GrantPrefix, type Scope, encodeScope } from './data.js';
 import { type Balance, LOVELACE_ASSET_ID, quantityOf } from './value.js';
 
 /* CONSTANTS ******************************************************************/
@@ -40,6 +40,9 @@ export const MAX_REVOKED = 32;
 
 /** The maximum number of recipients a grant's scope may list. */
 export const MAX_RECIPIENTS = 8;
+
+/** The hex length of a script hash, which the logic field of a state must have for the proxy to withdraw from it. */
+const SCRIPT_HASH_HEX_LENGTH = 56;
 
 /* FUNCTIONS ******************************************************************/
 
@@ -84,6 +87,9 @@ export const assertScopeWellFormed = (scope: Scope): Scope => {
  * state with a defect, so builders check this before building.
  */
 export const stateDefect = (state: AccountState): string | undefined => {
+  if (state.logic.length !== SCRIPT_HASH_HEX_LENGTH || !/^[0-9a-f]*$/.test(state.logic)) {
+    return 'the logic must be a script hash';
+  }
   if (state.devices.length === 0) {
     return 'an account needs at least one device';
   }
@@ -168,23 +174,38 @@ export const stateWithNextGeneration = (state: AccountState): AccountState => ({
   revoked: [],
 });
 
+/**
+ * The state after an upgrade to another logic: the logic replaced and the
+ * generation bumped with the revoked list cleared, as the arriving logic
+ * demands so that every grant issued under the old logic is dead and gets
+ * reissued under the new one. The devices and the counters stay as they
+ * are; the dead grants remain outstanding until they are swept.
+ */
+export const stateWithLogic = (state: AccountState, logic: string): AccountState => ({
+  ...stateWithNextGeneration(state),
+  logic,
+});
+
 /** Whether a grant is current against a state: issued under its generation and not revoked by slot. */
-export const isGrantCurrent = (grant: Grant, state: AccountState): boolean =>
+export const isGrantCurrent = (grant: GrantPrefix, state: AccountState): boolean =>
   grant.generation === state.grantGeneration && !state.revoked.includes(grant.slot);
 
 /**
  * Why a grant can no longer be spent against a state, or undefined while
  * it is live: issued under an older generation, revoked by slot, or
  * expired before the time a validity range starts at, when one is given.
+ * A grant known by its stable prefix alone, issued under a logic whose
+ * scope shape this library does not read, can only die by generation or
+ * by slot.
  */
-export const grantDeathReason = (grant: Grant, state: AccountState, validityStart?: bigint): string | undefined => {
+export const grantDeathReason = (grant: GrantPrefix & { scope?: Scope }, state: AccountState, validityStart?: bigint): string | undefined => {
   if (grant.generation < state.grantGeneration) {
     return `grant ${grant.slot} was issued under generation ${grant.generation} and the account is at ${state.grantGeneration}`;
   }
   if (state.revoked.includes(grant.slot)) {
     return `slot ${grant.slot} is revoked`;
   }
-  if (validityStart !== undefined && validityStart > grant.scope.expiresAt) {
+  if (validityStart !== undefined && grant.scope !== undefined && validityStart > grant.scope.expiresAt) {
     return `grant ${grant.slot} expired at ${grant.scope.expiresAt}, before the validity range starts`;
   }
   return undefined;

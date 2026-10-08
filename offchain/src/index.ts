@@ -17,6 +17,8 @@
 export { Cometa } from './cometa.js';
 export * from './blueprint.js';
 export * from './stake-script.js';
+export * from './logic.js';
+export * from './network.js';
 export * from './discovery.js';
 export * from './address.js';
 export * from './data.js';
