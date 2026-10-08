@@ -94,20 +94,6 @@ pub fn is_current(grant: Grant, state: AccountState) -> Bool {
   )
 }
 
-/// The account's control UTxO among the reference inputs; none or several
-/// yield `None`.
-pub fn referenced_control(
-  reference_inputs: List<Input>,
-  script_hash: ScriptHash,
-  stake_script_hash: ScriptHash,
-) -> Option<Output> {
-  account.find_control_output(
-    list.map(reference_inputs, fn(input) { input.output }),
-    script_hash,
-    stake_script_hash,
-  )
-}
-
 /// The value spent from an address minus the value paid back to it, per
 /// asset class; a negative quantity is a net deposit.
 pub fn leaving_value(

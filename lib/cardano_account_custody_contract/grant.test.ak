@@ -26,8 +26,7 @@ use cardano_account_custody_contract/grant.{
   carries_grant_within, carries_no_reference_script, deposits_are_plain,
   ends_before_expiry, grant_after_spend, is_authorised_by_grantee, is_current,
   is_dead, leaving_value, pays_only_recipients, quantity_of_asset,
-  referenced_control, spends_one_account_token, starts_after_expiry,
-  stays_within_scope,
+  spends_one_account_token, starts_after_expiry, stays_within_scope,
 }
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/test_helpers.{
@@ -510,41 +509,6 @@ test a_grant_of_an_older_generation_is_never_current(
     grant_generation: state.grant_generation + 1,
   }
   !is_current(grant, older) && is_dead(grant, older, interval.everything)
-}
-
-test referenced_control_returns_the_single_referenced_control() {
-  let control = control_output(state(), 2_000_000)
-  referenced_control(
-    [input(1, grant_output(lovelace_grant(), 1)), input(0, control)],
-    script_hash,
-    stake_script_hash,
-  ) == Some(control)
-}
-
-test referenced_control_returns_none_without_a_control() {
-  referenced_control(
-    [input(1, grant_output(lovelace_grant(), 1))],
-    script_hash,
-    stake_script_hash,
-  ) == None
-}
-
-test referenced_control_returns_none_for_two_controls() {
-  let control = control_output(state(), 2_000_000)
-  referenced_control(
-    [input(0, control), input(2, control)],
-    script_hash,
-    stake_script_hash,
-  ) == None
-}
-
-test referenced_control_ignores_another_accounts_control() {
-  let other = output(
-    other_account_address(),
-    control_value(other_stake_script_hash, 1),
-    state_datum(state()),
-  )
-  referenced_control([input(0, other)], script_hash, stake_script_hash) == None
 }
 
 test leaving_value_subtracts_what_returns_to_the_address() {
