@@ -98,6 +98,8 @@ import {
   datumHashUtxo,
   enterpriseAddress,
   fixtureGrants,
+  foreignLogic,
+  foreignLogicHash,
   fundUtxo,
   grantAssetIdOf,
   grantUtxo,
@@ -489,7 +491,7 @@ describe('createAccount', () => {
     const pinned = await createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: unnamed, script });
     expect(stateOf(pinned)).toEqual(initialState);
     expectLogicRun(pinned);
-    const second = await createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: { ...initialState, logic: logicV2Hash }, logics: [logicV2], script });
+    const second = await createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: { ...initialState, logic: logicV2Hash }, script });
     expect(stateOf(second)).toEqual({ ...initialState, logic: logicV2Hash });
     expectWithdrawals(second, [logicV2RewardAddress]);
     expectScriptsAttached(second, { logic: false, logicV2: true, stake: true });
@@ -498,9 +500,11 @@ describe('createAccount', () => {
 
   it('refuses a logic it cannot attach and a logic field that is not a script hash', async () => {
     const { owner, provider } = scenario(undefined, []);
-    await expect(createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: { ...initialState, logic: logicV2Hash }, script })).rejects.toThrow(
-      new RegExp(`logic ${logicV2Hash} is not a version this library can attach`),
+    await expect(createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: { ...initialState, logic: foreignLogicHash }, script })).rejects.toThrow(
+      new RegExp(`logic ${foreignLogicHash} is not a version this library can attach`),
     );
+    const given = await createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: { ...initialState, logic: foreignLogicHash }, logics: [foreignLogic], script });
+    expect(stateOf(given)).toEqual({ ...initialState, logic: foreignLogicHash });
     await expect(createAccount({ wallet: owner, provider, owner: OWNER_PAYMENT_KEY, state: { ...initialState, logic: 'ab' }, script })).rejects.toThrow(/logic must be a script hash/);
   });
 
@@ -1596,8 +1600,9 @@ describe('upgradeLogic', () => {
   it('refuses the logic the account runs, a logic it cannot attach, a wallet that is not a device and a grant spend in the same transaction', async () => {
     const { sponsor, ...params } = ownerParams();
     await expect(upgradeLogic({ ...params, logics: [logicV2], newLogic: logicV1Hash })).rejects.toThrow(/already runs logic/);
-    await expect(upgradeLogic({ ...params, newLogic: logicV2Hash })).rejects.toThrow(new RegExp(`logic ${logicV2Hash} is not a version this library can attach`));
+    await expect(upgradeLogic({ ...params, newLogic: foreignLogicHash })).rejects.toThrow(new RegExp(`logic ${foreignLogicHash} is not a version this library can attach`));
     await expect(upgradeLogic({ ...params, logics: [logicV2], newLogic: 'ab'.repeat(28) })).rejects.toThrow(/not a version this library can attach/);
+    expect(stateOf(await upgradeLogic({ ...params, logics: [foreignLogic], newLogic: foreignLogicHash }))).toEqual({ ...UPGRADED_STATE, logic: foreignLogicHash });
     const { provider, agent } = scenario(grantedState, [fundUtxo(0, { coins: 10_000_000n })]);
     await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [logicV2], newLogic: logicV2Hash, script })).rejects.toThrow(/not a device/);
     void sponsor;
@@ -1609,9 +1614,25 @@ describe('upgradeLogic', () => {
     await expect(rewriteState({ ...withLogics, newState: { ...grantedState, logic: logicV2Hash } })).rejects.toThrow(/must bump the grant generation/);
     await expect(rewriteState({ ...withLogics, newState: { ...UPGRADED_STATE, devices: [OWNER_PAYMENT_KEY, OTHER_DEVICE_KEY] } })).rejects.toThrow(/cannot change the devices/);
     await expect(rewriteState({ ...withLogics, newState: { ...UPGRADED_STATE, grantGeneration: 0n } })).rejects.toThrow(/must bump the grant generation/);
-    await expect(rewriteState({ ...params, newState: UPGRADED_STATE })).rejects.toThrow(/not a version this library can attach/);
+    await expect(rewriteState({ ...params, newState: { ...UPGRADED_STATE, logic: foreignLogicHash } })).rejects.toThrow(/not a version this library can attach/);
     expect(stateOf(await rewriteState({ ...withLogics, newState: UPGRADED_STATE }))).toEqual(UPGRADED_STATE);
+    expect(stateOf(await rewriteState({ ...params, newState: UPGRADED_STATE }))).toEqual(UPGRADED_STATE);
     void sponsor;
+  });
+
+  it('builds a move back unchecked for a wallet that is no device, with fixed budgets, for the node to refuse', async () => {
+    const { provider, agent } = scenario(UPGRADED_STATE, [fundUtxo(0, { coins: 10_000_000n })]);
+    await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, newLogic: logicV1Hash, script })).rejects.toThrow(/not a device/);
+    const tx = await upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, newLogic: logicV1Hash, script, unchecked: true });
+    expect(inspect(tx).body.required_signers).toEqual([AGENT_PAYMENT_KEY]);
+    expect(stateOf(tx)).toEqual({ ...UPGRADED_STATE, logic: logicV1Hash, grantGeneration: 2n });
+    expectWithdrawals(tx, [logicV1RewardAddress, logicV2RewardAddress]);
+    const units = inspect(tx).witness_set.redeemers?.map((entry) => [entry.tag, entry.ex_units.mem]);
+    expect(units).toContainEqual(['reward', UNCHECKED_EXECUTION_UNITS.logic.memory.toString()]);
+    expect(units).toContainEqual(['spend', UNCHECKED_EXECUTION_UNITS.proxy.memory.toString()]);
+    expect(provider.phaseTwoFailures).toEqual([]);
+    await expect(provider.evaluateTransaction(tx)).rejects.toThrow(/No device of the account signs the device spend/);
+    await expect(upgradeLogic({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, newLogic: logicV1Hash, script, unchecked: true, sponsor: agent, collateral: agent })).rejects.toThrow(/not both/);
   });
 
   it('is refused by the fake when the new logic does not run, the generation does not grow, the devices change or the old logic is left out', async () => {
@@ -1707,16 +1728,17 @@ describe('after an upgrade', () => {
     const state = { ...UPGRADED_STATE, nextSlot: 4n, outstanding: 4n };
     const { provider, agent } = scenario(state, [fundUtxo(0, { coins: 10_000_000n }), ...grantedUtxos(), grantUtxo(reissued)]);
     const payout = { address: recipientAddress, value: { coins: 3_000_000n } };
-    const tx = await spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [logicV2], slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script });
+    const tx = await spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script });
     expectWithdrawals(tx, [logicV2RewardAddress]);
     expectScriptsAttached(tx, { logic: false, logicV2: true });
     expect(transactionBodyParts(tx).referenceInputs).toEqual([CONTROL_INPUT]);
     expect(grantOf(tx, 3n)).toEqual(grantAfterSpend(reissued, { '': 3_000_000n + DEFAULT_GRANT_FEE_BOUND }));
     expect(provider.phaseTwoFailures).toEqual([]);
-    await expect(spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script })).rejects.toThrow(
+    const foreign = scenario({ ...state, logic: foreignLogicHash }, [fundUtxo(0, { coins: 10_000_000n }), grantUtxo(reissued)]);
+    await expect(spendWithGrant({ wallet: foreign.agent, provider: foreign.provider, owner: OWNER_PAYMENT_KEY, slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script })).rejects.toThrow(
       /not a version this library can attach/,
     );
-    const referenced = await spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, logics: [logicV2], network: networkScripts(), slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script });
+    const referenced = await spendWithGrant({ wallet: agent, provider, owner: OWNER_PAYMENT_KEY, network: networkScripts(), slot: 3n, outputs: [payout], grantee: AGENT_PAYMENT_KEY, validUntilSlot: VALID_UNTIL_SLOT, script });
     expect(transactionBodyParts(referenced).referenceInputs).toContainEqual(LOGIC_V2_REFERENCE);
     expect(transactionBodyParts(referenced).referenceInputs).not.toContainEqual(LOGIC_V1_REFERENCE);
   });

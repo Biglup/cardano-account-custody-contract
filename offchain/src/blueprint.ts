@@ -30,12 +30,16 @@ const ACCOUNT_VALIDATOR_TITLE = 'account.account';
 /** The prefix of the module title of every logic version: `logic_v1`, `logic_v2` and so on. */
 const LOGIC_MODULE_PREFIX = 'logic_';
 
+/** The module titles of the logic versions the blueprint carries, each applied to the proxy hash to become a logic credential. */
+export const LOGIC_V1_TITLE = 'logic_v1.logic_v1';
+export const LOGIC_V2_TITLE = 'logic_v2.logic_v2';
+
 /**
  * The title of the logic version this library pins: the one a new account
  * runs unless its creator names another, and the one the builders apply to
  * the proxy hash to attach the logic.
  */
-export const CURRENT_LOGIC_TITLE = 'logic_v1.logic_v1';
+export const CURRENT_LOGIC_TITLE = LOGIC_V1_TITLE;
 
 /** The blueprint `aiken build` writes at the repository root. */
 export const DEFAULT_BLUEPRINT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plutus.json');

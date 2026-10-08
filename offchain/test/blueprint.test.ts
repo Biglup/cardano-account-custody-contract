@@ -30,7 +30,7 @@ import {
   slotOfGrantTokenName,
   stateNftAssetId,
 } from '../src/address.js';
-import { CURRENT_LOGIC_TITLE, accountScript, accountScriptHash, accountValidator, loadBlueprint, logicValidator, logicValidators } from '../src/blueprint.js';
+import { CURRENT_LOGIC_TITLE, LOGIC_V1_TITLE, LOGIC_V2_TITLE, accountScript, accountScriptHash, accountValidator, loadBlueprint, logicValidator, logicValidators } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
 import { OWNER_PAYMENT_KEY, OWNER_STAKE_KEY, enterpriseAddress, ownerStakeScriptHash } from './support/account.js';
 
@@ -61,12 +61,17 @@ describe('blueprint', () => {
   it('lists one logic validator per version, still parameterised, and pins the current one', () => {
     const blueprint = loadBlueprint();
     const versions = logicValidators(blueprint);
-    expect(versions.map((validator) => validator.title)).toEqual(['logic_v1.logic_v1.withdraw']);
+    expect(versions.map((validator) => validator.title)).toEqual(['logic_v1.logic_v1.withdraw', 'logic_v2.logic_v2.withdraw']);
     expect(versions[0]!.hash).not.toBe(accountValidator(blueprint).hash);
+    expect(versions[1]!.hash).not.toBe(versions[0]!.hash);
     expect(blueprint.validators.filter((entry) => entry.title.startsWith('logic_v1.logic_v1.')).every((entry) => entry.compiledCode === versions[0]!.compiledCode)).toBe(true);
-    expect(CURRENT_LOGIC_TITLE).toBe('logic_v1.logic_v1');
+    expect(blueprint.validators.filter((entry) => entry.title.startsWith('logic_v2.logic_v2.')).every((entry) => entry.compiledCode === versions[1]!.compiledCode)).toBe(true);
+    expect(LOGIC_V1_TITLE).toBe('logic_v1.logic_v1');
+    expect(LOGIC_V2_TITLE).toBe('logic_v2.logic_v2');
+    expect(CURRENT_LOGIC_TITLE).toBe(LOGIC_V1_TITLE);
     expect(logicValidator(blueprint)).toBe(versions[0]);
-    expect(logicValidator(blueprint, 'logic_v1.logic_v1')).toBe(versions[0]);
+    expect(logicValidator(blueprint, LOGIC_V1_TITLE)).toBe(versions[0]);
+    expect(logicValidator(blueprint, LOGIC_V2_TITLE)).toBe(versions[1]);
     expect(() => logicValidator(blueprint, 'logic_v9.logic_v9')).toThrow(/no logic validator titled logic_v9/);
     expect(logicValidators({ preamble: { title: 'x', plutusVersion: 'v3' }, validators: [] })).toEqual([]);
   });

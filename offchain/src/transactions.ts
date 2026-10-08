@@ -267,6 +267,15 @@ export type DeviceParams = AccountUtxoParams & {
    * another device would otherwise sit in a mempool until it is dropped.
    */
   validUntilSlot?: bigint;
+  /**
+   * Skips the device check and the evaluation, for evidence and testing
+   * only: the wallet's payment key is the required signer whether or not
+   * it is a device of the account, and the transaction carries
+   * `UNCHECKED_EXECUTION_UNITS` instead of an evaluation, so that the
+   * node refuses it with the logic's own failure. The state written back
+   * is still held to the shape the builder can encode.
+   */
+  unchecked?: boolean;
 };
 
 /** The initial state of an account: the state without its logic, which defaults to the version this library pins. */
@@ -628,6 +637,15 @@ const selectWithChangeFloor = (floor: (remainder: Balance) => bigint, select: (m
   }
 };
 
+/** The wallet's payment key hash; fails on a wallet whose address pays to no key. */
+const paymentKeyOf = async (wallet: Wallet): Promise<string> => {
+  const key = paymentKeyHashOf(await wallet.getChangeAddress());
+  if (key === undefined) {
+    throw new Error('The wallet address pays to no key');
+  }
+  return key;
+};
+
 /** The wallet's payment key hash, which must be a device of the account. */
 const deviceOf = async (wallet: Wallet, state: AccountState): Promise<string> => {
   const device = paymentKeyHashOf(await wallet.getChangeAddress());
@@ -934,7 +952,10 @@ const assertBatchSize = (count: number, what: string): void => {
  * the logics are referenced from the network's parked UTxOs when it
  * records them, each checked through the provider to still carry its
  * script, and embedded otherwise, and a failed build is explained
- * through the provider.
+ * through the provider. Built `unchecked`, the transaction takes the
+ * wallet's key as the signer without asking whether it is a device and
+ * carries fixed budgets instead of an evaluation, so that the node is
+ * the one to refuse it.
  */
 const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation): Promise<string> => {
   assertOnePayer(params);
@@ -942,7 +963,7 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   const utxos = await findAccountUtxos(params.provider, params);
   const { control, state, funds } = utxos;
   const reserves = spendableReserves(utxos.reserves);
-  const device = await deviceOf(params.wallet, state);
+  const device = params.unchecked ? await paymentKeyOf(params.wallet) : await deviceOf(params.wallet, state);
   const next = assertWellFormed(operation.nextState(state, utxos));
   const parameters = await params.provider.getParameters();
   const adaPerUtxoByte = adaPerUtxoByteOf(parameters);
@@ -959,6 +980,8 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   const freed = addBalances(...swept.map(({ utxo, assetId }) => toBalance({ ...utxo.output.value, assets: { ...utxo.output.value.assets, [assetId]: 0n } })));
   const requested = addBalances(sumOutputs(operation.outputs), { [LOVELACE_ASSET_ID]: issued.reduce((total, issue) => total + issue.coins, 0n) });
   const floor = changeFloor(params, account, adaPerUtxoByte);
+  const build = (make: () => Promise<TransactionBuilder>): Promise<string> =>
+    params.unchecked ? make().then((builder) => builder.setTxEvaluator(fixedBudgetEvaluator(UNCHECKED_EXECUTION_UNITS)).build()) : buildChecked(params.provider, make);
 
   const assemble = (builder: TransactionBuilder, selected: UTxO[], feeReserve: UTxO | undefined, reserveCoins: bigint): TransactionBuilder => {
     builder.addInput({ utxo: control, redeemer: deviceRedeemer });
@@ -999,7 +1022,7 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
     const need = subtractBalances(requested, freed);
     const selection = selectWithChangeFloor(floor, (minimumChange) => selectFundUtxos(funds, positivePart(need), minimumChange, reserves));
     const returned = addBalances(selection.remainder, positivePart(subtractBalances(freed, requested)));
-    return buildChecked(params.provider, async () => {
+    return build(async () => {
       const builder = await params.sponsor!.createTransactionBuilder();
       if (!isZeroBalance(returned)) {
         builder.sendValue({ address: account.address, value: toValue(returned) });
@@ -1015,7 +1038,7 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
     const { selected } = selectWithChangeFloor(floor, (minimumChange) =>
       selectFundUtxos(funds, addBalances(required, { [LOVELACE_ASSET_ID]: minimumChange }), 0n, pool),
     );
-    return buildChecked(params.provider, async () => assemble(await accountPaidBuilder(params, account), selected, undefined, 0n));
+    return build(async () => assemble(await accountPaidBuilder(params, account), selected, undefined, 0n));
   }
 
   const required = positivePart(subtractBalances(addBalances(requested, { [LOVELACE_ASSET_ID]: growth }), freed));
@@ -1026,7 +1049,7 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   for (let round = 0; round < MAX_BALANCING_ROUNDS; round += 1) {
     const minimumFee = assumedFee;
     const coinsForReserve = reserveCoins;
-    const tx = await buildChecked(params.provider, async () => {
+    const tx = await build(async () => {
       const builder = await accountPaidBuilder(params, account);
       if (minimumFee !== undefined) {
         builder.setMinimumFee(minimumFee);

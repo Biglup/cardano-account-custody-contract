@@ -48,9 +48,17 @@ export const logicScript = (validator: BlueprintValidator, proxyHash: string): P
 /** The hash of a logic script, which is the credential its zero withdrawal draws from and the pointer a control datum names. */
 export const logicScriptHash = (script: PlutusScript): string => Cometa.computeScriptHash(script);
 
+/** A logic version of the blueprint, named by its module title, applied to the proxy hash. */
+export const logicVersionScript = (title: string, proxyHash: string, blueprint: Blueprint = loadBlueprint()): PlutusScript =>
+  logicScript(logicValidator(blueprint, title), proxyHash);
+
+/** The hash of a logic version of the blueprint applied to the proxy hash: the credential every account on that version names. */
+export const logicVersionHash = (title: string, proxyHash: string, blueprint: Blueprint = loadBlueprint()): string =>
+  logicScriptHash(logicVersionScript(title, proxyHash, blueprint));
+
 /** The logic version this library pins, applied to the proxy hash. */
 export const currentLogicScript = (proxyHash: string, blueprint: Blueprint = loadBlueprint()): PlutusScript =>
-  logicScript(logicValidator(blueprint, CURRENT_LOGIC_TITLE), proxyHash);
+  logicVersionScript(CURRENT_LOGIC_TITLE, proxyHash, blueprint);
 
 /** The hash of the logic version this library pins, applied to the proxy hash: what a new account runs unless its creator names another. */
 export const currentLogicHash = (proxyHash: string, blueprint: Blueprint = loadBlueprint()): string =>

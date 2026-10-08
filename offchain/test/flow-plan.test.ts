@@ -171,7 +171,8 @@ describe('FLOW_PLAN', () => {
     expect(FLOW_PLAN[44]!.description).toContain(`issueGrant slot ${PRE_UPGRADE_GRANT_SLOT}`);
     expect(FLOW_PLAN[44]!.description).toContain('under logic v1');
     expect(FLOW_PLAN[45]!.description).toContain('upgradeLogic to v2');
-    expect(FLOW_PLAN[45]!.description).toContain('generation bumped to two');
+    expect(FLOW_PLAN[45]!.description).toContain(`generation bumped to ${GENERATION_AFTER_UPGRADE}`);
+    expect(FLOW_PLAN[45]!.budget).toEqual([{ path: 'upgrade', handlers: 'Device, the leaving logic and the arriving logic', netMemory: 1_620_000, netSteps: 500_000_000 }]);
     expect(FLOW_PLAN[46]!.outcome).toBe('refused by the builder');
     expect(FLOW_PLAN[46]!.expectedMessage?.test(`Grant ${PRE_UPGRADE_GRANT_SLOT} is dead: grant ${PRE_UPGRADE_GRANT_SLOT} was issued under generation ${GENERATION_BEFORE_UPGRADE} and the account is at ${GENERATION_AFTER_UPGRADE}`)).toBe(true);
     expect(FLOW_PLAN[47]!.outcome).toBe('refused by the node');
@@ -184,7 +185,9 @@ describe('FLOW_PLAN', () => {
     expect(FLOW_PLAN[53]!.description).toContain('leaving only the control UTxO under logic v2');
     expect(PRE_UPGRADE_GRANT_SLOT).toBe(SWEEP_GRANT_SLOT + 1n);
     expect(REISSUED_GRANT_SLOT).toBe(PRE_UPGRADE_GRANT_SLOT + 1n);
+    expect(GENERATION_BEFORE_UPGRADE).toBe(2n);
     expect(GENERATION_AFTER_UPGRADE).toBe(GENERATION_BEFORE_UPGRADE + 1n);
+    expect(FLOW_PLAN[53]!.description).toContain(`slot ${REISSUED_GRANT_SLOT} grant is revoked and swept`);
   });
 
   it('registers at creation, operates the stake credential through both devices and ends with a sweep that keeps the control UTxO', () => {
@@ -236,7 +239,7 @@ describe('FLOW_PLAN', () => {
     expect(FLOW_PLAN[25]!.description).toContain('eight devices');
     expect(FLOW_PLAN[31]!.description).toContain('thirty two revoked slots');
     expect(FLOW_PLAN[31]!.description).toContain('sixteen outstanding grants');
-    expect(FLOW_PLAN.filter((flow) => flow.budget !== undefined).map((flow) => flow.step)).toEqual([27, 28, 29, 30, 31, 32, 33, 39]);
+    expect(FLOW_PLAN.filter((flow) => flow.budget !== undefined).map((flow) => flow.step)).toEqual([27, 28, 29, 30, 31, 32, 33, 39, 46]);
     for (const flow of FLOW_PLAN.filter((candidate) => candidate.budget !== undefined)) {
       for (const reference of flow.budget!) {
         expect(reference.netMemory).toBeLessThan(Number(LIMITS.memory));
@@ -285,7 +288,7 @@ describe('FLOW_PLAN', () => {
       19: 'Grant 0 is dead: slot 0 is revoked',
       23: 'Slot 135678122 starts after grant 2 expires',
       38: 'The spend needs 13 fund UTxOs, more than the 12 one grant spend may take; sweep the funds in batches of fundBatches first',
-      47: 'Grant 36 is dead: grant 36 was issued under generation 1 and the account is at 2',
+      47: 'Grant 36 is dead: grant 36 was issued under generation 2 and the account is at 3',
       52: 'The wallet payment key is not a device of the account',
     };
     const unrelatedBuilderError = 'Grant 0 refuses the spend: the agent does not hold enough funds';
@@ -322,6 +325,7 @@ describe('classifyFailure', () => {
     expect(classifyFailure(new Error('Grant 0 is dead: slot 0 is revoked'))).toBe('refusal');
     expect(classifyFailure(new Error('Slot 100 starts after grant 2 expires'))).toBe('refusal');
     expect(classifyFailure(new Error('The spend needs 13 fund UTxOs, more than the 12 one grant spend may take; sweep the funds in batches of fundBatches first'))).toBe('refusal');
+    expect(classifyFailure(new Error('The wallet payment key is not a device of the account'))).toBe('refusal');
   });
 
   it('recognises the node refusing a script at submission', () => {
@@ -453,6 +457,9 @@ describe('evidence', () => {
     expect(rows[0]).toContain('| 39 | agent spend over eight deposits | SpendWithGrant and eight Fund |');
     expect(rows[0]).toContain('| 2 | 8,000,000 | 1,800,000,000 | 3,200,000 | 1,130,000,000 | 45.7% / 18.0% |');
     expect(rows[1]).toContain('agent spend over forty deposits');
+    expect(budgetRows({ flow: FLOW_PLAN[45]!, txIds: [TX_ID], measured: [measured(TX_ID, 1_000_000n)] }, LIMITS)).toEqual([
+      `| 46 | upgrade | Device, the leaving logic and the arriving logic | [${TX_ID.slice(0, 12)}](${explorerLink(TX_ID)}) | 2 | 6,000,000 | 1,800,000,000 | 1,620,000 | 500,000,000 | 34.2% / 18.0% |`,
+    ]);
     expect(budgetRows({ flow: FLOW_PLAN[0]!, txIds: [TX_ID], measured: [measured(TX_ID, 1n)] }, LIMITS)).toEqual([]);
     expect(budgetRows({ flow: FLOW_PLAN[38]!, txIds: [TX_ID] }, LIMITS)).toEqual([]);
   });
@@ -491,6 +498,9 @@ describe('evidence', () => {
     expect(document).toContain('| 5 | a zero withdrawal from an unregistered logic credential');
     expect(document).toContain('refused by the node in phase one: "WithdrawalsNotInRewardsCERTS"');
     expect(document).toContain('| 46 | upgradeLogic to v2');
+    expect(document).toContain('| 46 | upgrade | Device, the leaving logic and the arriving logic |');
+    expect(document).toContain('over an account holding one device, no revoked\nslot and one outstanding grant');
+    expect(document).toContain('refused a move back to the first version');
     expect(document).toContain('zero\nwithdrawal from the logic credential');
     expect(document.indexOf('## Setup')).toBeLessThan(document.indexOf('## Flows'));
     expect(document).toContain('- Owner address: `addr_test1owner`');

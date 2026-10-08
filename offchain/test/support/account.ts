@@ -18,11 +18,11 @@
 
 import type { PlutusData, PlutusScript, UTxO, Value } from '@biglup/cometa';
 import { accountAddress, grantAssetId, rewardAddress, stateNftAssetId } from '../../src/address.js';
-import { accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../../src/blueprint.js';
+import { LOGIC_V2_TITLE, accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../../src/blueprint.js';
 import { Cometa } from '../../src/cometa.js';
 import { transactionBodyParts } from '../../src/body.js';
 import { type AccountState, type Grant, type Scope, bytes, encodeAccountState, encodeGrant, encodeReserveDatum } from '../../src/data.js';
-import { currentLogicScript, logicScriptHash } from '../../src/logic.js';
+import { currentLogicScript, logicScriptHash, logicVersionScript } from '../../src/logic.js';
 import { type NetworkScripts, type ReferenceScriptRecord } from '../../src/network.js';
 import { applyParameters, stakeScript, stakeScriptHash } from '../../src/stake-script.js';
 import { FakeProvider, FakeWallet, utxo } from './fake.js';
@@ -47,15 +47,15 @@ export const CONTROL_LOVELACE = 2_000_000n;
 export const GRANT_LOVELACE = 2_000_000n;
 
 /**
- * The parameter the second logic version of the tests is applied to. The
- * fixture is the current logic applied to this hash in place of the proxy
- * hash: it has its own script hash and its own credential, which is all
- * the builders and the fake evaluator read of a logic, so it stands for a
- * later version in every upgrade test without a second compiled
- * validator. On chain such a script answers to another proxy, so it is a
+ * The parameter the logic outside the blueprint is applied to. The fixture
+ * is the current logic applied to this hash in place of the proxy hash: it
+ * has its own script hash and its own credential, which is all the
+ * builders and the fake evaluator read of a logic, so it stands for a
+ * version this library does not carry, given alongside the blueprint or
+ * refused. On chain such a script answers to another proxy, so it is a
  * fixture only.
  */
-export const LOGIC_V2_PARAMETER = '02'.repeat(28);
+export const FOREIGN_LOGIC_PARAMETER = '02'.repeat(28);
 
 /** The always fail script hash the tests park reference scripts under, and the lovelace each parked UTxO holds. */
 export const PARKING_SCRIPT_HASH = 'ab'.repeat(28);
@@ -75,14 +75,18 @@ export const logicV1: PlutusScript = currentLogicScript(scriptHash);
 export const logicV1Hash = logicScriptHash(logicV1);
 export const logicV1RewardAddress = rewardAddress(logicV1Hash).toBech32();
 
-/** The second logic version of the tests, applied to `LOGIC_V2_PARAMETER`, and the reward account its zero withdrawal draws from. */
-export const logicV2: PlutusScript = {
-  type: Cometa.ScriptType.Plutus,
-  bytes: applyParameters(logicValidator(loadBlueprint()).compiledCode, [bytes(LOGIC_V2_PARAMETER)]),
-  version: Cometa.PlutusLanguageVersion.V3,
-};
+/** The second logic version applied to the proxy hash, which the upgrade fixtures move accounts to, and the reward account its zero withdrawal draws from. */
+export const logicV2: PlutusScript = logicVersionScript(LOGIC_V2_TITLE, scriptHash);
 export const logicV2Hash = logicScriptHash(logicV2);
 export const logicV2RewardAddress = rewardAddress(logicV2Hash).toBech32();
+
+/** The logic outside the blueprint, the current logic applied to `FOREIGN_LOGIC_PARAMETER`, and its hash. */
+export const foreignLogic: PlutusScript = {
+  type: Cometa.ScriptType.Plutus,
+  bytes: applyParameters(logicValidator(loadBlueprint()).compiledCode, [bytes(FOREIGN_LOGIC_PARAMETER)]),
+  version: Cometa.PlutusLanguageVersion.V3,
+};
+export const foreignLogicHash = logicScriptHash(foreignLogic);
 
 /** The always fail script address the tests park reference scripts at. */
 export const parkingAddress = Cometa.EnterpriseAddress.fromCredentials(Cometa.NetworkId.Testnet, { hash: PARKING_SCRIPT_HASH, type: Cometa.CredentialType.ScriptHash })
