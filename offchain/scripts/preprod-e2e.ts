@@ -25,7 +25,7 @@ import { config as loadEnv } from 'dotenv';
 import { accountAddress, paymentKeyHashOf, rewardAddress } from '../src/address.js';
 import { accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
-import { DEVNET_NETWORK, ENV_PATH, type ProviderConfiguration, loadRunEnvironment, providerConfiguration } from '../src/config.js';
+import { DEVNET_NETWORK, ENV_PATH, type ProviderConfiguration, isSetupOnly, loadRunEnvironment, providerConfiguration } from '../src/config.js';
 import { posixTimeToSlot, transactionBodyParts } from '../src/body.js';
 import { type AccountState, type Asset, type Scope, encodeLogicRedeemer } from '../src/data.js';
 import { type AccountRecord, accountByOwner, accountExists } from '../src/discovery.js';
@@ -1335,6 +1335,31 @@ const setUpNetwork = async (provider: Provider, projectId: string, funding: Wall
   return records;
 };
 
+/**
+ * Prints what the setup of a network left behind: the transactions of
+ * every step, the reference scripts parked with the lovelace each holds,
+ * the reward address of the registered logic credential and what the
+ * funding wallet paid. A network whose file already records the proxy and
+ * the current logic is set up and nothing was submitted.
+ */
+const reportSetup = async (funding: Wallet, fundingAddress: string, before: bigint, scriptHash: string, setup: FlowRecord[] | undefined): Promise<void> => {
+  const logicHash = currentLogicHash(scriptHash);
+  if (setup === undefined) {
+    console.log(`The network file of ${target.network} already records the proxy ${scriptHash} and the logic ${logicHash}`);
+    return;
+  }
+  for (const record of setup) {
+    console.log(`Setup ${record.flow.step}: ${record.txIds.join(' ') || record.refusal || record.flow.outcome}`);
+  }
+  for (const reference of loadNetworkScripts(target.network).references) {
+    console.log(`Parked ${reference.scriptHash} at ${reference.txId}#${reference.index} holding ${reference.lovelace} lovelace`);
+  }
+  console.log(`Logic reward address: ${rewardAddress(logicHash).toBech32()}`);
+  const after = (await funding.getBalance()).coins;
+  console.log(`Funding address: ${fundingAddress}`);
+  console.log(`Funding balance: ${before} lovelace before the setup, ${after} lovelace after it, ${before - after} lovelace spent`);
+};
+
 /** Prints the funding address and the funding request of the network, then ends the process successfully. */
 const askForFunds = (address: string): never => {
   console.log(address);
@@ -1342,7 +1367,13 @@ const askForFunds = (address: string): never => {
   process.exit(0);
 };
 
-/** Runs every flow against the network the environment names and writes the evidence document. */
+/**
+ * Runs the setup of the network the environment names when its file does
+ * not record one, then every flow against it, and writes the evidence
+ * document. A run the environment asks for the setup alone stops once the
+ * setup is recorded and writes no evidence, since the document states a
+ * full run.
+ */
 const main = async (): Promise<void> => {
   loadRunEnvironment(loadEnv as (options: { path: string; override?: boolean }) => unknown);
   await Cometa.ready();
@@ -1377,6 +1408,10 @@ const main = async (): Promise<void> => {
   const recorded = loadNetworkScripts(target.network);
   const setUpAlready = referenceOf(recorded, scriptHash) !== undefined && referenceOf(recorded, currentLogicHash(scriptHash)) !== undefined;
   const setup = setUpAlready ? undefined : await setUpNetwork(provider, projectId, funding, scriptHash);
+  if (isSetupOnly()) {
+    await reportSetup(funding, fundingAddress, balance, scriptHash, setup);
+    return;
+  }
   const { owner, ownerAccount, ownerAddress, ownerKeyHash, stakeCredential, reward } = await freshOwner(provider, projectId, mnemonics, scriptHash);
   const address = accountAddress(scriptHash, stakeCredential).toString();
   const discovered = accountByOwner(ownerKeyHash);

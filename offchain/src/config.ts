@@ -47,6 +47,9 @@ const DEVNET_BASE_URL = 'http://localhost:8080/api/v1';
 export const PREPROD_NETWORK = 'preprod';
 export const DEVNET_NETWORK = 'devnet';
 
+/** What the `SETUP_ONLY` variable may carry to ask a run for the setup of its network alone. */
+const SETUP_ONLY_VALUES = ['1', 'true'];
+
 /**
  * The network magic the library is given for the devnet. The devnet chain
  * itself runs the magic of the cluster the devnet image creates, 42, with
@@ -162,4 +165,23 @@ export const providerConfiguration = (env: NodeJS.ProcessEnv = process.env, gene
     networkMagic: Cometa.NetworkMagic.Preprod,
     slotConfig: Cometa.CARDANO_PREPROD_SLOT_CONFIG,
   };
+};
+
+/**
+ * Whether this run performs the setup of the network it targets and stops
+ * before the flows, which `SETUP_ONLY` asks for and the setup npm script
+ * sets. The setup of a network runs once and the flows take hours after
+ * it, so the setup is deliverable on its own, through the same builders
+ * the flow runner performs it with. A variable carrying anything else is
+ * refused rather than read as a run of everything.
+ */
+export const isSetupOnly = (env: NodeJS.ProcessEnv = process.env): boolean => {
+  const value = env['SETUP_ONLY']?.trim();
+  if (!value) {
+    return false;
+  }
+  if (!SETUP_ONLY_VALUES.includes(value.toLowerCase())) {
+    throw new Error(`SETUP_ONLY is ${value}, which is none of ${SETUP_ONLY_VALUES.join(', ')}`);
+  }
+  return true;
 };

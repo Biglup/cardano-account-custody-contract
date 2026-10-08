@@ -1157,6 +1157,21 @@ exactly one control output and a transaction that creates no account has
 none, and one from an unregistered logic credential, which the node
 refuses in phase one before any script runs.
 
+The setup of a network runs once and the flows take hours after it, so
+the setup is also available on its own:
+
+```sh
+cd offchain
+npm run setup
+```
+
+`SETUP_ONLY=1`, which that script sets, stops the run once the network
+file records the proxy and the current logic, and prints the transaction
+of every setup step, the reference scripts parked with the lovelace each
+holds, the reward address of the registered logic credential and what the
+funding wallet paid. It writes no evidence document, since that document
+states a full run, and a network already recorded is left untouched.
+
 `CARDANO_NETWORK` picks the network the script runs against, `preprod` by
 default and `devnet` for the local devnet below; `PROVIDER_BASE_URL`
 overrides the endpoint of either. The network magic, the slot

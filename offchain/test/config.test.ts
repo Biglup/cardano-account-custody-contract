@@ -22,7 +22,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Cometa } from '../src/cometa.js';
-import { DEVNET_NETWORK, ENV_PATH, PREPROD_BASE_URL, PREPROD_NETWORK, loadRunEnvironment, providerConfiguration } from '../src/config.js';
+import { DEVNET_NETWORK, ENV_PATH, PREPROD_BASE_URL, PREPROD_NETWORK, isSetupOnly, loadRunEnvironment, providerConfiguration } from '../src/config.js';
 
 /* CONSTANTS ******************************************************************/
 
@@ -147,5 +147,24 @@ describe('providerConfiguration', () => {
     expect(() => configurationOf({ epochLength: 300 })).toThrow(/does not record a system start and a slot length/);
     expect(() => configurationOf({ systemStart: 'not a time', slotLength: 1 })).toThrow(/is not a system start time/);
     expect(() => configurationOf({ systemStart: SYSTEM_START, slotLength: 0 })).toThrow(/is not a slot length/);
+  });
+});
+
+describe('isSetupOnly', () => {
+  it('runs everything when the environment does not ask for the setup alone', () => {
+    expect(isSetupOnly({})).toBe(false);
+    expect(isSetupOnly({ SETUP_ONLY: '' })).toBe(false);
+    expect(isSetupOnly({ SETUP_ONLY: '  ' })).toBe(false);
+  });
+
+  it('stops after the setup when the environment asks for it', () => {
+    expect(isSetupOnly({ SETUP_ONLY: '1' })).toBe(true);
+    expect(isSetupOnly({ SETUP_ONLY: 'true' })).toBe(true);
+    expect(isSetupOnly({ SETUP_ONLY: ' TRUE ' })).toBe(true);
+  });
+
+  it('refuses a value it cannot read rather than running every flow', () => {
+    expect(() => isSetupOnly({ SETUP_ONLY: '0' })).toThrow(/SETUP_ONLY is 0, which is none of 1, true/);
+    expect(() => isSetupOnly({ SETUP_ONLY: 'yes' })).toThrow(/which is none of 1, true/);
   });
 });

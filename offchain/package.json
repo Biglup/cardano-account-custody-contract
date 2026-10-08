@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "e2e": "tsx scripts/preprod-e2e.ts",
+    "setup": "SETUP_ONLY=1 tsx scripts/preprod-e2e.ts",
     "devnet:parameters": "tsx scripts/devnet-parameters.ts",
     "devnet:start": "devnet/start.sh",
     "devnet:stop": "devnet/stop.sh",
