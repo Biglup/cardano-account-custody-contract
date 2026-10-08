@@ -1,9 +1,29 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import type { Provider, UTxO } from '@biglup/cometa';
 import { accountAddress, rewardAddress, stateNftAssetId, toAddress } from './address.js';
 import { type Blueprint, accountScript, accountScriptHash, loadBlueprint } from './blueprint.js';
 import { Cometa } from './cometa.js';
 import { type AccountState, decodeAccountState } from './data.js';
 import { stakeScript, stakeScriptHash } from './stake-script.js';
+
+/* TYPES **********************************************************************/
 
 /**
  * What a client persists to find an account again: the owner device key
@@ -30,6 +50,8 @@ export interface LiveAccount {
   control: UTxO;
   state: AccountState;
 }
+
+/* FUNCTIONS ******************************************************************/
 
 /**
  * The account an owner device key hash identifies, computed from the key

@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { accountScript, accountScriptHash, loadBlueprint } from '../src/blueprint.js';
@@ -6,6 +24,8 @@ import { bytes } from '../src/data.js';
 import { accountByOwner } from '../src/discovery.js';
 import { applyParameters, stakeCredential, stakeScript, stakeScriptHash, stakeValidator } from '../src/stake-script.js';
 import { OWNER_PAYMENT_KEY } from './support/account.js';
+
+/* CONSTANTS ******************************************************************/
 
 /**
  * The fixture was produced once with the Aiken CLI from the committed
@@ -27,7 +47,12 @@ const OWNER_APPLIED_HASH = 'b945854c0c29fdd5dbb953792b7ef095a42a546892ad450f0ec8
 const APPLIED_HASH = '24b19db325b612942292f5cb144e5eed1335aeb5c39ec45ac588cb4e';
 const APPLIED_CODE_DIGEST = '9d3aa8f1c880ebf5c0f2fb32c4b28f7f05ff9839911bce2e272a577d1c7c502a';
 
+/* FUNCTIONS ******************************************************************/
+
+/** The SHA-256 digest of a blueprint's compiled code, hex encoded. */
 const digestOf = (compiledCode: string): string => createHash('sha256').update(bytes(compiledCode)).digest('hex');
+
+/* TESTS **********************************************************************/
 
 describe('stake script', () => {
   const blueprint = loadBlueprint();

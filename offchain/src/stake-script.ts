@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import { DataB } from '@harmoniclabs/plutus-data';
 import { Application, UPLCConst, UPLCProgram, compileUPLC, parseUPLC } from '@harmoniclabs/uplc';
 import type { Credential, PlutusScript } from '@biglup/cometa';
@@ -5,8 +23,12 @@ import { type Blueprint, type BlueprintValidator, loadBlueprint } from './bluepr
 import { Cometa } from './cometa.js';
 import { bytes } from './data.js';
 
+/* CONSTANTS ******************************************************************/
+
 /** The title every handler of the account stake validator shares. */
 const STAKE_VALIDATOR_TITLE = 'account_stake.account_stake';
+
+/* FUNCTIONS ******************************************************************/
 
 /**
  * The account stake validator entry of a blueprint, still parameterised by

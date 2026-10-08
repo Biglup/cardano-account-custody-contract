@@ -1,5 +1,25 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import type { AccountState, Asset, Grant, Scope } from './data.js';
 import { type Balance, LOVELACE_ASSET_ID, quantityOf } from './value.js';
+
+/* CONSTANTS ******************************************************************/
 
 /** The asset class of lovelace. */
 export const LOVELACE: Asset = { policyId: '', assetName: '' };
@@ -12,6 +32,8 @@ export const MAX_GRANTS = 16;
 
 /** The maximum number of recipients a grant's scope may list. */
 export const MAX_RECIPIENTS = 8;
+
+/* FUNCTIONS ******************************************************************/
 
 /** Whether an asset class stands for lovelace. */
 export const isLovelace = (asset: Asset): boolean => asset.policyId === '' && asset.assetName === '';

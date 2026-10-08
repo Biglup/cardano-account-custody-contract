@@ -1,5 +1,41 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import type { AssetAmounts, CborReader, SlotConfig, TxIn, TxOut } from '@biglup/cometa';
 import { Cometa } from './cometa.js';
+
+/* CONSTANTS ******************************************************************/
+
+/** A validity range with no bounds, as a transaction without a validity interval gets. */
+export const UNBOUNDED_VALIDITY_RANGE: ValidityRange = {
+  lowerBound: { bound: { kind: 'negativeInfinity' }, inclusive: true },
+  upperBound: { bound: { kind: 'positiveInfinity' }, inclusive: true },
+};
+
+/** The keys of the transaction body fields read back. */
+const BODY_INPUTS = 0n;
+const BODY_OUTPUTS = 1n;
+const BODY_FEE = 2n;
+const BODY_TTL = 3n;
+const BODY_MINT = 9n;
+const BODY_VALIDITY_START = 8n;
+
+/* TYPES **********************************************************************/
 
 /** One end of a validity range: unbounded or a POSIX time in milliseconds. */
 export type Bound = { kind: 'negativeInfinity' } | { kind: 'finite'; time: bigint } | { kind: 'positiveInfinity' };
@@ -16,11 +52,16 @@ export interface ValidityRange {
   upperBound: IntervalBound;
 }
 
-/** A validity range with no bounds, as a transaction without a validity interval gets. */
-export const UNBOUNDED_VALIDITY_RANGE: ValidityRange = {
-  lowerBound: { bound: { kind: 'negativeInfinity' }, inclusive: true },
-  upperBound: { bound: { kind: 'positiveInfinity' }, inclusive: true },
-};
+/** The parts of a transaction body the builders and the evidence read back. */
+export interface TransactionBodyParts {
+  inputs: TxIn[];
+  outputs: TxOut[];
+  fee: bigint;
+  validityRange: ValidityRange;
+  mint: AssetAmounts;
+}
+
+/* FUNCTIONS ******************************************************************/
 
 /** The POSIX time in milliseconds at which a slot starts. */
 export const slotToPosixTime = (slot: bigint, slotConfig: SlotConfig = Cometa.CARDANO_PREPROD_SLOT_CONFIG): bigint =>
@@ -54,23 +95,6 @@ export const validityRangeFromSlots = (
 /** The finite time a validity range ends at, or undefined when it is open at the top. */
 export const upperBoundTime = (range: ValidityRange): bigint | undefined =>
   range.upperBound.bound.kind === 'finite' ? range.upperBound.bound.time : undefined;
-
-/** The parts of a transaction body the builders and the evidence read back. */
-export interface TransactionBodyParts {
-  inputs: TxIn[];
-  outputs: TxOut[];
-  fee: bigint;
-  validityRange: ValidityRange;
-  mint: AssetAmounts;
-}
-
-/** The keys of the transaction body fields read back. */
-const BODY_INPUTS = 0n;
-const BODY_OUTPUTS = 1n;
-const BODY_FEE = 2n;
-const BODY_TTL = 3n;
-const BODY_MINT = 9n;
-const BODY_VALIDITY_START = 8n;
 
 /** Lexicographic order of hex strings, which is the byte order of what they encode. */
 const compareHex = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);

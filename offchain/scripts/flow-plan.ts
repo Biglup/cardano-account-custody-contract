@@ -1,23 +1,20 @@
 /**
- * What a flow of the preprod run is expected to end in: a confirmed
- * transaction, a refusal by the builder applying the contract's rules
- * before anything reaches the chain, or a refusal by the node running the
- * validator over a transaction built without those rules.
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
-export type FlowOutcome = 'confirmed' | 'refused by the builder' | 'refused by the node';
 
-/**
- * One flow of the preprod run: its number, a one line description and the
- * outcome it must end in. A flow refused by the builder or the node also
- * carries the pattern its refusal message must match, so that an unrelated
- * error at the same step is never recorded as the expected refusal.
- */
-export interface Flow {
-  step: number;
-  description: string;
-  outcome: FlowOutcome;
-  expectedMessage?: RegExp;
-}
+/* CONSTANTS ******************************************************************/
 
 /** The pattern the node's refusal message must match for every flow the node refuses. */
 const NODE_REFUSAL_MESSAGE = /ValidationTagMismatch|PlutusFailure/;
@@ -110,20 +107,11 @@ export const FLOW_PLAN: Flow[] = [
   { step: 20, description: 'spendWithDevice, sponsored by the funding wallet, sweeps every fund UTxO back to it, leaving only the control UTxO at the account address', outcome: 'confirmed' },
 ];
 
-/** The reasons a step can fail: refused by the contract or its builder, or broken by something else. */
-export type FailureKind = 'refusal' | 'network' | 'unexpected';
-
 /** The prefix cometa puts before the body Blockfrost returns for a submission it refused. */
 const SUBMIT_FAILURE_PREFIX = /^postTransactionToChain: failed to submit transaction to Blockfrost endpoint\.\s*Error\s*/;
 
 /** The errors the ledger reports when a script refused the transaction in phase two. */
 const SCRIPT_FAILURE = /PlutusFailure|ScriptFailure|ValidationTagMismatch/;
-
-/** Whether an error is the node refusing a submitted transaction because a script failed. */
-export const isNodeScriptRefusal = (error: unknown): boolean => {
-  const text = error instanceof Error ? error.message : String(error);
-  return SUBMIT_FAILURE_PREFIX.test(text) && SCRIPT_FAILURE.test(text);
-};
 
 /** The most characters of a node refusal the evidence quotes. */
 export const NODE_REFUSAL_LENGTH = 480;
@@ -136,6 +124,64 @@ const SCRIPT_BYTES = /Base64-encoded script bytes:\s*"[^"]*"\s*/;
 
 /** Where the ledger's dump of the script's arguments and context starts, which the evidence leaves out. */
 const CONTEXT_DUMP = /\s*The protocol version is:.*$/;
+
+/** Errors raised while talking to the network, which never count as a refusal. */
+const NETWORK_FAILURE = /fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket hang up|status 5\d\d|429|rate limit|Could not parse response/i;
+
+/**
+ * Errors that show the contract, or the builder applying its rules ahead of
+ * the chain, refusing the spend: the builder's own scope, recipient, grant
+ * and expiry checks, and the node's phase two script failures as Blockfrost
+ * reports them at submission or evaluation.
+ */
+const REFUSAL = /refuses the spend|is not a recipient of grant|has no grant in slot|starts after grant .* expires|ScriptFailure|PlutusFailure|ValidationTagMismatch|script integrity|evaluateTransaction|not well formed|does not hold enough funds/i;
+
+/* TYPES **********************************************************************/
+
+/**
+ * What a flow of the preprod run is expected to end in: a confirmed
+ * transaction, a refusal by the builder applying the contract's rules
+ * before anything reaches the chain, or a refusal by the node running the
+ * validator over a transaction built without those rules.
+ */
+export type FlowOutcome = 'confirmed' | 'refused by the builder' | 'refused by the node';
+
+/**
+ * One flow of the preprod run: its number, a one line description and the
+ * outcome it must end in. A flow refused by the builder or the node also
+ * carries the pattern its refusal message must match, so that an unrelated
+ * error at the same step is never recorded as the expected refusal.
+ */
+export interface Flow {
+  step: number;
+  description: string;
+  outcome: FlowOutcome;
+  expectedMessage?: RegExp;
+}
+
+/** The reasons a step can fail: refused by the contract or its builder, or broken by something else. */
+export type FailureKind = 'refusal' | 'network' | 'unexpected';
+
+/** The record of one flow after the run: its transactions, or the refusal observed. */
+export interface FlowRecord {
+  flow: Flow;
+  txIds: string[];
+  refusal?: string;
+}
+
+/** A transaction the run needs around the flows, such as funding the agent wallet. */
+export interface SupportingTransaction {
+  description: string;
+  txId: string;
+}
+
+/* FUNCTIONS ******************************************************************/
+
+/** Whether an error is the node refusing a submitted transaction because a script failed. */
+export const isNodeScriptRefusal = (error: unknown): boolean => {
+  const text = error instanceof Error ? error.message : String(error);
+  return SUBMIT_FAILURE_PREFIX.test(text) && SCRIPT_FAILURE.test(text);
+};
 
 /**
  * The text the ledger wrote inside a value Blockfrost returned: the
@@ -203,17 +249,6 @@ export const nodeRefusalSummary = (message: string, maxLength: number = NODE_REF
   return cut.length < flat.length ? `${cut}...` : cut;
 };
 
-/** Errors raised while talking to the network, which never count as a refusal. */
-const NETWORK_FAILURE = /fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket hang up|status 5\d\d|429|rate limit|Could not parse response/i;
-
-/**
- * Errors that show the contract, or the builder applying its rules ahead of
- * the chain, refusing the spend: the builder's own scope, recipient, grant
- * and expiry checks, and the node's phase two script failures as Blockfrost
- * reports them at submission or evaluation.
- */
-const REFUSAL = /refuses the spend|is not a recipient of grant|has no grant in slot|starts after grant .* expires|ScriptFailure|PlutusFailure|ValidationTagMismatch|script integrity|evaluateTransaction|not well formed|does not hold enough funds/i;
-
 /** Classifies why a step failed from the error's text. */
 export const classifyFailure = (error: unknown): FailureKind => {
   const text = error instanceof Error ? error.message : String(error);
@@ -229,13 +264,6 @@ export const classifyFailure = (error: unknown): FailureKind => {
 /** The link to a transaction on the preprod explorer. */
 export const explorerLink = (txId: string): string => `https://preprod.cardanoscan.io/transaction/${txId}`;
 
-/** The record of one flow after the run: its transactions, or the refusal observed. */
-export interface FlowRecord {
-  flow: Flow;
-  txIds: string[];
-  refusal?: string;
-}
-
 /** Text as a markdown table cell holds it, with pipes escaped. */
 const cell = (text: string): string => text.replace(/\|/g, '\\|');
 
@@ -245,12 +273,6 @@ export const evidenceRow = ({ flow, txIds, refusal }: FlowRecord): string => {
   const result = flow.outcome === 'confirmed' ? 'confirmed' : `${flow.outcome}: "${cell(refusal ?? '')}"`;
   return `| ${flow.step} | ${flow.description} | ${links || 'none'} | ${result} |`;
 };
-
-/** A transaction the run needs around the flows, such as funding the agent wallet. */
-export interface SupportingTransaction {
-  description: string;
-  txId: string;
-}
 
 /** The markdown row of a supporting transaction. */
 export const supportingRow = ({ description, txId }: SupportingTransaction): string =>

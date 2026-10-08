@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import type {
   Address,
   NetworkId,
@@ -21,6 +39,8 @@ import { type ValidityRange, transactionBodyParts, upperBoundTime } from '../../
 import { decodeAccountRedeemer, decodeAccountState, encodeAccountState, withoutCborCache } from '../../src/data.js';
 import { findGrant, scopeViolation, stateAfterSpend } from '../../src/state.js';
 import { type Balance, LOVELACE_ASSET_ID, addBalances, quantityOf, subtractBalances, toBalance } from '../../src/value.js';
+
+/* CONSTANTS ******************************************************************/
 
 /** The Plutus V3 cost model of the preprod Conway genesis. */
 const PLUTUS_V3_COSTS = [
@@ -100,6 +120,8 @@ export const PROTOCOL_PARAMETERS: ProtocolParameters = {
 
 /** The execution units the fake provider reports for every redeemer. */
 export const FAKE_EXECUTION_UNITS = { memory: 1_500_000, steps: 700_000_000 };
+
+/* FUNCTIONS ******************************************************************/
 
 /** The bech32 form of an address, used to key the canned UTxOs. */
 const addressKey = (address: Address | string): string => (typeof address === 'string' ? address : address.toString());

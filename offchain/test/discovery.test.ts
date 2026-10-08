@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import { describe, expect, it } from 'vitest';
 import { loadBlueprint } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
@@ -17,6 +35,13 @@ import {
   scenario,
   script,
 } from './support/account.js';
+
+/* FUNCTIONS ******************************************************************/
+
+/** The key hash of the fixture's second device, used as a stand-in agent device key. */
+const agentKey = (): string => 'cc'.repeat(28);
+
+/* TESTS **********************************************************************/
 
 describe('accountByOwner', () => {
   it('derives the whole account from the owner key hash', () => {
@@ -84,5 +109,3 @@ describe('builders given a record', () => {
     ).rejects.toThrow(/does not match the owner/);
   });
 });
-
-const agentKey = (): string => 'cc'.repeat(28);

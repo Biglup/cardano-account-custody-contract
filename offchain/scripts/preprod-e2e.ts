@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -53,6 +71,8 @@ import {
   nodeRefusalSummary,
 } from './flow-plan.js';
 
+/* CONSTANTS ******************************************************************/
+
 /** The repository root, where the environment file and the evidence document live. */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ENV_PATH = resolve(REPO_ROOT, '.env');
@@ -94,6 +114,35 @@ const OWNER_ACCOUNT_CANDIDATES = 50;
 
 /** The password cometa encrypts the derived keys with, fresh for every process. */
 const password = randomBytes(32);
+
+/* TYPES **********************************************************************/
+
+/** The owner wallet of a run and the account identifiers its payment key fixes. */
+interface Owner {
+  owner: Wallet;
+  ownerAddress: string;
+  ownerKeyHash: string;
+  stakeCredential: string;
+  reward: string;
+}
+
+/** The keys, addresses and identifiers every flow works with. */
+interface Actors {
+  provider: Provider;
+  funding: Wallet;
+  owner: Wallet;
+  agent: Wallet;
+  fundingAddress: string;
+  ownerAddress: string;
+  agentAddress: string;
+  ownerKeyHash: string;
+  agentKeyHash: string;
+  /** What the agent persists to find the account: it never holds the owner key or wallet. */
+  record: AccountRecord;
+  poolId: string;
+}
+
+/* FUNCTIONS ******************************************************************/
 
 /** Hands cometa a copy of the password, since it wipes what it is given after use. */
 const getPassword = (): Promise<Uint8Array> => Promise.resolve(new Uint8Array(password));
@@ -194,15 +243,6 @@ const firstActivePool = async (projectId: string): Promise<string> => {
   throw new Error(`None of the first ${POOL_CANDIDATES} preprod pools is active`);
 };
 
-/** The owner wallet of a run and the account identifiers its payment key fixes. */
-interface Owner {
-  owner: Wallet;
-  ownerAddress: string;
-  ownerKeyHash: string;
-  stakeCredential: string;
-  reward: string;
-}
-
 /**
  * The owner wallet of this run: the wallet of the first candidate account
  * index of the mnemonic whose stake credential is not registered. An
@@ -252,22 +292,6 @@ const settle = async (provider: Provider, txId: string, tx: string): Promise<voi
     await waitForOutput(provider, address, txId);
   }
 };
-
-/** The keys, addresses and identifiers every flow works with. */
-interface Actors {
-  provider: Provider;
-  funding: Wallet;
-  owner: Wallet;
-  agent: Wallet;
-  fundingAddress: string;
-  ownerAddress: string;
-  agentAddress: string;
-  ownerKeyHash: string;
-  agentKeyHash: string;
-  /** What the agent persists to find the account: it never holds the owner key or wallet. */
-  record: AccountRecord;
-  poolId: string;
-}
 
 /** Runs the flows in order, recording transactions and refusals for the evidence document. */
 class Run {
@@ -691,6 +715,8 @@ const main = async (): Promise<void> => {
   );
   console.log(`Evidence written to ${EVIDENCE_PATH}`);
 };
+
+/* MAIN ***********************************************************************/
 
 main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));

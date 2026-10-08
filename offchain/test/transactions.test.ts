@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import { describe, expect, it } from 'vitest';
 import { Cometa } from '../src/cometa.js';
 import { decodeAccountState, encodeAccountState, withoutCborCache } from '../src/data.js';
@@ -52,12 +70,16 @@ import {
 } from './support/account.js';
 import { ProviderEvaluatedWallet } from './support/fake.js';
 
+/* CONSTANTS ******************************************************************/
+
 const DEVICE_REDEEMER = 'd87980';
 const FUND_REDEEMER = 'd87b80';
 const OPERATE_REDEEMER = 'd87980';
 const KEY_DEPOSIT = '2000000';
 const POOL_ID = 'pool1pu5jlj4q9w9jlxeu370a3c9myx47md5j5m2str0naunn2q3lkdy';
 const CONTROL_INPUT = { txId: '11'.repeat(32), index: 0 };
+
+/* TYPES **********************************************************************/
 
 interface InspectedTx {
   body: {
@@ -80,16 +102,22 @@ interface InspectedTx {
   };
 }
 
+/* FUNCTIONS ******************************************************************/
+
+/** The decoded body and witness set of a built transaction. */
 const inspect = (tx: string): InspectedTx => Cometa.inspectTx(tx) as InspectedTx;
 
+/** The outputs of a transaction at a given address. */
 const outputsAt = (tx: string, at: string) => transactionBodyParts(tx).outputs.filter((output) => output.address === at);
 
+/** The one output of a transaction that carries the account's state NFT at the account address. */
 const controlOutputOf = (tx: string) => {
   const outputs = outputsAt(tx, address).filter((output) => output.value.assets?.[nftAssetId] === 1n);
   expect(outputs).toHaveLength(1);
   return outputs[0]!;
 };
 
+/** The account state a transaction's control output carries. */
 const stateOf = (tx: string) => decodeAccountState(withoutCborCache(controlOutputOf(tx).datum!));
 
 /** The flat program bytes a script carries, which the witness set holds without the blueprint's CBOR wrapper. */
@@ -102,6 +130,7 @@ const expectScriptsAttached = (tx: string, { account = true, stake = false }: { 
   expect(tx.includes(programOf(ownerStakeScript.bytes))).toBe(stake);
 };
 
+/** Asserts that the account script alone is attached to a transaction. */
 const expectScriptAttached = (tx: string) => expectScriptsAttached(tx);
 
 /** The certificates of a transaction, every one of which the stake script witnesses with the operate redeemer. */
@@ -120,9 +149,11 @@ const lovelaceAt = (tx: string, at: string) => outputsAt(tx, at).reduce((total, 
 /** The lovelace of the plain change outputs a transaction returns to the account. */
 const accountChangeOf = (tx: string) => outputsAt(tx, address).filter((output) => output.datum === undefined).map((output) => output.value);
 
+/** Whether a transaction spends a given input. */
 const spendsInput = (tx: string, input: { txId: string; index: number }) =>
   transactionBodyParts(tx).inputs.some((candidate) => candidate.txId === input.txId && candidate.index === input.index);
 
+/** Asserts that a transaction's control output holds at least its minimum UTxO value, and returns its lovelace. */
 const expectControlAboveMinimum = (tx: string) => {
   const control = controlOutputOf(tx);
   const serialised = serialiseOutput(control);
@@ -131,12 +162,15 @@ const expectControlAboveMinimum = (tx: string) => {
   return control.value.coins;
 };
 
+/** Asserts that the control input and a fund input carry the fixed control and fund execution budgets. */
 const expectFixedBudgets = (tx: string) => {
   const inputs = transactionBodyParts(tx).inputs;
   const units = inspect(tx).witness_set.redeemers?.map((entry) => [Number(entry.index), entry.ex_units.mem]);
   expect(units).toContainEqual([inputs.findIndex((input) => input.txId === '11'.repeat(32)), DEFAULT_CONTROL_EXECUTION_UNITS.memory.toString()]);
   expect(units).toContainEqual([inputs.findIndex((input) => input.txId === '22'.repeat(32)), DEFAULT_FUND_EXECUTION_UNITS.memory.toString()]);
 };
+
+/* TESTS **********************************************************************/
 
 describe('createAccount', () => {
   it('registers the stake credential with the deposit and mints the state NFT into a control output signed by the owner device', async () => {
@@ -376,6 +410,7 @@ describe('spendWithDevice', () => {
 });
 
 describe('state rewrites', () => {
+  /** A fresh scenario funded account with a sponsor available, ready for a state rewriting builder. */
   const params = () => {
     const { provider, owner, sponsor } = scenario(grantedState, [fundUtxo(0, { coins: 10_000_000n })]);
     return { wallet: owner, provider, owner: OWNER_PAYMENT_KEY, script, sponsor };
@@ -437,6 +472,7 @@ describe('state rewrites', () => {
 });
 
 describe('stake operations', () => {
+  /** A fresh scenario funded account with a sponsor available, ready for a stake operation builder. */
   const params = () => {
     const { provider, owner, sponsor } = scenario(initialState, [fundUtxo(0, { coins: 10_000_000n })]);
     return { wallet: owner, provider, owner: OWNER_PAYMENT_KEY, script, sponsor };
@@ -515,6 +551,7 @@ describe('stake operations', () => {
 });
 
 describe('collateral wallet', () => {
+  /** Two fresh fund UTxOs for a scenario under test. */
   const funds = () => [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })];
   const grant = { slot: 3n, grantee: AGENT_PAYMENT_KEY, scope: lovelaceScope([recipientAddress]) };
   const payout = { address: recipientAddress, value: { coins: 3_000_000n } };
@@ -604,6 +641,7 @@ describe('collateral wallet', () => {
 });
 
 describe('spendWithGrant', () => {
+  /** Fresh fund UTxOs, one of them holding tokens, for a scenario under test. */
   const funds = () => [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n, assets: { [TOKEN_ASSET_ID]: 20n } })];
 
   it('lets a grantee spend lovelace, paying the fee from the account', async () => {
@@ -756,6 +794,7 @@ describe('spendWithGrant', () => {
 });
 
 describe('spendWithGrant unchecked', () => {
+  /** Two fresh fund UTxOs for a scenario under test. */
   const funds = () => [fundUtxo(0, { coins: 10_000_000n }), fundUtxo(1, { coins: 4_000_000n })];
   const ed25519 = AGENT_PAYMENT_KEY;
   const nearlyUsedState = {

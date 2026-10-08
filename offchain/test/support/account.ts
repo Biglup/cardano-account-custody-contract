@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import type { PlutusData, UTxO, Value } from '@biglup/cometa';
 import { accountAddress, rewardAddress, stateNftAssetId } from '../../src/address.js';
 import { accountScript, accountScriptHash } from '../../src/blueprint.js';
@@ -6,6 +24,8 @@ import { transactionBodyParts } from '../../src/body.js';
 import { type AccountState, type Scope, encodeAccountState } from '../../src/data.js';
 import { stakeScript, stakeScriptHash } from '../../src/stake-script.js';
 import { FakeProvider, FakeWallet, utxo } from './fake.js';
+
+/* CONSTANTS ******************************************************************/
 
 /** The keys and asset identifiers of the account scenario under test. */
 export const OWNER_PAYMENT_KEY = 'aa'.repeat(28);
@@ -32,13 +52,37 @@ export const nftAssetId = stateNftAssetId(scriptHash, ownerStakeScriptHash);
 export const address = accountAddress(scriptHash, ownerStakeScriptHash).toString();
 export const ownerRewardAddress = rewardAddress(ownerStakeScriptHash).toBech32();
 
+/** The state of a freshly created account. */
+export const initialState: AccountState = { devices: [OWNER_PAYMENT_KEY], grants: [], grantGeneration: 0n };
+
+/** The transaction ids of the UTxOs each wallet holds in a scenario. */
+export const OWNER_UTXO_TX = '33'.repeat(32);
+export const AGENT_UTXO_TX = '44'.repeat(32);
+export const SPONSOR_UTXO_TX = '55'.repeat(32);
+
+/* TYPES **********************************************************************/
+
+/** A provider holding the owner, agent and sponsor wallets' funds and the account's UTxOs. */
+export interface Scenario {
+  provider: FakeProvider;
+  owner: FakeWallet;
+  agent: FakeWallet;
+  sponsor: FakeWallet;
+}
+
+/* FUNCTIONS ******************************************************************/
+
 /** A key address outside the account, usable as a destination. */
 export const enterpriseAddress = (keyHash: string): string =>
   Cometa.EnterpriseAddress.fromCredentials(Cometa.NetworkId.Testnet, { hash: keyHash, type: Cometa.CredentialType.KeyHash })
     .toAddress()
     .toString();
 
-/** The destination the fixture grants allow. */
+/**
+ * The destination the fixture grants allow. Declared here rather than in
+ * CONSTANTS because its value calls `enterpriseAddress` above, which must
+ * already be defined when this initialiser runs.
+ */
 export const recipientAddress = enterpriseAddress(STRANGER_KEY);
 
 /** A lovelace scope allowing 10 tADA per call and 15 tADA in total. */
@@ -63,10 +107,12 @@ export const tokenScope = (recipients: string[] = []): Scope => ({
   recipients,
 });
 
-/** The state of a freshly created account. */
-export const initialState: AccountState = { devices: [OWNER_PAYMENT_KEY], grants: [], grantGeneration: 0n };
-
-/** A state holding a lovelace grant, a token grant and a restricted lovelace grant, all held by the agent key. */
+/**
+ * A state holding a lovelace grant, a token grant and a restricted lovelace
+ * grant, all held by the agent key. Declared here rather than in CONSTANTS
+ * because its value calls `lovelaceScope` and `tokenScope` above, which
+ * must already be defined when this initialiser runs.
+ */
 export const grantedState: AccountState = {
   devices: [OWNER_PAYMENT_KEY],
   grants: [
@@ -83,19 +129,6 @@ export const controlUtxo = (state: AccountState, index = 0): UTxO =>
 
 /** A deposit UTxO at the account address. */
 export const fundUtxo = (index: number, value: Value): UTxO => utxo('22'.repeat(32), index, address, value);
-
-/** A provider holding the owner, agent and sponsor wallets' funds and the account's UTxOs. */
-export interface Scenario {
-  provider: FakeProvider;
-  owner: FakeWallet;
-  agent: FakeWallet;
-  sponsor: FakeWallet;
-}
-
-/** The transaction ids of the UTxOs each wallet holds in a scenario. */
-export const OWNER_UTXO_TX = '33'.repeat(32);
-export const AGENT_UTXO_TX = '44'.repeat(32);
-export const SPONSOR_UTXO_TX = '55'.repeat(32);
 
 /** A funded owner, agent and sponsor wallet plus the account's UTxOs, served by one fake provider. */
 export const scenario = (state: AccountState | undefined, funds: UTxO[]): Scenario => {

@@ -1,3 +1,21 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import type {
   CoinSelector,
   Datum,
@@ -56,6 +74,52 @@ import {
   toBalance,
   toValue,
 } from './value.js';
+
+/* CONSTANTS ******************************************************************/
+
+/** The lovelace a freshly created control UTxO carries unless its state needs more. */
+export const DEFAULT_CONTROL_LOVELACE = 2_000_000n;
+
+/**
+ * The default execution budget of the control UTxO's spend on the agent
+ * path. It covers the heaviest grant spend the contract allows, the
+ * lovelace scope over the largest well formed state and nine inputs,
+ * which the security review measures at about 5.8 million memory units
+ * net of its fixture and 2.2 billion steps in all, with a margin for the
+ * script context decoding that measurement leaves out and for a few more
+ * inputs.
+ */
+export const DEFAULT_CONTROL_EXECUTION_UNITS: ExUnits = { memory: 7_000_000, steps: 3_500_000_000 };
+
+/**
+ * The default execution budget of a fund UTxO's spend, which measures at
+ * about 211 thousand memory units and 63 million steps.
+ */
+export const DEFAULT_FUND_EXECUTION_UNITS: ExUnits = { memory: 500_000, steps: 200_000_000 };
+
+/** The most times a grant spend is rebuilt while its fee and state settle. */
+const MAX_BALANCING_ROUNDS = 4;
+
+/** The redeemers of the owner path and the fund path, which carry no data. */
+const deviceRedeemer = encodeAccountRedeemer({ kind: 'device' });
+const fundRedeemer = encodeAccountRedeemer({ kind: 'fund' });
+
+/** The redeemer of every stake script run, which carries no data. */
+const operateRedeemer = encodeStakeRedeemer();
+
+/**
+ * A coin selector that spends nothing beyond the inputs the builder was
+ * given explicitly, so that an agent spend is funded by the account alone
+ * and fails instead of reaching into the wallet when the account cannot
+ * cover it. The wallet's UTxOs stay available to the builder for the
+ * collateral only.
+ */
+export const accountOnlyCoinSelector: CoinSelector = {
+  getName: () => 'Account only',
+  select: ({ preSelectedUtxo, availableUtxo }) => Promise.resolve({ selection: preSelectedUtxo ?? [], remaining: availableUtxo }),
+};
+
+/* TYPES **********************************************************************/
 
 /** An output a spend pays away from the account. */
 export interface AccountOutput {
@@ -160,29 +224,6 @@ export type SpendWithGrantParams = AccountUtxoParams & {
   unchecked?: boolean;
 };
 
-/** The lovelace a freshly created control UTxO carries unless its state needs more. */
-export const DEFAULT_CONTROL_LOVELACE = 2_000_000n;
-
-/**
- * The default execution budget of the control UTxO's spend on the agent
- * path. It covers the heaviest grant spend the contract allows, the
- * lovelace scope over the largest well formed state and nine inputs,
- * which the security review measures at about 5.8 million memory units
- * net of its fixture and 2.2 billion steps in all, with a margin for the
- * script context decoding that measurement leaves out and for a few more
- * inputs.
- */
-export const DEFAULT_CONTROL_EXECUTION_UNITS: ExUnits = { memory: 7_000_000, steps: 3_500_000_000 };
-
-/**
- * The default execution budget of a fund UTxO's spend, which measures at
- * about 211 thousand memory units and 63 million steps.
- */
-export const DEFAULT_FUND_EXECUTION_UNITS: ExUnits = { memory: 500_000, steps: 200_000_000 };
-
-/** The most times a grant spend is rebuilt while its fee and state settle. */
-const MAX_BALANCING_ROUNDS = 4;
-
 /** The identifiers derived from the account script and the owner of an account. */
 interface Account {
   script: PlutusScript;
@@ -208,6 +249,11 @@ export interface FundSelection {
   selected: UTxO[];
   remainder: Balance;
 }
+
+/** A step adding a withdrawal or a certificate of the account's stake credential to a builder. */
+type StakeOperation = (builder: TransactionBuilder, account: Account) => TransactionBuilder;
+
+/* FUNCTIONS ******************************************************************/
 
 /**
  * Derives the account identifiers from the builder parameters, applying
@@ -261,13 +307,6 @@ export const findAccountUtxos = async (provider: Provider, params: AccountParams
     state: decodeAccountState(control.output.datum, account.networkId),
   };
 };
-
-/** The redeemers of the owner path and the fund path, which carry no data. */
-const deviceRedeemer = encodeAccountRedeemer({ kind: 'device' });
-const fundRedeemer = encodeAccountRedeemer({ kind: 'fund' });
-
-/** The redeemer of every stake script run, which carries no data. */
-const operateRedeemer = encodeStakeRedeemer();
 
 /** An account state as the inline datum of a control output. */
 const stateDatum = (state: AccountState): Datum => ({
@@ -454,9 +493,6 @@ export const deposit = async (params: AccountParams & { value: Value }): Promise
   return builder.sendValue({ address: account.address, value: params.value }).build();
 };
 
-/** A step adding a withdrawal or a certificate of the account's stake credential to a builder. */
-type StakeOperation = (builder: TransactionBuilder, account: Account) => TransactionBuilder;
-
 /**
  * The fee no transaction exceeds under the protocol parameters: the size
  * fee of the largest transaction allowed plus the price of the largest
@@ -583,18 +619,6 @@ export const delegateStake = (params: AccountUtxoParams & { poolId: string }): P
   buildDeviceSpend(params, [], sameState, (builder, account) =>
     builder.delegateStake({ rewardAddress: account.rewardAddress, poolId: params.poolId, redeemer: operateRedeemer }),
   );
-
-/**
- * A coin selector that spends nothing beyond the inputs the builder was
- * given explicitly, so that an agent spend is funded by the account alone
- * and fails instead of reaching into the wallet when the account cannot
- * cover it. The wallet's UTxOs stay available to the builder for the
- * collateral only.
- */
-export const accountOnlyCoinSelector: CoinSelector = {
-  getName: () => 'Account only',
-  select: ({ preSelectedUtxo, availableUtxo }) => Promise.resolve({ selection: preSelectedUtxo ?? [], remaining: availableUtxo }),
-};
 
 /**
  * An evaluator that assigns a fixed budget per redeemer instead of running

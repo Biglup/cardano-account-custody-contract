@@ -1,5 +1,25 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import type { AssetAmounts, TxOut } from '@biglup/cometa';
 import { Cometa } from './cometa.js';
+
+/* CONSTANTS ******************************************************************/
 
 /** The lovelace per byte the ledger charges for a UTxO on the networks the contract targets. */
 export const DEFAULT_ADA_PER_UTXO_BYTE = 4310n;
@@ -18,6 +38,8 @@ const INLINE_DATUM_OPTION = 1;
 
 /** The tag of a datum hash within an output's datum option. */
 const DATUM_HASH_OPTION = 0;
+
+/* FUNCTIONS ******************************************************************/
 
 /** The asset ids of a value grouped by policy id, with the quantities per asset name. */
 const groupByPolicy = (assets: AssetAmounts): Map<string, Map<string, bigint>> => {

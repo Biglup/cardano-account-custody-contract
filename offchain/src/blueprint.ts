@@ -1,8 +1,36 @@
+/**
+ * Copyright 2026 IOG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* IMPORTS ********************************************************************/
+
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { PlutusScript } from '@biglup/cometa';
 import { Cometa } from './cometa.js';
+
+/* CONSTANTS ******************************************************************/
+
+/** The title every handler of the account validator shares. */
+const ACCOUNT_VALIDATOR_TITLE = 'account.account';
+
+/** The blueprint `aiken build` writes at the repository root. */
+export const DEFAULT_BLUEPRINT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plutus.json');
+
+/* TYPES **********************************************************************/
 
 /** One validator entry of an Aiken blueprint. */
 export interface BlueprintValidator {
@@ -17,11 +45,7 @@ export interface Blueprint {
   validators: BlueprintValidator[];
 }
 
-/** The title every handler of the account validator shares. */
-const ACCOUNT_VALIDATOR_TITLE = 'account.account';
-
-/** The blueprint `aiken build` writes at the repository root. */
-export const DEFAULT_BLUEPRINT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plutus.json');
+/* FUNCTIONS ******************************************************************/
 
 /**
  * Reads a blueprint from disk. The blueprint is read on every call so that a
