@@ -1,3 +1,21 @@
+//
+// Copyright 2026 IOG.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//
+// USINGS **********************************************************************
+
 use aiken/collection/list
 use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use aiken/interval.{Finite}
@@ -8,6 +26,8 @@ use cardano/transaction.{InlineDatum, Input, NoDatum, Output, ValidityRange}
 use cardano_account_custody_contract/account
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
+
+// FUNCTIONS *******************************************************************
 
 /// Whether the grantee is among the transaction's required signers.
 pub fn is_authorised_by_grantee(
@@ -27,6 +47,58 @@ pub fn ends_before_expiry(
     Finite(upper_bound) -> upper_bound <= expires_at
     _ -> False
   }
+}
+
+/// Whether the validity range starts at a finite time after `expires_at`,
+/// so that the transaction can only apply once the grant has expired; an
+/// open lower bound never passes.
+pub fn starts_after_expiry(
+  validity_range: ValidityRange,
+  expires_at: Int,
+) -> Bool {
+  when validity_range.lower_bound.bound_type is {
+    Finite(lower_bound) -> lower_bound > expires_at
+    _ -> False
+  }
+}
+
+/// Whether a grant can no longer be spent against the account's current
+/// state: issued under an older generation, revoked by slot, or expired
+/// as the validity range proves.
+pub fn is_dead(
+  grant: Grant,
+  state: AccountState,
+  validity_range: ValidityRange,
+) -> Bool {
+  or {
+    grant.generation < state.grant_generation,
+    list.has(state.revoked, grant.slot),
+    starts_after_expiry(validity_range, grant.scope.expires_at),
+  }
+}
+
+/// Whether a grant is current against the account's state: issued under
+/// its generation and not revoked by slot. Expiry is the validity range's
+/// business.
+pub fn is_current(grant: Grant, state: AccountState) -> Bool {
+  grant.generation == state.grant_generation && !list.has(
+    state.revoked,
+    grant.slot,
+  )
+}
+
+/// The account's control UTxO among the reference inputs; none or several
+/// yield `None`.
+pub fn referenced_control(
+  reference_inputs: List<Input>,
+  script_hash: ScriptHash,
+  stake_script_hash: ScriptHash,
+) -> Option<Output> {
+  account.find_control_output(
+    list.map(reference_inputs, fn(input) { input.output }),
+    script_hash,
+    stake_script_hash,
+  )
 }
 
 /// The value spent from an address minus the value paid back to it, per
@@ -114,9 +186,10 @@ pub fn pays_only_recipients(
   )
 }
 
-/// Whether every output paid back to the account, other than the control
-/// output, carries no datum. See README, Agent spend checks.
-pub fn deposits_carry_no_datum(
+/// Whether every output paid back to the account that holds no account
+/// token is a plain deposit: no datum and no reference script. See README,
+/// Agent spend checks.
+pub fn deposits_are_plain(
   outputs: List<Output>,
   account_address: Address,
   script_hash: ScriptHash,
@@ -127,47 +200,27 @@ pub fn deposits_carry_no_datum(
     fn(output) {
       or {
         output.address != account_address,
-        account.holds_state_nft(output.value, script_hash, stake_script_hash),
-        output.datum == NoDatum,
+        account.holds_account_token(output, script_hash, stake_script_hash),
+        output.datum == NoDatum && output.reference_script == None,
       }
     },
   )
 }
 
-/// Whether exactly one control UTxO of the account is spent.
-pub fn spends_one_control_utxo(
+/// Whether exactly one input holds a token of the account, so that the
+/// accounting runs over a single grant and never over the control UTxO.
+pub fn spends_one_account_token(
   inputs: List<Input>,
   script_hash: ScriptHash,
   stake_script_hash: ScriptHash,
 ) -> Bool {
-  list.count(
-    inputs,
-    fn(input) {
-      account.is_control_output(input.output, script_hash, stake_script_hash)
-    },
-  ) == 1
+  account.count_account_token_inputs(inputs, script_hash, stake_script_hash) == 1
 }
 
-/// The state after a grant spend: unchanged except that the used grant's
-/// remaining caps are reduced by the net outflow, never increased.
-pub fn state_after_spend(
-  current: AccountState,
-  slot: Int,
-  leaving: Assets,
-) -> AccountState {
-  AccountState {
-    ..current,
-    grants: list.map(
-      current.grants,
-      fn(grant) {
-        if grant.slot == slot {
-          Grant { ..grant, scope: scope_after_spend(grant.scope, leaving) }
-        } else {
-          grant
-        }
-      },
-    ),
-  }
+/// The grant after a spend: unchanged except that its remaining caps are
+/// reduced by the net outflow, never increased.
+pub fn grant_after_spend(grant: Grant, leaving: Assets) -> Grant {
+  Grant { ..grant, scope: scope_after_spend(grant.scope, leaving) }
 }
 
 /// The scope with each remaining cap reduced by max(0, net outflow) of its
@@ -185,8 +238,8 @@ fn scope_after_spend(scope: Scope, leaving: Assets) -> Scope {
   }
 }
 
-/// Whether the output's inline datum equals the expected state as data.
-pub fn carries_state(output: Output, expected: AccountState) -> Bool {
+/// Whether the output's inline datum equals the expected grant as data.
+pub fn carries_grant(output: Output, expected: Grant) -> Bool {
   let data: Data = expected
   output.datum == InlineDatum(data)
 }

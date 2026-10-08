@@ -1,3 +1,21 @@
+//
+// Copyright 2026 IOG.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//
+// USINGS **********************************************************************
+
 use aiken/collection/list
 use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use cardano/address.{Credential, Script}
@@ -9,11 +27,13 @@ use cardano/transaction.{Transaction}
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/types.{StakeRedeemer}
 
+// VALIDATORS ******************************************************************
+
 /// The account's stake validator, applied to the account's initial device
 /// key as `owner` and the account validator's hash as `account_hash`. Its
-/// script hash is the account's stake credential and the name of its state
-/// NFT, so every user has their own stake script, address and reward
-/// account. See README, Stake script.
+/// script hash is the account's stake credential, the name of its state
+/// NFT and the prefix of its grant token names, so every user has their
+/// own stake script, address and reward account. See README, Stake script.
 ///
 /// Publish: registering the credential, alone or with a delegation, needs
 /// the owner's signature and is the act that creates the account; a
@@ -46,6 +66,8 @@ validator account_stake(owner: VerificationKeyHash, account_hash: ScriptHash) {
     fail
   }
 }
+
+// FUNCTIONS *******************************************************************
 
 /// Whether a device of the account named by `stake_script_hash` signs,
 /// read from the control UTxO the transaction spends or references.

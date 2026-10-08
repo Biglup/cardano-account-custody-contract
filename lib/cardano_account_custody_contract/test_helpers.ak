@@ -2,6 +2,24 @@
 //// Every builder works against one fictitious account script and one
 //// account owner, so tests only spell out what differs between cases.
 
+//
+// Copyright 2026 IOG.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//
+// USINGS **********************************************************************
+
 use aiken/collection/list
 use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use aiken/interval.{Interval}
@@ -13,7 +31,9 @@ use cardano/transaction.{
   Transaction,
 }
 use cardano_account_custody_contract/account
-use cardano_account_custody_contract/types.{AccountState, Operate}
+use cardano_account_custody_contract/types.{AccountState, Grant, Operate}
+
+// CONSTANTS *******************************************************************
 
 /// The hash standing in for the account validator script.
 pub const script_hash: ScriptHash =
@@ -39,6 +59,8 @@ pub const other_device_key: VerificationKeyHash =
 /// A verification key hash that is neither a device nor the owner.
 pub const stranger_key: VerificationKeyHash =
   #"00000000000000000000000000000000000000000000000000000006"
+
+// FUNCTIONS *******************************************************************
 
 /// The address of the account identified by `stake_script_hash` at the
 /// test script.
@@ -88,9 +110,38 @@ pub fn control_value(stake_script_hash: ScriptHash, lovelace: Int) -> Assets {
   assets.merge(assets.from_lovelace(lovelace), state_nft(stake_script_hash))
 }
 
+/// One grant token of the account identified by `stake_script_hash` for
+/// `slot`, under the test script.
+pub fn grant_token(stake_script_hash: ScriptHash, slot: Int) -> Assets {
+  assets.from_asset(
+    script_hash,
+    account.grant_token_name(stake_script_hash, slot),
+    1,
+  )
+}
+
+/// A value holding some lovelace and the grant token of the account
+/// identified by `stake_script_hash` for `slot`.
+pub fn grant_value(
+  stake_script_hash: ScriptHash,
+  slot: Int,
+  lovelace: Int,
+) -> Assets {
+  assets.merge(
+    assets.from_lovelace(lovelace),
+    grant_token(stake_script_hash, slot),
+  )
+}
+
 /// An inline datum carrying an account state.
 pub fn state_datum(state: AccountState) -> Datum {
   let data: Data = state
+  InlineDatum(data)
+}
+
+/// An inline datum carrying a grant.
+pub fn grant_datum(grant: Grant) -> Datum {
+  let data: Data = grant
   InlineDatum(data)
 }
 
@@ -101,6 +152,16 @@ pub fn control_output(state: AccountState, lovelace: Int) -> Output {
     account_address(),
     control_value(stake_script_hash, lovelace),
     state_datum(state),
+  )
+}
+
+/// A grant UTxO of the account under test: lovelace, the grant token of
+/// the grant's slot and the grant inline.
+pub fn grant_output(grant: Grant, lovelace: Int) -> Output {
+  output(
+    account_address(),
+    grant_value(stake_script_hash, grant.slot, lovelace),
+    grant_datum(grant),
   )
 }
 
@@ -126,6 +187,14 @@ pub fn transaction(
     extra_signatories,
     validity_range,
   }
+}
+
+/// The transaction with the given reference inputs.
+pub fn referencing(
+  self: Transaction,
+  reference_inputs: List<Input>,
+) -> Transaction {
+  Transaction { ..self, reference_inputs }
 }
 
 /// A certificate registering the stake credential of the account
