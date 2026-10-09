@@ -12,7 +12,7 @@ and import what they use from `./src/index.js`.
 - A device is the hash of an Ed25519 verification key: a payment key, a
   passkey derived key or a hardware wallet key. The account does not know
   which.
-- An account lists one to eight distinct devices.
+- Under `logic_v1`, an account lists one to eight distinct devices.
 - The [owner](../glossary.md#owner) is the first device. After creation it
   is one device among the others, and any device can remove it.
 - The stake script reads the device list too. Reward withdrawals and
@@ -72,8 +72,14 @@ The record is three strings:
 
 The library has no channel for handing the record over. The integrator
 moves it from the existing device to the new one, for example during
-pairing. The new device must persist it. Without it the device cannot
+pairing. The new device must persist it. Without it the library cannot
 find the account.
+
+An integrator can still find it from the chain alone. List the UTxOs
+that hold a state NFT under the proxy policy, read each
+[control datum](../glossary.md#control-datum) and look for the
+device's key hash in its devices. The datum is inline and public. The
+library has no helper for this.
 
 The new device verifies the record before it trusts it:
 

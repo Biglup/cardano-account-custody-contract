@@ -65,6 +65,14 @@ or the value at fault.
 | `body` | Slot and POSIX time conversion, `transactionBodyParts` |
 | `transactions` | The builders, `findAccountUtxos`, `selectFundUtxos`, `fundBatches`, `survivingGrantRequests`, `buildChecked` |
 
+`applyParameters` applies parameters to a blueprint validator in
+TypeScript. Its result is byte for byte what `aiken blueprint apply`
+produces. `stakeScript` and `logicScript` build on it.
+
+`accountExists` returns the control UTxO, the state it carries and the
+logic hash its control datum names. It returns null when the account
+has no control UTxO.
+
 `src/config.ts` holds the run configuration of the repository's scripts.
 `src/index.ts` does not export it.
 
@@ -108,6 +116,11 @@ and [upgrade](../docs/guides/upgrade.md).
 | `validUntilSlot` | The validity end. Optional on owner transactions, required on a grant spend. |
 | `minimumChangeLovelace` | The least lovelace of a change output to the account |
 | `unchecked` | Skips the builder's checks and the evaluation, and carries fixed execution budgets, so that the node refuses what the validators refuse. Never for transactions meant to confirm. |
+
+The fixed budgets go per redeemer. Every withdrawal redeemer, the logic withdrawal among them,
+gets the logic budget. Every other redeemer gets the proxy budget. The
+budgets are `UNCHECKED_EXECUTION_UNITS`, applied by
+`fixedBudgetEvaluator`.
 
 Without a sponsor, an owner transaction is paid by the account. The fee
 comes from the largest reserve that can cover the most a transaction can

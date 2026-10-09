@@ -108,6 +108,13 @@ development tool, not part of the library. Its flows are listed in
 owner, stake and agent flows, the largest state, a batched agent sweep and
 an upgrade to a second logic.
 
+Flows 43 to 54 are the upgrade. They park the second logic of the
+[upgrade fixture](#the-upgrade-fixture) and move an account to it. A
+grant issued before the upgrade dies and is swept. A new grant is
+issued and spent. A move back by a key that is
+not a device is refused. Before the upgrade the runner checks that the
+account sits at generation 2, and after it at generation 3.
+
 ```sh
 cd offchain
 npm run e2e
@@ -224,8 +231,9 @@ The configuration is committed in `offchain/devnet`:
 | `devnet.env` | The keys and network name of a devnet run. They are not secret. |
 | `blockfrost-compat.mjs` | Corrects the answers where the devnet store differs from the hosted API |
 
-Continuous integration does not run the devnet. It needs a multi
-gigabyte container image and a container runtime.
+Continuous integration does not run the devnet. It needs a container
+image of about four gigabytes, a container runtime and about five
+minutes of chain time.
 
 ### How the devnet differs from preprod
 
@@ -254,15 +262,25 @@ copied.
   `divideInteger`, `modInteger`, `quotientInteger` and
   `remainderInteger` (indexes 54, 119, 135 and 146) are 549 against 960,
   and the three `equalsByteString` CPU entries (indexes 64, 65 and 66)
-  are 24548, 29498 and 38 against 30623, 28755 and 75. The Plutus V1
-  and V2 models are shorter than preprod's and differ in the same three
-  byte string equality entries. The devnet's parameters endpoint
-  reports no V2 model.
+  are 24548, 29498 and 38 against 30623, 28755 and 75. The devnet
+  genesis gives the Plutus V1 model 166 entries and the V2 model 175,
+  against 332 each on preprod. Both differ in the same three byte string equality entries.
+  The devnet's parameters endpoint reports no V2 model.
+- Memory is priced the same on both chains. Only the step cost of the
+  same work differs.
 - Preprod's cost models cannot be put on the devnet chain. The image
   ships them at `/app/config/plutus-costmodels-v11.json`. Writing their
   350 entries into the cluster's Conway genesis makes cardano-node 11.0.1
   refuse to start, since it reads the Conway genesis model at 251
-  entries. The image's other route submits the file as a parameter change
+  entries. It fails with:
+
+  ```text
+  CardanoProtocolInstantiationConwayGenesisReadError (GenesisDecodeError
+  "./genesis/conway-genesis.json" "Error in $: Number of parameters
+  supplied 350 does not match the expected number of 251")
+  ```
+
+  The image's other route submits the file as a parameter change
   governance action on the first run of a cluster, and that proposal
   never reaches the chain.
 
