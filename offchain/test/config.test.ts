@@ -22,7 +22,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Cometa } from '../src/cometa.js';
-import { DEVNET_NETWORK, ENV_PATH, PREPROD_BASE_URL, PREPROD_NETWORK, isSetupOnly, loadRunEnvironment, providerConfiguration } from '../src/config.js';
+import { DEVNET_NETWORK, ENV_PATH, PREPROD_BASE_URL, PREPROD_NETWORK, isSetupOnly, isWithoutUpgrade, loadRunEnvironment, providerConfiguration } from '../src/config.js';
 
 /* CONSTANTS ******************************************************************/
 
@@ -147,6 +147,22 @@ describe('providerConfiguration', () => {
     expect(() => configurationOf({ epochLength: 300 })).toThrow(/does not record a system start and a slot length/);
     expect(() => configurationOf({ systemStart: 'not a time', slotLength: 1 })).toThrow(/is not a system start time/);
     expect(() => configurationOf({ systemStart: SYSTEM_START, slotLength: 0 })).toThrow(/is not a slot length/);
+  });
+});
+
+describe('isWithoutUpgrade', () => {
+  it('runs the upgrade flows when the environment does not ask to skip them', () => {
+    expect(isWithoutUpgrade({})).toBe(false);
+    expect(isWithoutUpgrade({ WITHOUT_UPGRADE: ' ' })).toBe(false);
+  });
+
+  it('stops before the upgrade flows when the environment asks for it', () => {
+    expect(isWithoutUpgrade({ WITHOUT_UPGRADE: '1' })).toBe(true);
+    expect(isWithoutUpgrade({ WITHOUT_UPGRADE: ' True ' })).toBe(true);
+  });
+
+  it('refuses a value it cannot read rather than running every flow', () => {
+    expect(() => isWithoutUpgrade({ WITHOUT_UPGRADE: 'no' })).toThrow(/WITHOUT_UPGRADE is no, which is none of 1, true/);
   });
 });
 

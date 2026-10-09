@@ -175,6 +175,25 @@ export const providerConfiguration = (env: NodeJS.ProcessEnv = process.env, gene
  * the flow runner performs it with. A variable carrying anything else is
  * refused rather than read as a run of everything.
  */
+/**
+ * Whether this run stops after the flows that exercise the one logic a
+ * network deploys, which `WITHOUT_UPGRADE` asks for. The upgrade flows
+ * register and park a second logic on the network, and on a network whose
+ * lovelace is real that is a permanent cost for a script no account runs,
+ * so a run can prove the deployed logic alone. A variable carrying
+ * anything else is refused rather than read as a run of everything.
+ */
+export const isWithoutUpgrade = (env: NodeJS.ProcessEnv = process.env): boolean => {
+  const value = env['WITHOUT_UPGRADE']?.trim();
+  if (!value) {
+    return false;
+  }
+  if (!SETUP_ONLY_VALUES.includes(value.toLowerCase())) {
+    throw new Error(`WITHOUT_UPGRADE is ${value}, which is none of ${SETUP_ONLY_VALUES.join(', ')}`);
+  }
+  return true;
+};
+
 export const isSetupOnly = (env: NodeJS.ProcessEnv = process.env): boolean => {
   const value = env['SETUP_ONLY']?.trim();
   if (!value) {

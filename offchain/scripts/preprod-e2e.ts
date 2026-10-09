@@ -25,7 +25,7 @@ import { config as loadEnv } from 'dotenv';
 import { accountAddress, paymentKeyHashOf, rewardAddress } from '../src/address.js';
 import { accountScript, accountScriptHash, loadBlueprint, logicValidator } from '../src/blueprint.js';
 import { Cometa } from '../src/cometa.js';
-import { DEVNET_NETWORK, ENV_PATH, type ProviderConfiguration, isSetupOnly, loadRunEnvironment, providerConfiguration } from '../src/config.js';
+import { DEVNET_NETWORK, ENV_PATH, type ProviderConfiguration, isSetupOnly, isWithoutUpgrade, loadRunEnvironment, providerConfiguration } from '../src/config.js';
 import { posixTimeToSlot, transactionBodyParts } from '../src/body.js';
 import { type AccountState, type Asset, type Scope, encodeLogicRedeemer } from '../src/data.js';
 import { type AccountRecord, accountByOwner, accountExists } from '../src/discovery.js';
@@ -1185,6 +1185,9 @@ class Run {
     await this.largestState();
     await this.agentDeviceAndSweep();
     await this.teardown();
+    if (isWithoutUpgrade()) {
+      return;
+    }
     await this.upgrade();
   }
 }
@@ -1470,14 +1473,16 @@ const main = async (): Promise<void> => {
   await run.sweepOwnerWallet();
   await run.sweepRecipientWallet();
 
+  const withoutUpgrade = isWithoutUpgrade();
   const secondLogicHash = logicScriptHash(actors.secondLogic);
+  const finalLogicHash = withoutUpgrade ? currentLogicHash(scriptHash) : secondLogicHash;
   const remaining = await provider.getUnspentOutputs(address);
   const live = await accountExists(provider, record);
   if (remaining.length !== 1 || !live || live.state.devices.length !== 1) {
     throw new Error(`The account address should hold only its control UTxO with the owner device after the sweep but holds ${remaining.length} UTxOs`);
   }
-  if (live.logic !== secondLogicHash) {
-    throw new Error(`The account should run the second logic ${secondLogicHash} after the run but names ${live.logic}`);
+  if (live.logic !== finalLogicHash) {
+    throw new Error(`The account should run the logic ${finalLogicHash} after the run but names ${live.logic}`);
   }
   if (!(await isStakeCredentialRegistered(projectId, reward))) {
     throw new Error(`Blockfrost no longer lists ${reward} as registered`);
@@ -1502,7 +1507,7 @@ const main = async (): Promise<void> => {
       poolId,
       tokenPolicyId: token.policyId,
       logicHash: currentLogicHash(scriptHash),
-      secondLogicHash,
+      ...(withoutUpgrade ? {} : { secondLogicHash }),
       records: run.records,
       supporting: run.supporting,
     }),

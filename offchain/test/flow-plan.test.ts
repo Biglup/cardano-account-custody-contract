@@ -464,6 +464,30 @@ describe('evidence', () => {
     expect(budgetRows({ flow: FLOW_PLAN[38]!, txIds: [TX_ID] }, LIMITS)).toEqual([]);
   });
 
+  it('claims no upgrade when the run stopped before it', () => {
+    const document = evidenceDocument({
+      limits: LIMITS,
+      date: '2026-10-09',
+      fundingAddress: 'addr_test1funding',
+      ownerAddress: 'addr_test1owner',
+      agentAddress: 'addr_test1agent',
+      recipientAddress: 'addr_test1recipient',
+      accountAddress: 'addr_test1account',
+      scriptHash: 'cd'.repeat(28),
+      stakeScriptHash: 'ef'.repeat(28),
+      rewardAddress: 'stake_test1reward',
+      poolId: 'pool1pool',
+      tokenPolicyId: '99'.repeat(28),
+      logicHash: '11'.repeat(28),
+      records: [{ flow: FLOW_PLAN[0]!, txIds: [TX_ID] }],
+      supporting: [],
+    });
+    expect(document).toContain('The run stops after the sweep');
+    expect(document).not.toContain('Second logic hash of the upgrade proof');
+    expect(document).not.toContain('After the sweep the run proves the owner');
+    expect(document).not.toContain('The upgrade is set against the upgrade row');
+  });
+
   it('writes the account facts and every table', () => {
     const document = evidenceDocument({
       limits: LIMITS,
