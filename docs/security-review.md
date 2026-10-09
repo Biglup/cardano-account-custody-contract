@@ -1210,7 +1210,8 @@ decoding of the script context, which every script execution pays on
 chain in proportion to the size of the transaction, so the net figures
 understate the on-chain cost of every execution, and the more so the
 more inputs the transaction has; the on-chain figures below come from
-the devnet run and are the ones to size by. Every share of a limit
+the devnet and preprod runs, each named where it is quoted, and are the
+ones to size by. Every share of a limit
 below is a share of the per transaction limits the runs read back from
 the chain, which the devnet copies from preprod's parameters: 17,500,000
 memory units and 10,000,000,000 CPU steps per transaction and 77,500,000
@@ -1291,28 +1292,28 @@ On chain. The devnet run of `offchain/scripts/preprod-e2e.ts`, recorded
 in `docs/devnet-evidence.md`, read the execution units of every confirmed
 transaction back from the chain over the proxy and logic split. The
 differences from the figures above are the proxy execution and the
-context decoding that every input now pays: an eight grant issue
+context decoding that every input pays: an eight grant issue
 measured 45.2 and 47.5 percent of the memory limit, an eight grant sweep
 49.5 and 52.5 percent, and a device rewrite or revoke over the largest
 state 8.7 to 9.9 percent. The agent spend over many deposits is where
 the method matters most, since every `Fund` execution decodes the whole
-transaction and scans the inputs for the account token input: a grant
+transaction and scans the inputs for the account token input. The cost
+of a `Fund` execution depends on where the input carrying the account
+token sorts among the inputs, which follows the transaction ids. On
+preprod, where the grant UTxO sorted twelfth of thirteen inputs, a grant
 spend over twelve fund UTxOs, the most a checked spend takes, measured
 6.20 M memory units and 2.12 G steps, 35.4 percent of the memory limit,
-with each `Fund` execution between 0.26 M and 0.40 M against the 0.16 M
+with each `Fund` execution between 0.26 M and 0.31 M against the 0.16 M
 of the local row, so the per input cost on chain is roughly 0.1 M to
-0.2 M more than the local rows on a transaction of that size. That is
-the figure to budget against, and it is the worst case of the scan: the
-cost of a `Fund` execution depends on where the input carrying the
-account token sorts among the inputs, which follows the transaction
-ids, so a run whose grant UTxO sorts first measures less, 4.27 M memory
-units and 1.56 G steps over the same twelve, each `Fund` execution
-between 0.10 M and 0.14 M, which is what the recorded run happens to
-show. The library bounds a checked grant spend at
+0.15 M more than the local rows on a transaction of that size. That is
+the figure to budget against. On the devnet, where the grant UTxO sorted
+first, the same spend measured 4.28 M memory units and 1.56 G steps,
+24.4 percent, each `Fund` execution between 0.10 M and 0.14 M. The
+library bounds a checked grant spend at
 `MAX_FUND_INPUTS` (12) fund UTxOs and splits a larger sweep into batches
 (`fundBatches`); the builder evaluates every grant spend through the
 provider, so a spend over the limit is refused before submission, as the
-run's spend over thirteen fund UTxOs shows. The same run upgrades an
+spend over thirteen fund UTxOs in both runs shows. The devnet run upgrades an
 account from the deployed logic to the fixture's second logic after the
 teardown, over one device,
 no revoked slot and one outstanding grant: the proxy's two spends and
@@ -1324,11 +1325,13 @@ sizes of the proxy and the logic set the fee of a grant spend over a
 handful of inputs at about 0.76 M lovelace with both referenced from
 their parked UTxOs and about 1.05 M lovelace with both embedded
 (`DEFAULT_GRANT_FEE_BOUND` is 1.5 M lovelace). The preprod run recorded
-in `docs/preprod-evidence.md` measured the superseded single validator
-contract, whose every figure the split exceeds, since each input now
-pays the proxy execution and a second context decoding on top of what
-one validator charged; none of those figures bounds a path of this
-revision, which has not run on preprod.
+in `docs/preprod-evidence.md` covers the same proxy and logic over flows
+1 to 42, without the upgrade, so its figures bound the same paths. Its
+memory figures equal the devnet's for the eight grant issues, the
+revokes, the device rewrite and the first eight grant sweep. They differ
+where the inputs sort differently: the second eight grant sweep, 51.0
+percent on preprod against 52.5 on the devnet, and the twelve fund
+grant spend above.
 
 Observations.
 
@@ -1409,7 +1412,7 @@ reference script to any other output it creates.
    path, because the ledger refuses to run a script on an input whose
    datum hash has no preimage in the witness set. The exploit was
    reproduced against the validator before the fix. Closed by
-   `grant.deposits_are_plain`, now called from `rules.grant_spend_rule`,
+   `grant.deposits_are_plain`, called from `rules.grant_spend_rule`,
    which requires every output at the account address that does not
    hold an account token to carry `NoDatum`. Tests:
    `attack_locked_value_grant_spend_deposits_under_a_datum_hash`,
@@ -1419,7 +1422,7 @@ reference script to any other output it creates.
    path accepted the UTxO it recreated with a reference script attached,
    and every later spend of that UTxO would have paid for the script's
    size. Closed by `grant.carries_no_reference_script` on the output the
-   agent path recreates, now the grant output. Tests:
+   agent path recreates, which is the grant output. Tests:
    `attack_resource_exhaustion_reference_script_on_the_grant_output`,
    `spend_with_grant_rejects_a_reference_script_on_the_grant_output` and
    the `carries_no_reference_script_*` unit tests.
@@ -1496,10 +1499,10 @@ Closed in this revision:
 9. The deposit batch bound was wrong. The previous review put the batch
    size of an agent spend at around thirty deposits from the local
    figures. Every `Fund` execution pays to decode the whole transaction
-   context and now the proxy execution beside it, neither of which the
-   local runner charges: a devnet run measured a grant spend over
+   context and the proxy execution beside it, neither of which the
+   local runner charges: the preprod run measured a grant spend over
    twelve fund UTxOs at 6.20 M memory units, 35.4 percent of the limit,
-   each `Fund` execution between 0.26 M and 0.40 M against the 0.16 M of
+   each `Fund` execution between 0.26 M and 0.31 M against the 0.16 M of
    the local row, and the builder refused a spend over thirteen before
    anything was evaluated or submitted. Closed in the library by
    `MAX_FUND_INPUTS` (12), which a checked `spendWithGrant` enforces, and

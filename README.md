@@ -57,8 +57,10 @@ flowchart LR
     agent["Agent<br/>grantee key"] -- "SpendWithGrant: spends its grant UTxO<br/>and plain funds, references the control UTxO" --> g1
     owner -- "withdraw, delegate:<br/>the stake script reads the devices<br/>from the control UTxO" --> rewards
     control -. "the proxy requires<br/>a withdrawal from the logic<br/>the control datum names" .-> logic
-    control -. "funds move with the control UTxO<br/>or with a grant UTxO" .-> f1
+    control -. "owner path: funds move<br/>with the control UTxO" .-> f1
     control -.-> f2
+    g1 -. "agent path: funds move<br/>with a grant UTxO" .-> f1
+    g1 -.-> f2
     control -. "reserves move with<br/>the control UTxO only" .-> r1
     control -. "issued and swept<br/>by a device" .-> g2
 ```
@@ -102,15 +104,20 @@ stake script and differ only in the hash their control datum names.
 ```mermaid
 sequenceDiagram
     participant D as Device
+    participant Ledger
     participant P as Account proxy
     participant L as Logic named by the control datum
 
-    D->>D: build tx: control UTxO in and out (Device), funds in (Fund),<br/>withdrawal of zero from the logic credential (Run),<br/>proxy and logic as reference inputs, required signer = device key
-    D->>P: submit
-    P->>P: control UTxO present exactly once, the transaction withdraws from the logic it names,<br/>the state NFT returns in one control output at the same address
-    P->>L: the withdrawal runs the logic once over the whole transaction
-    L->>L: the control UTxO carries Device, a listed device signed,<br/>the new state is well formed and the counters follow the mint,<br/>every other input at the address carries Fund or a valid SweepGrant
-    L-->>D: accepted
+    D->>D: build tx: control UTxO in and out (Device), funds in (Fund),<br/>withdrawal of zero from the logic's reward account (Run),<br/>proxy and logic as reference inputs, required signer = device key
+    D->>Ledger: submit
+    par one proxy run per spent input
+        Ledger->>P: spend of the control UTxO (Device), spend of each fund UTxO (Fund)
+        P->>P: Device: control UTxO present exactly once, the withdrawal from the logic it names is present,<br/>the state NFT returns in one control output at the same address<br/>Fund: an account token of the same account is spent beside it
+    and one logic run for the withdrawal
+        Ledger->>L: zero withdrawal from the logic's reward account
+        L->>L: the control UTxO carries Device, a listed device signed,<br/>the new state is well formed and the counters follow the mint,<br/>every other input at the address carries Fund or a valid SweepGrant
+    end
+    Ledger-->>D: accepted only when every run passes
 ```
 
 ### Owner operations
@@ -118,8 +125,10 @@ sequenceDiagram
 Any device key listed in the state has full authority. With a device
 signature the owner can spend whatever they want, add or remove devices,
 issue grants, revoke one grant or all of them, sweep dead grants, withdraw
-the staking rewards, delegate to a pool or a DRep, and point the account
-at another logic. The logic only insists that the state written back is
+the staking rewards, delegate the stake credential, and point the account
+at another logic. On chain any delegation certificate a device signs
+passes, to a pool, a DRep or both. The off-chain library builds pool
+delegation only. The logic only insists that the state written back is
 well formed (one to 8 distinct devices, at most 16 outstanding grants, at
 most 32 revoked slots, a generation that never decreases, counters that
 follow the grant tokens minted and burned), and the proxy that the NFT
@@ -188,14 +197,18 @@ only go down; a deposit in the same transaction does not refill them.
 
 ```mermaid
 stateDiagram-v2
+    state "Revoked by slot" as Revoked
+    state "Older generation" as Stale
     [*] --> Active: owner issue (Device + IssueGrants), grant token minted into a grant UTxO
     Active --> Active: agent SpendWithGrant, remaining caps decrease by at least the net outflow
     Active --> Revoked: owner revoke (Device), slot added to the revoked list
-    Active --> Revoked: owner revoke all (Device), generation bumped
-    Active --> Revoked: owner upgrade (Device, both logics), generation bumped
+    Revoked --> Active: owner rewrite (Device) before expires_at, slot dropped from the revoked list
+    Active --> Stale: owner revoke all or upgrade (Device), generation bumped
+    Revoked --> Stale: owner revoke all or upgrade (Device), generation bumped
     Active --> Expired: validity interval passes expires_at
     Revoked --> [*]: owner sweep (Device + SweepGrant + BurnGrants), token burned, lovelace freed
-    Expired --> [*]: owner sweep (Device + SweepGrant + BurnGrants), token burned, lovelace freed
+    Stale --> [*]: owner sweep (Device + SweepGrant + BurnGrants), token burned, lovelace freed
+    Expired --> [*]: owner sweep (Device + SweepGrant + BurnGrants), validity range starting after expires_at, token burned, lovelace freed
     note right of Active
         per call caps, remaining caps,
         lovelace caps, recipients, expiry
@@ -207,7 +220,10 @@ stateDiagram-v2
 Revoking is an owner rewrite of the control datum: the slot goes into the
 revoked list, or, to revoke every grant at once or when the list holds 32
 slots, the generation is bumped and the list cleared. The grant UTxO is
-not touched by the revoke. Expiry needs no transaction at all; the spend
+not touched by the revoke. A device rewrite can drop a slot from the
+revoked list, which makes that grant current again. A generation bump
+is final, since the generation never decreases. Expiry needs no
+transaction at all; the spend
 stops validating. A dead grant UTxO stays at the address until the owner
 sweeps it, which burns its token and frees its lovelace. An upgrade bumps
 the generation as well, so it kills every grant; the owner issues the
@@ -262,16 +278,22 @@ sequenceDiagram
     participant P as Account proxy
     participant Old as Logic the account leaves
     participant New as Logic the account arrives at
+    participant L as Ledger
 
     D->>D: build tx: control UTxO in (Device) and out with logic = New,<br/>generation + 1, devices unchanged, no mint,<br/>withdrawals of zero from Old and from New (Run)
-    D->>P: submit
-    P->>P: control UTxO present, withdrawal from Old (named by the spent datum),<br/>state NFT back in one control output at the same address
-    P->>Old: withdrawal runs Old
-    Old->>Old: Device on the control UTxO, a device signed,<br/>the output names another logic: New withdraws, nothing minted
-    P->>New: withdrawal runs New
-    New->>New: no control UTxO names New: arrival, exactly one control output names New,<br/>state well formed, generation grew, devices equal, nothing minted,<br/>the leaving logic Old withdraws
-    New-->>D: accepted, every grant issued before is dead
-    D->>P: later: sweep the dead grants, issue the survivors again under New
+    D->>L: submit
+    par the ledger runs every script the transaction names
+        L->>P: spend of the control UTxO (Device)
+        P->>P: control UTxO present, withdrawal from Old (named by the spent datum),<br/>state NFT back in one control output at the same address
+    and
+        L->>Old: zero withdrawal from Old's reward account
+        Old->>Old: Device on the control UTxO, a device signed,<br/>the output names another logic: New withdraws, nothing minted
+    and
+        L->>New: zero withdrawal from New's reward account
+        New->>New: no control UTxO names New: arrival, exactly one control output names New,<br/>state well formed, generation grew, devices equal, nothing minted,<br/>the leaving logic Old withdraws
+    end
+    L-->>D: accepted when every run passes, every grant issued before is dead
+    D->>L: later: sweep the dead grants, issue the survivors again under New
 ```
 
 ### Custody services
@@ -722,7 +744,9 @@ proxy and one logic, an upgrade two. The setup of a network parks the
 proxy and each logic version once, each in its own UTxO at an always
 fail script address nobody can spend from, and records the UTxOs in
 `offchain/networks/<network>.json`; the builders reference them from
-there and embed the scripts when the network records none.
+there and embed the scripts when the network records none. Embedding
+holds for one logic only. The proxy and two logics together exceed the
+transaction size limit, so an upgrade needs parked reference scripts.
 
 Logic credential registration. The withdrawal needs the logic's
 credential registered, once per network and per version, with the
@@ -1009,7 +1033,9 @@ surface.
   A builder given it references the proxy and the logic from those
   UTxOs instead of embedding them, and embeds them when the network
   records none; a file that names another network or holds a malformed
-  record is refused. `createAccount` needs the logic credential
+  record is refused. An upgrade cannot embed both logics, which together
+  exceed the transaction size limit, so at least one logic must be parked.
+  `createAccount` needs the logic credential
   registered on the network.
 - Sponsor. Every builder of an owner operation, and `createAccount`, accepts an optional
   `sponsor` wallet that pays the fee, the collateral, the growth of the
@@ -1057,16 +1083,14 @@ surface.
   `feeBound`), lets the provider evaluate the scripts, and the logic
   accepts caps anywhere between zero and the exact reduction; the fee ends
   at or below the bound, the difference returns to the account as change,
-  and a fee above the bound is refused before submission. The fee of a
-  grant spend over a handful of fund UTxOs measures about 0.76 tADA with
-  the proxy and the logic referenced from their parked UTxOs and about
-  1.05 tADA with both embedded, most of it the size of the logic. The fee
-  counts against the grant's caps alongside the payout, bound included: a
+  and a fee above the bound is refused before submission. The size of
+  the logic sets most of the fee. The fee is higher with the scripts
+  embedded than referenced. The fee counts against the grant's caps
+  alongside the payout, bound included: a
   lovelace grant is charged on `per_call_cap` and `cap`, a token grant on
   the lovelace caps, so a token grant can only spend while its lovelace
   caps cover the lovelace of its outputs plus the bound, and never when
-  they are below the bound. The end to end run's 8 tADA spends fit under
-  a 10 tADA per call cap with the bound included.
+  they are below the bound.
 - Fund inputs. A checked `spendWithGrant` takes at most `MAX_FUND_INPUTS`
   (12) fund UTxOs, since on chain every script execution pays to decode
   the whole transaction context and each fund input adds a proxy run; a
@@ -1127,7 +1151,7 @@ the setup of a network, the logic credential registration and the parking
 of the proxy and the logic as reference scripts, and the flows of a run,
 owner, stake and agent, happy path and refused, up to the largest state,
 a batched agent sweep of many deposits and an upgrade to a second logic.
-The script reads the network file, runs the fifty four flows against the
+The script reads the network file, runs the flows against the
 live network, reads the execution units of every confirmed transaction
 back from the chain and rewrites `docs/<network>-evidence.md` with the
 result. Steps 43 to 54 prove the upgrade mechanism. They need a second
@@ -1156,6 +1180,13 @@ reference input makes the logic take its arrival path, where it expects
 exactly one control output and a transaction that creates no account has
 none, and one from an unregistered logic credential, which the node
 refuses in phase one before any script runs.
+
+`WITHOUT_UPGRADE=1` stops the run after flow 42, the final sweep under
+the contract's logic. Steps 43 to 54 do not run, so no second logic is
+registered or parked. Registering and parking a second logic is a
+permanent cost on the network for a script no account runs. The
+recorded preprod run sets it.
+The variable takes `1` or `true`, and any other value is refused.
 
 The setup of a network runs once and the flows take hours after it, so
 the setup is also available on its own:
@@ -1190,9 +1221,9 @@ checks nothing against it on submission.
 The devnet is a single Cardano node with a Blockfrost compatible API in
 front of it, running Conway at the protocol version of preprod over a
 chain of its own with one second blocks and five minute epochs. The
-setup and the fifty four flows, which take hours on preprod, take
-5 minutes 3 seconds on it, the setup of the second logic and the upgrade
-path included, and cost nothing. How far its parameters and its cost models
+setup and every flow, which take hours on preprod, take minutes on it,
+the setup of the second logic and the upgrade path included, and cost
+nothing. How far its parameters and its cost models
 follow preprod's is below.
 
 ```sh
@@ -1288,22 +1319,20 @@ shown to refuse. It records the findings that needed a code change and
 how each was closed, the properties the proxy holds whatever logic an
 account runs, the attacks specific to the logic split and the upgrade
 path, the budget of every path over the largest well formed state
-measured with `aiken check` and on the devnet, the residual risks, and
-what an audit covers.
+measured with `aiken check`, on the devnet and on preprod, the residual
+risks, and what an audit covers.
 
 `docs/devnet-evidence.md` records the last full run of
 `offchain/scripts/preprod-e2e.ts` over the fifty four flows on the
 devnet, the upgrade path included, with the transaction ids, the
 refusals, the ledger errors and the execution units the chain charged for
-every script transaction. Those are the on-chain figures the sections
-above quote.
+every script transaction.
 
-`docs/preprod-evidence.md` records an earlier run of the same script
-against the Cardano preprod network through Blockfrost on the date it
-states. That run predates the per grant model and the logic split, so its
-hashes are not the current hashes and none of its figures measures the
-proxy and logic split; it is superseded until the next preprod run
-replaces it.
+`docs/preprod-evidence.md` records a run of the same script against the
+Cardano preprod network through Blockfrost, on the date it states. It
+covers the current contract: flows 1 to 42 against the deployed proxy
+and logic, under the hashes above. It stops before the upgrade, which
+the devnet evidence records.
 
 ## Prior art
 
@@ -1357,25 +1386,15 @@ for that reason.
   [Off-chain library](#off-chain-library).
 - The state is bounded at 8 devices, 16 outstanding grants, 32 revoked
   slots and 8 recipients per grant; the bounds are constants in
-  `state.ak`. Issuing sixteen grants in one transaction costs about
-  16.4 M memory units net over the largest state in the test runner and
-  sweeping sixteen about 19.3 M, against the limit of 17.5 M, which
-  the runner understates since it charges nothing for decoding the
-  transaction context, so neither fits on chain; batches of eight cost
-  about 7.7 M and 8.1 M. On the devnet an eight grant issue measured 45.2
-  and 47.5 percent of the limit and an eight grant sweep 49.5 and 52.5
-  percent, so the builder batches at most 8 grant issues or sweeps per
-  transaction. A device rewrite or revoke over the largest state measured
-  8.7 to 9.9 percent on the devnet.
+  `state.ak`. Sixteen grants issued or swept in one transaction exceed
+  the execution budget, so the builder issues or sweeps at most 8 grants
+  per transaction. The measurements behind these bounds are in the
+  [security review](docs/security-review.md#resource-exhaustion).
 - Every script execution on chain pays to decode the whole transaction
-  context and, under the split, the proxy execution of its own input,
-  neither of which the test runner charges, so each fund input of an
-  agent spend costs more on chain than the runner measures. On the devnet
-  a grant spend over twelve fund UTxOs, the most a checked spend takes,
-  measured about 6.20 M memory units, each fund input between 0.26 M and
-  0.40 M against the 0.16 M of the runner, and the builder refused a
-  spend over thirteen; a checked grant spend therefore takes at most 12
-  fund inputs, and `fundBatches` splits a larger sweep.
+  context, and each fund input of an agent spend adds a proxy execution.
+  A checked grant spend therefore takes at most 12 fund UTxOs, the
+  builder refuses a spend that needs more, and `fundBatches` splits a
+  larger sweep.
 - One account per logic version per transaction: a logic refuses two
   control UTxOs naming it, and two accounts under different logics cannot
   share a transaction when either mints. The builders operate one account
@@ -1384,18 +1403,18 @@ for that reason.
   both.
 - Every transaction but a plain deposit carries the proxy and a logic, an
   upgrade two logics. Without the reference scripts a network's setup
-  parks, the builders embed both scripts and a grant spend's fee rises
-  from about 0.76 to about 1.05 tADA.
+  parks, the builders embed the proxy and the logic at a higher fee. An
+  upgrade cannot embed both logics, which together exceed the
+  transaction size limit, so at least one logic must be parked.
 - An upgrade kills every grant, since the generation bumps; grants are
   issued again under the new logic, never migrated. A downgrade is a
   change like any other, which only the signing device gates; the proxy
   admits any registered script credential as a logic, so the signer's
   list of known logic hashes is what keeps a device from pointing the
   account at unknown code.
-- The proxy and logic code has only run on the local devnet, whose chain
-  carries preprod's parameters, and has had no independent audit; the
-  recorded preprod run is of the superseded single validator model, so
-  treat the contract as unaudited and as never having met a public chain.
+- The contract has had no independent audit. It runs on preprod, where
+  the evidence run and the fee sponsor service have both driven it, and
+  on the local devnet. Treat it as unaudited and testnet only.
 
 ## Transaction builder requirements
 
@@ -1419,6 +1438,8 @@ to another transaction builder must be able to:
 - Add the control UTxO as a reference input on every grant spend, and the
   UTxOs holding the proxy and the logic as reference inputs on every
   transaction, or embed the scripts when the network records none.
+  An upgrade cannot embed both logics, which together exceed the
+  transaction size limit, so at least one logic must be parked.
 - Select and return collateral from a wallet other than the account.
 - Evaluate every transaction through the provider, and set a fixed
   execution budget per redeemer only for an unchecked grant spend built
