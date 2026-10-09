@@ -125,10 +125,11 @@ the first control UTxO.
 | Validity | None. |
 | Scripts that run | The stake script, on `publish`: the creation gate. The proxy, on `mint` with `CreateAccount`. The logic, on its arrival path as a creation. |
 
-The builder refuses an initial state that is not well formed, has non
-zero counters, or does not list the owner among its devices. The logic
-defaults to the one the blueprint carries. With a provider, the builder
-also refuses while a UTxO holding the state NFT exists at the address.
+The builder refuses an initial state that is not well formed, has a
+non zero next slot or outstanding count, has a revoked slot, or does not
+list the owner among its devices. The logic defaults to the one the
+blueprint carries. With a provider, the builder also refuses while a
+UTxO holding the state NFT exists at the address.
 The fee sponsor pays the fee, the collateral, the control output's
 lovelace and the registration deposit.
 
@@ -145,7 +146,7 @@ sequenceDiagram
     W->>L: Submit
     L->>L: Stake script: owner signs, one state NFT minted,<br/>owner among the control output's devices
     L->>L: Proxy mint: one control output, credential registered,<br/>placement, logic withdraws
-    L->>L: Logic arrival: well formed state, zero counters,<br/>the state NFT is the only mint
+    L->>L: Logic arrival: well formed state, next slot and outstanding zero,<br/>revoked list empty, the state NFT is the only mint
     L-->>W: Account created
 ```
 

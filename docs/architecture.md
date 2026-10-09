@@ -82,7 +82,8 @@ Its hash is the account's stake credential. Each account therefore has
 its own address and reward account on top of the shared proxy.
 
 The ledger runs the stake script on every withdrawal from the account's
-reward account and on every certificate naming its credential:
+reward account and on every certificate naming its credential, except
+the legacy stake registration certificate:
 
 - A registration, alone or with a delegation, creates the account. It
   needs the owner's signature, one state NFT of the credential minted,
@@ -90,6 +91,10 @@ reward account and on every certificate naming its credential:
 - A delegation, to a pool, a DRep or both, needs a device signature.
 - A reward withdrawal of any amount needs a device signature.
 - A deregistration, or any other certificate, is refused.
+
+The legacy stake registration certificate needs no witness and runs no
+script. See
+[stake credential squat](security/known-issues.md#stake-credential-squat).
 
 The stake script reads only the device list from the state. A reward
 withdrawal or a delegation can reference the control UTxO without
@@ -155,7 +160,7 @@ flowchart TD
     agent --> agentChecks["The grantee signs;<br/>the grant is current;<br/>the spend is within scope;<br/>other inputs: Fund;<br/>nothing minted"]
     arrival --> arrivalOutput["Exactly one control output<br/>names this logic;<br/>it holds only lovelace and the NFT;<br/>its state is well formed"]
     arrivalOutput --> spent{"Control UTxO of the<br/>account spent?"}
-    spent -- "no" --> creation["Creation:<br/>the state NFT is the only mint;<br/>counters are zero"]
+    spent -- "no" --> creation["Creation:<br/>the state NFT is the only mint;<br/>next slot and outstanding zero;<br/>revoked list empty"]
     spent -- "yes" --> upgrade["Upgrade:<br/>the leaving logic withdraws;<br/>generation grows;<br/>devices equal;<br/>nothing minted"]
 ```
 
@@ -240,7 +245,9 @@ The payer depends on the operation:
 A reserve keeps the owner out of the agents' way. Agents draw on the
 same fund UTxOs, so an owner transaction paid from funds can lose an
 input to a grant spend and must be rebuilt. An owner transaction paid
-from a reserve, or by a fee sponsor, spends nothing an agent can spend.
+by a fee sponsor, or from a reserve, spends fund UTxOs only for what it
+pays out. On the reserve path it also spends them for any growth of the
+control output; see [revokeGrant](protocol/transactions.md#revokegrant).
 Without a sponsor, the library draws the fee from the largest reserve
 that can cover the most a transaction can cost and still be recreated.
 It recreates that reserve with the fee taken out.

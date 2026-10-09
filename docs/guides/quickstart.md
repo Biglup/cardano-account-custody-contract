@@ -165,7 +165,8 @@ const submit = async (tx: string, signers: Wallet[]): Promise<string> => {
 The owner signs the [creation](../glossary.md#creation). The fee sponsor
 pays the fee, the collateral, the registration deposit and the control
 UTxO's lovelace. The initial state lists the owner as the only device,
-with zero counters. It names no logic, so the builder pins `logic_v1`.
+with a zero next slot and outstanding count, and an empty revoked list.
+It names no logic, so the builder pins `logic_v1`.
 
 ```ts
 await submit(

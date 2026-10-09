@@ -50,12 +50,12 @@ remain.
 
 What to do. Prevent it at the key layer:
 
-- Derive the owner's key on a path that differs per network class. By
+- Derive the owner key on a path that differs per network class. By
   convention of the device wallet and the library, mainnet and testnets
   use distinct account index ranges, so a key used on a testnet never
   corresponds to a mainnet credential.
 - Refuse account operations outside the device wallet's network class.
-- Never use the owner's key for anything else. The stake script hash of
+- Never use the owner key for anything else. The stake script hash of
   an account then becomes public only in the creation that registers
   it, and a squat requires guessing the owner.
 - Create the account before sharing the address.

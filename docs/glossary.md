@@ -131,8 +131,8 @@ a reserve.
 ## Device
 
 A verification key hash listed in the account state. Under `logic_v1`,
-any device has full authority over the account. An account lists between
-one and eight distinct devices.
+any device has full authority over the account. `logic_v1` requires
+one to eight distinct devices.
 
 ## Device redeemer
 
@@ -261,15 +261,16 @@ The stake script's only redeemer.
 ## Outstanding
 
 The field of the account state counting grant tokens minted and not yet
-burned. It is at most 16 and zero at creation. `logic_v1` keeps the
-count while the account stays under it. When an account arrives at
-`logic_v1` by an upgrade, the check only bounds it at 16.
+burned. Under `logic_v1` it is at most 16 and zero at creation.
+`logic_v1` keeps the count while the account stays under it. When an
+account arrives at `logic_v1` by an upgrade, the check only bounds it
+at 16.
 
 ## Owner
 
-The verification key hash the stake script is applied to. It signs the
-creation and must be a device then. Afterwards it is one device like any
-other and can be removed.
+The verification key hash the stake script is applied to. The key it
+hashes is the owner key. It signs the creation and must be a device
+then. Afterwards it is one device like any other and can be removed.
 
 ## Owner path
 
@@ -324,8 +325,8 @@ raises the generation, which revokes every grant at once.
 ## Revoked list
 
 The field of the account state listing the slots of the current
-generation revoked one by one. It holds at most 32 slots. The library
-clears it when it raises the generation.
+generation revoked one by one. Under `logic_v1` it holds at most 32
+slots. The library clears it when it raises the generation.
 
 ## Reward account
 
@@ -390,5 +391,6 @@ generation or an older one.
 
 ## Well formed state
 
-An account state with one to eight distinct devices, non-negative
-counters, at most 16 outstanding grants and at most 32 revoked slots.
+An account state that obeys the bounds of `logic_v1`: one to eight
+distinct devices, non-negative counters, at most 16 outstanding grants
+and at most 32 revoked slots.

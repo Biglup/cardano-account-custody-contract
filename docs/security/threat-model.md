@@ -247,8 +247,9 @@ names it. It requires exactly one control output naming it, holding only
 lovelace and the NFT, with a well formed state (INV-41). With a control
 input of that account, it requires a withdrawal from the logic the spent
 datum names, a strictly greater generation, the same devices and nothing
-minted (INV-43). Without one, it requires the state NFT as the only mint
-and zero counters (INV-42).
+minted (INV-43). Without one, it requires the state NFT as the only
+mint, a zero next slot and outstanding count, and an empty revoked list
+(INV-42).
 
 An arrival cannot hide behind another account. On the owner path every
 control output naming the logic sits at the spent account's address

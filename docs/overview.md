@@ -108,8 +108,10 @@ names:
 - Exactly one control UTxO exists for each account from creation on. It
   never leaves the account address and is never burned.
 - Every account token sits at its own account's address.
-- Every spend at an account address and every account token mint runs
-  the logic that the account's control datum names.
+- Every account token mint, and every spend under a redeemer other
+  than `Fund`, runs the logic that the account's control datum names.
+  A spend under `Fund` holds no account token. It needs an input that
+  holds a token of its own account, and that input runs the logic.
 - Only a device can withdraw rewards or delegate the stake credential.
 - An account is never deleted. See
   [Permanence](architecture.md#permanence).
@@ -122,12 +124,18 @@ names:
 - A grantee can move at most its grant's caps of one asset, plus lovelace
   within its lovelace caps, before the expiry, to the listed recipients,
   while the grant is current. Remaining caps never increase.
-- A revoke needs only the control UTxO. Paid by a reserve or a fee
-  sponsor, it spends nothing an agent can spend. Once it confirms, no
-  spend under the revoked grant can confirm.
-- Value at an account address is never stranded. Plain deposits and
-  reserves stay spendable by a device. A dead grant's lovelace becomes
-  spendable by a device when the grant is swept.
+- A revoke needs only the control UTxO. Paid by a fee sponsor, it
+  spends nothing an agent can spend. Paid by a reserve, it spends
+  nothing an agent can spend unless the control output must grow; see
+  [revokeGrant](protocol/transactions.md#revokegrant). Once it confirms,
+  no spend under the revoked grant can confirm.
+- Plain deposits and reserves stay spendable by a device, except one
+  under a datum hash with no known preimage; see
+  [deposits under a datum hash](security/known-issues.md#deposits-under-a-datum-hash).
+  A dead grant's lovelace becomes spendable by a device when the grant is
+  swept. An upgrade into `logic_v1` that writes the outstanding count
+  too low strands grant lovelace; see
+  [counters written on arrival](security/known-issues.md#counters-written-on-arrival).
 - When the account leaves `logic_v1`, `logic_v1` requires only that the
   arriving logic runs and that nothing is minted. The arriving logic's
   rules govern the account from then on.

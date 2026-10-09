@@ -186,7 +186,7 @@ The stake script's redeemer
 
 | Index | Constructor | Put on |
 | --- | --- | --- |
-| 0 | `Operate` | Every withdrawal from the account's reward account and every certificate naming its stake credential |
+| 0 | `Operate` | Every withdrawal from the account's reward account and every certificate naming its stake credential, except a legacy stake registration, which runs no script |
 
 ### LogicRedeemer
 
