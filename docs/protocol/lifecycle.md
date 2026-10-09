@@ -52,8 +52,8 @@ stateDiagram-v2
 
 The account has no final state. No redeemer burns the state NFT, and the
 stake script refuses to deregister the credential. The registration
-deposit and the control UTxO's minimum lovelace stay locked for the life of the
-account. See [Permanence](../architecture.md#permanence).
+deposit and the control UTxO's minimum lovelace stay locked for the life
+of the account. See [Permanence](../architecture.md#permanence).
 
 ## Device
 

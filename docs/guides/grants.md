@@ -136,9 +136,9 @@ grant must carry its reduced caps before that. The library therefore
 lowers the remaining caps by the outputs plus a
 [fee bound](../glossary.md#fee-bound). The checks use the same sum:
 
-- For a lovelace grant, the outputs plus the fee bound must fit
+- For a lovelace scope, the outputs plus the fee bound must fit
   `perCallCap` and `cap`.
-- For a token grant, the token amount must fit `perCallCap` and `cap`,
+- For a token scope, the token amount must fit `perCallCap` and `cap`,
   and the output lovelace plus the fee bound must fit
   `lovelacePerCallCap` and `lovelaceCap`.
 

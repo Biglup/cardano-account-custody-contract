@@ -89,8 +89,8 @@ Trusted for: the whole account. Under `logic_v1` one compromised device
 can take every deposit and reserve. A device that signs an upgrade to an
 unknown logic hands the account to that code. See
 [unknown logic](known-issues.md#unknown-logic). The device wallet must
-keep a list of known logic hashes and refuse any other hash in field 0 of
-a control output it signs.
+keep a [known logic list](../glossary.md#known-logic-list) and refuse
+any other hash in field 0 of a control output it signs.
 
 ## Agent
 
@@ -99,7 +99,7 @@ hash. Every bound below is a rule of `logic_v1`.
 
 Can:
 
-- Spend its own grant UTxO and plain fund UTxOs of the same account, with
+- Spend its own grant UTxO and fund UTxOs of the same account, with
   the control UTxO referenced (INV-30, INV-31).
 - Move at most the per call cap and the remaining cap of one asset, and,
   when that asset is not lovelace, lovelace within the lovelace per call
@@ -107,8 +107,8 @@ Can:
 - Pay any destination when the grant lists no recipient, and only listed
   recipients otherwise (INV-36).
 - Spend before the expiry, while the grant is current (INV-32, INV-34).
-- Pay plain deposits back to the account and split them at zero outflow
-  (INV-37).
+- Pay value back to the account as fund UTxOs and split them at zero
+  outflow (INV-37).
 - Lower its own remaining caps further than the outflow (INV-39), which
   costs it headroom and nothing else.
 
@@ -117,8 +117,8 @@ Cannot:
 - Move any other asset class (INV-35).
 - Raise a cap, change any other field of its grant, or move the grant
   UTxO to another address (INV-38, INV-39).
-- Spend the control UTxO, a reserve or another grant UTxO (INV-21,
-  INV-11, INV-31).
+- Spend the control UTxO, a reserve or another grant UTxO (INV-30,
+  INV-31, INV-11).
 - Mint or burn under the policy, or write a control output (INV-30).
 - Change devices, grants or the logic, withdraw rewards or delegate
   (INV-15, INV-20).
@@ -149,8 +149,8 @@ gives cannot be reused; see
 ## Fee sponsor
 
 A fee sponsor pays the fee and collateral of a creation or an owner
-transaction. At creation it also pays the control UTxO's lovelace and the
-registration deposit.
+transaction, and any growth of the control output. At creation it also
+pays the control UTxO's lovelace and the registration deposit.
 
 Can:
 
@@ -172,20 +172,8 @@ contract.
 Trusted for: liveness of the operations it sponsors. An owner who keeps
 a reserve or a device wallet with collateral does not depend on it.
 
-What a sponsor should check before it signs, since it sees and co-signs
-the transaction and backs it with its collateral:
-
-- It contributes only the fee, the collateral and, at creation, the
-  deposit and the control output's lovelace. The library returns the
-  sponsor's change to it.
-- A sponsor that refuses withdrawals from scripts it does not know must
-  allow the withdrawal from the logic the control input's datum names,
-  from both logics on an upgrade, and from the account's stake
-  credential on a reward withdrawal.
-- A sponsor that refuses certificates of scripts it does not know must
-  allow the delegation certificate of the account's stake credential. A
-  delegation runs the stake script through that certificate, not
-  through a withdrawal.
+What a sponsor checks before it signs is listed under
+[fee sponsor](../guides/signers.md#fee-sponsor).
 
 ## Provider
 

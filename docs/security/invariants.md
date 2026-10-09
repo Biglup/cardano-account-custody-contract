@@ -241,8 +241,8 @@ grant UTxO's address, with the same value and no reference script.
 
 **INV-39.** The recreated grant is an inline grant equal to the spent one
 except its remaining caps, each between zero and the spent cap less the
-positive part of the net outflow of its asset, so a net deposit leaves a
-cap unchanged and remaining caps never increase.
+net outflow of its asset, so a net deposit leaves a cap unchanged and
+remaining caps never increase.
 [`grant.carries_grant_within`, `grant.grant_after_spend`](../../lib/cardano_account_custody_contract/grant.ak).
 
 **INV-40.** On the agent path, every account token among the inputs and

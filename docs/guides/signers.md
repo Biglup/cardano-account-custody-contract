@@ -37,7 +37,8 @@ signing:
 
 - Show the account address and the initial devices. The stake script
   refuses a creation that leaves the owner out of the devices.
-- Refuse a logic hash outside the wallet's list of known logic hashes.
+- Refuse a logic hash outside the wallet's
+  [known logic list](../glossary.md#known-logic-list).
 
 ### Every owner transaction
 
@@ -59,7 +60,7 @@ signing:
 | A slot added to the revoked list | The grant it revokes. |
 | A slot dropped from the revoked list | That the grant becomes current again. |
 | The generation raised | That every grant of the account dies. `revokeGrant` raises it when the revoked list is full. |
-| The logic changed | Apply [the upgrade rules](upgrade.md#what-a-signer-must-refuse). Refuse a change of the next slot or the outstanding count, and any slot left in the revoked list; see [counters written on arrival](../security/known-issues.md#counters-written-on-arrival). |
+| The logic changed | Apply [the upgrade rules](upgrade.md#what-a-signer-must-refuse). |
 
 ### Grants issued
 
@@ -67,7 +68,7 @@ For each new grant UTxO, show:
 
 - the grantee key hash, checked to be 56 hex characters;
 - the asset, the per call cap and the remaining cap;
-- the lovelace caps of a token grant;
+- the lovelace caps of a token scope;
 - the expiry as a date and time;
 - the recipients. Warn when the list is empty, since the grantee may then
   pay any address. Warn when a recipient is a script address.
@@ -86,6 +87,8 @@ A sweep burns grant tokens. Show the slots swept.
 ### Stake operations
 
 - Show the amount of a reward withdrawal and where it goes.
+- Refuse a reward withdrawal a fee sponsor pays for. The library sends
+  the withdrawn rewards to the sponsor's change.
 - Show the target of a delegation certificate. The stake script accepts
   any delegation a device signs: to a pool, to a DRep, or both.
 
@@ -136,15 +139,23 @@ the caps, the recipients, the expiry and the grant's liveness.
 ## Fee sponsor
 
 A [fee sponsor](../glossary.md#fee-sponsor) gains no authority, but it
-sees and co-signs what it pays for. It checks that:
+sees and co-signs what it pays for and backs it with its collateral. It
+checks that:
 
-- it contributes only the fee, the collateral, the control output's extra
-  lovelace and, at creation, the control UTxO's lovelace and the
-  registration deposit;
+- it contributes only the fee, the collateral, the control output's
+  growth (the lovelace it holds beyond the control input) and, at
+  creation, the control UTxO's lovelace and the registration deposit;
 - its change returns to it;
 - the transaction is a creation or an owner transaction, never a grant
   spend.
 
 A sponsor that refuses withdrawals from scripts it does not know allows
-the logic the control input's datum names. On an upgrade it allows both
-logics.
+the withdrawal from the logic the control output's datum names at
+creation, from the logic the control input's datum names otherwise,
+from both logics on an upgrade, and from the account's stake
+credential on a reward withdrawal.
+
+A sponsor that refuses certificates of scripts it does not know allows
+the registration certificate of the account's stake credential at
+creation and its delegation certificate. A delegation runs the stake
+script through that certificate, not through a withdrawal.

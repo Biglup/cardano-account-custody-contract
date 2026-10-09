@@ -55,7 +55,7 @@ In scope, the library modules the validators compile from, in
 | [state.ak](../../lib/cardano_account_custody_contract/state.ak) | Replaceable | The bounds and well formedness. |
 
 `logic_v1` writes the dispatch of `logic.validates_withdrawal` out in its
-own handler. The two are reviewed together as one piece of code. The
+own handler. The two are one piece of code under audit. The
 compiled code of `logic_v1` is final, because its applied hash is the
 credential its accounts name.
 
@@ -65,8 +65,9 @@ Out of scope:
   logic. No account runs it, the blueprint does not carry it and nothing
   ships it.
 - The evidence scripts in `offchain/scripts`.
-- The off-chain library in `offchain/src`, key management, a device wallet's
-  list of known logic hashes, a fee sponsor service, and the network
+- The off-chain library in `offchain/src`, key management, a device
+  wallet's [known logic list](../glossary.md#known-logic-list), a fee
+  sponsor service, and the network
   setup. Where the contract's safety depends on them, the
   [trust assumptions](trust-assumptions.md) say so.
 - The Cardano ledger rules the validators rely on. The

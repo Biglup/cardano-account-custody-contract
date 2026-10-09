@@ -48,7 +48,8 @@ grant UTxO, and the proxy pins it to its account's address.
   UTxO or on each other's grants. A grant spend spends exactly one
   account token, its own grant UTxO.
 - Grant tokens are minted at issuance and burned at the sweep of a dead
-  grant. The account state counts them as outstanding, bounded at 16.
+  grant. The account state counts them as outstanding, bounded at 16
+  under `logic_v1`.
 - Each grant UTxO holds its minimum lovelace, paid by the account at
   issuance and returned at the sweep.
 - A dead grant UTxO stays at the address until a device sweeps it.

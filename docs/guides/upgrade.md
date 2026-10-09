@@ -10,14 +10,14 @@ survives, and what a signer must refuse. It assumes the setup of the
 [quickstart](quickstart.md); the snippets extend that script.
 
 One logic version exists, `logic_v1`. An upgrade becomes possible when
-another version is built, reviewed and deployed.
+another version is built, audited and deployed.
 
 ## Before the upgrade
 
 The arriving logic must be ready on the network and known to every party
 that builds or signs for the account:
 
-1. It is reviewed on its own: its rules, its arrival branch, that it keeps
+1. It is audited on its own: its rules, its arrival branch, that it keeps
    the [stable prefix](../glossary.md#stable-prefix) of each datum, and
    that as a leaving logic it requires the arriving logic to run.
 2. Its credential is registered on the network. The proxy demands a
@@ -26,8 +26,8 @@ that builds or signs for the account:
    [Reference scripts](../architecture.md#reference-scripts) explains
    why. Parking is covered in
    [network setup](../operations/network-setup.md#add-a-logic-version).
-4. Every device wallet and fee sponsor that lists known logic hashes
-   lists the new hash.
+4. Every device wallet and fee sponsor that keeps a
+   [known logic list](../glossary.md#known-logic-list) adds the new hash.
 
 ## Load the arriving logic
 
@@ -116,7 +116,8 @@ spend. A device wallet therefore:
 
 - shows the logic of every transaction that changes field 0 of a control
   datum by a known name;
-- refuses a hash outside its list of known logic hashes, and protects that
+- refuses a hash outside its
+  [known logic list](../glossary.md#known-logic-list), and protects that
   list as part of the wallet;
 - refuses a downgrade to a version with a known defect;
 - refuses the account's own stake script hash as a logic. That script is
@@ -128,8 +129,8 @@ spend. A device wallet therefore:
   [counters written on arrival](../security/known-issues.md#counters-written-on-arrival).
 
 During an upgrade window, accounts sit on both versions. A device wallet
-or fee sponsor that lists the logics it serves lists both the leaving and
-the arriving hash for as long as any account runs either. Listing only
+or fee sponsor keeps both the leaving and the arriving hash in its known
+logic list for as long as any account runs either. Listing only
 the new hash strands the accounts that have not moved. Listing only the
 old one refuses the upgrade itself.
 

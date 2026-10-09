@@ -62,6 +62,7 @@ mint without the registration.
   before creation can register it with the legacy certificate. Creation
   at that address is then blocked for good. The mitigation is at the key
   layer: the credential is unknown until the creation registers it. See
-  [known issues](../security/known-issues.md) and
+  [stake credential squat](../security/known-issues.md#stake-credential-squat)
+  and
   [signers](../guides/signers.md#keys-and-networks).
 - An account must be created before its address is shared or funded.

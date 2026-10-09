@@ -49,7 +49,7 @@ sign account transactions.
 | [Verification](verification.md) | The test suites, the tests behind each vulnerability class, the execution budgets, the findings and the chain evidence. |
 | [Preprod evidence](preprod-evidence.md) | A generated record of the flows run against preprod, up to the upgrade. |
 | [Devnet evidence](devnet-evidence.md) | A generated record of every flow, the upgrade included, run on a local devnet. |
-| [Security review](security-review.md) | A map from each section of the former security review to its location. |
+| [Security review](security-review.md) | A map from each section of the security review to its location. |
 
 ## Decision records
 

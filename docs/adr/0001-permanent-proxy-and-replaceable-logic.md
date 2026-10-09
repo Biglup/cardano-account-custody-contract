@@ -47,7 +47,8 @@ transaction in which both logics run. See
 - The address, the state NFT, the reward account and the token names
   never change, through device rotation and upgrades alike.
 - The logic is trusted code. The proxy admits any registered script as a
-  logic, so the device wallet's list of known logic hashes is the gate
+  logic, so the device wallet's
+  [known logic list](../glossary.md#known-logic-list) is the gate
   against unknown code; see [upgrade](../guides/upgrade.md#what-a-signer-must-refuse).
 - Every version must keep the stable prefix of each datum, because the
   proxy, the stake script, an arriving logic and a sweep read those

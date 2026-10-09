@@ -3,8 +3,8 @@
 The Cardano account custody contract gives a user one permanent address
 that several keys control, and lets the user hand bounded, revocable
 spending rights to agents. It is written in Aiken for Plutus V3 and ships
-with a TypeScript reference library that builds each operation. Terms in this document are defined in the
-[glossary](glossary.md).
+with a TypeScript reference library that builds each operation. Terms in
+this document are defined in the [glossary](glossary.md).
 
 ## The problem
 
@@ -129,7 +129,7 @@ names:
   nothing an agent can spend unless the control output must grow; see
   [revokeGrant](protocol/transactions.md#revokegrant). Once it confirms,
   no spend under the revoked grant can confirm.
-- Plain deposits and reserves stay spendable by a device, except one
+- Fund UTxOs and reserves stay spendable by a device, except a reserve
   under a datum hash with no known preimage; see
   [deposits under a datum hash](security/known-issues.md#deposits-under-a-datum-hash).
   A dead grant's lovelace becomes spendable by a device when the grant is

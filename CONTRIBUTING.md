@@ -61,17 +61,11 @@ validator. For the same reason
 `logic.validates_withdrawal` in its handler: a call in its place
 compiles to different code.
 
-The hashes of the committed blueprint:
-
-| Validator | Hash |
-| --- | --- |
-| Proxy, `account` | `ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253` |
-| Logic, `logic_v1`, unapplied | `7cf7daa6c0a5825e23a9dadece990d5a602fa1508d01f061eacaed52` |
-| Logic, `logic_v1`, applied to the proxy hash | `2cd68e398bdf9fbc8d257614b54403451ee722520ec785fe14f8df5a` |
-| Stake script, `account_stake`, unapplied | `edcfa41389b7b924916ad7408cd2d0f75a7a3dae8717f9bbf1a668c6` |
+The hashes of the committed blueprint are listed under
+[scope](docs/security/README.md#scope).
 
 A new logic version is a new validator with its own module, its own
-review and its own deployment; see
+audit and its own deployment; see
 [ADR 0001](docs/adr/0001-permanent-proxy-and-replaceable-logic.md) and
 [upgrade](docs/guides/upgrade.md).
 
@@ -264,8 +258,8 @@ copied.
   and the three `equalsByteString` CPU entries (indexes 64, 65 and 66)
   are 24548, 29498 and 38 against 30623, 28755 and 75. The devnet
   genesis gives the Plutus V1 model 166 entries and the V2 model 175,
-  against 332 each on preprod. Both differ in the same three byte string equality entries.
-  The devnet's parameters endpoint reports no V2 model.
+  against 332 each on preprod. Both differ in the same three byte string
+  equality entries. The devnet's parameters endpoint reports no V2 model.
 - Memory is priced the same on both chains. Only the step cost of the
   same work differs.
 - Preprod's cost models cannot be put on the devnet chain. The image
@@ -336,7 +330,11 @@ The documentation describes the system as it is:
 - Present tense. No history, no versions of the documents themselves.
 - Normative statements, not narration of a run. The flow script, its
   steps, the devnet and the fixture appear only here and in
-  [verification](docs/verification.md).
+  [verification](docs/verification.md), except where an operator runs
+  the network setup ([network setup](docs/operations/network-setup.md),
+  [transactions](docs/protocol/transactions.md#network-setup)) and
+  where the audit scope excludes them
+  ([security](docs/security/README.md#scope)).
 - Test names, test counts and measurements appear only in this page,
   `docs/verification.md` and the evidence documents. Bounds such as 8
   devices are functionality and belong in the documentation.

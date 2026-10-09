@@ -59,8 +59,8 @@ requires the logic the account names to run.
 
 None. Its hash is therefore the same for every account on a network.
 That hash is the payment credential of every account address and the
-policy id of every account token. The blueprint gives it as
-`ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253`.
+policy id of every account token. The blueprint's hash is listed under
+[scope](../security/README.md#scope).
 
 ### Datum
 
@@ -220,10 +220,9 @@ names.
 | `owner` | `VerificationKeyHash` | Makes the script, and so the address, unique to one key. The owner must sign the registration that creates the account and must be among its first devices. |
 | `proxy_hash` | `ScriptHash` | Locates the account's state NFT, which is named after this script's hash under the proxy policy. |
 
-The blueprint holds the unapplied script, of hash
-`edcfa41389b7b924916ad7408cd2d0f75a7a3dae8717f9bbf1a668c6`. The hash of
-the script applied to both parameters is the account's stake
-credential.
+The blueprint holds the unapplied script, whose hash is listed under
+[scope](../security/README.md#scope). The hash of the script applied to
+both parameters is the account's stake credential.
 
 ### Datum
 
@@ -322,10 +321,9 @@ signatures, grant scopes, issuance, sweeps and the state written back.
 | `proxy_hash` | `ScriptHash` | Identifies the account addresses, the state NFTs and the token policy the logic governs. |
 
 The applied hash is the [logic credential](../glossary.md#logic-credential)
-that a control datum names in field 0. The unapplied hash in the
-blueprint is `7cf7daa6c0a5825e23a9dadece990d5a602fa1508d01f061eacaed52`.
-Applied to the proxy hash above, it is
-`2cd68e398bdf9fbc8d257614b54403451ee722520ec785fe14f8df5a`.
+that a control datum names in field 0. The unapplied hash and the hash
+applied to the proxy hash are listed under
+[scope](../security/README.md#scope).
 
 ### Datum
 
@@ -529,8 +527,8 @@ over the referenced control UTxO and its state:
 
 [`grant_spend_rule`](../../lib/cardano_account_custody_contract/rules.ak#L77),
 on an input spent with `SpendWithGrant`, against the referenced control
-state. The leaving value is the value of every input at the account
-address minus the value of every output to it, per asset class
+state. It takes the [leaving value](../glossary.md#leaving-value) at
+the account address
 ([L86](../../lib/cardano_account_custody_contract/rules.ak#L86),
 [leaving_value](../../lib/cardano_account_custody_contract/grant.ak#L99)).
 
@@ -558,11 +556,11 @@ address minus the value of every output to it, per asset class
 - The leaving value stays within the scope
   ([L104](../../lib/cardano_account_custody_contract/rules.ak#L104),
   [stays_within_scope](../../lib/cardano_account_custody_contract/grant.ak#L137)):
-  - The scoped asset leaving is at most `per_call_cap` and at most
-    `cap`.
-  - For a token scope, the lovelace leaving is at most
+  - The net outflow of the scoped asset is at most `per_call_cap` and
+    at most `cap`.
+  - For a token scope, the net outflow of lovelace is at most
     `lovelace_per_call_cap` and at most `lovelace_cap`.
-  - No other asset class has a positive leaving quantity
+  - No other asset class has a net outflow
     ([nothing_else_leaves](../../lib/cardano_account_custody_contract/grant.ak#L156)).
 - With a non empty recipient list, every output is at the account
   address or at a listed recipient
@@ -584,8 +582,8 @@ address minus the value of every output to it, per asset class
   `lovelace_cap` changed
   ([L114](../../lib/cardano_account_custody_contract/rules.ak#L114),
   [carries_grant_within](../../lib/cardano_account_custody_contract/grant.ak#L242)).
-  Each new cap is at least zero and at most the old cap minus the
-  positive part of its asset's leaving quantity
+  Each new cap is at least zero and at most the old cap minus the net
+  outflow of its asset
   ([scope_after_spend](../../lib/cardano_account_custody_contract/grant.ak#L221)).
   For a lovelace scope, `lovelace_cap` stays as it was.
 - The grant output carries no reference script

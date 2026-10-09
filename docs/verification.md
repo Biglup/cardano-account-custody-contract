@@ -625,8 +625,8 @@ state `logic_v1` admits and run every handler of every path over it. The
 largest control state has 8 devices, 32 revoked slots, 16 outstanding
 grants and a generation past zero. The largest grant lists 8 recipients.
 Every key is 28 bytes. `largest_state` fills its revoked list with slots
-1 to 32, puts the largest token grant and the largest lovelace grant at
-slots 38 and 39, and its next slot at 40. The tests are named
+1 to 32, puts the largest grants over a token scope and a lovelace
+scope at slots 38 and 39, and its next slot at 40. The tests are named
 `budget_proxy_<fixture>_<handler>`, `budget_logic_<fixture>`, and, for the
 upgrade, `budget_old_logic_` and `budget_new_logic_`.
 
@@ -801,7 +801,7 @@ spend differs as above.
 
 ## Findings and how each was closed
 
-The internal adversarial review found these. Each is closed. No other
+The adversarial test suite found these. Each is closed. No other
 attack in the suite succeeded.
 
 1. **A grantee could lock the whole balance.** `SpendWithGrant` exempted

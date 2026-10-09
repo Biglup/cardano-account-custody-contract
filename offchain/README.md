@@ -117,18 +117,15 @@ and [upgrade](../docs/guides/upgrade.md).
 | `minimumChangeLovelace` | The least lovelace of a change output to the account |
 | `unchecked` | Skips the builder's checks and the evaluation, and carries fixed execution budgets, so that the node refuses what the validators refuse. Never for transactions meant to confirm. |
 
-The fixed budgets go per redeemer. Every withdrawal redeemer, the logic withdrawal among them,
-gets the logic budget. Every other redeemer gets the proxy budget. The
-budgets are `UNCHECKED_EXECUTION_UNITS`, applied by
-`fixedBudgetEvaluator`.
+The fixed budgets go per redeemer. Every withdrawal redeemer, the logic
+withdrawal among them, gets the logic budget. Every other redeemer gets
+the proxy budget. The budgets are `UNCHECKED_EXECUTION_UNITS`, applied
+by `fixedBudgetEvaluator`.
 
-Without a sponsor, an owner transaction is paid by the account. The fee
-comes from the largest reserve that can cover the most a transaction can
-cost, else from the fund UTxOs. A reserve that carries only a datum hash
-is listed but never spent. Every transaction the account pays, a grant
-spend included, uses `accountOnlyCoinSelector`. It spends nothing beyond
-the account UTxOs the builder selected. The signing wallet, or the
-collateral wallet when given, provides only the collateral. See
+Every transaction the account pays, a grant spend included, uses
+`accountOnlyCoinSelector`. It spends nothing beyond the account UTxOs
+the builder selected. Who pays the fee and the collateral of each
+operation is in
 [reserves and fee payment](../docs/architecture.md#reserves-and-fee-payment).
 
 ## Porting

@@ -5,10 +5,10 @@
 
 ## Context and Problem
 
-An account needs two kinds of key. Devices hold full authority over the
-account. Agents spend under grants. Each grant is bounded per agent: a
-per call cap, a cumulative cap, lovelace caps, an expiry and a recipient
-list, revocable by any device at any time.
+An account needs two kinds of key. Under `logic_v1`, devices hold full
+authority over the account. Agents spend under grants. Each grant is
+bounded per agent: a per call cap, a cumulative cap, lovelace caps, an
+expiry and a recipient list, revocable by any device at any time.
 
 Bullet ([orbistry/bullet](https://github.com/orbistry/bullet)) is an
 Aiken smart wallet with hot, cold and intention validators and a vault.
@@ -60,6 +60,6 @@ validator. Its design is set out in ADRs
   spend, and any device revokes a grant with one transaction.
 - Under `logic_v1`, any one device acts alone. There is no quorum and no
   cold tier.
-- The contract inherits no review from Bullet. It needs an independent
+- The contract inherits no audit from Bullet. It needs an independent
   audit of its own; see
   [no independent audit](../security/known-issues.md#no-independent-audit).

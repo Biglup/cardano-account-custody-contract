@@ -51,9 +51,9 @@ remain.
 What to do. Prevent it at the key layer:
 
 - Derive the owner key on a path that differs per network class. By
-  convention of the device wallet and the library, mainnet and testnets
-  use distinct account index ranges, so a key used on a testnet never
-  corresponds to a mainnet credential.
+  convention of the device wallet, mainnet and testnets use distinct
+  account index ranges, so a key used on a testnet never corresponds to
+  a mainnet credential.
 - Refuse account operations outside the device wallet's network class.
 - Never use the owner key for anything else. The stake script hash of
   an account then becomes public only in the creation that registers
@@ -112,11 +112,11 @@ rule on the state.
 
 What to do. The device wallet shows the logic by a known name and refuses
 an unknown hash in field 0 of a control output it signs. It protects the
-list of known hashes it ships. It refuses a downgrade to a version with a
-known defect. Each logic version is reviewed on its own before its hash
-joins the list: its rules, its arrival path, and that it keeps the stable
-prefixes. The library attaches only the blueprint's logic and the logics
-given to it.
+[known logic list](../glossary.md#known-logic-list) it ships. It refuses
+a downgrade to a version with a known defect. Each logic version is
+audited on its own before its hash joins the list: its rules, its
+arrival path, and that it keeps the stable prefixes. The library
+attaches only the blueprint's logic and the logics given to it.
 
 ## Logic reward account
 
@@ -140,8 +140,7 @@ way is not account funds, and the grant accounting does not count it.
 What to do. Draw the balance the provider reports for the logic's reward
 address, once per logic per transaction, both logics on an upgrade.
 Return the withdrawn lovelace to the account address. Rebuild once if the
-balance changes between build and submission. See the contract's
-[issue #1](https://github.com/Biglup/cardano-account-custody-contract/issues/1).
+balance changes between build and submission.
 
 ## Logic certificates are fixed
 
@@ -317,7 +316,7 @@ over many inputs.
 
 ## Fund contention and fragmentation
 
-Issue. Every path draws from the same plain deposits. A grantee may split
+Issue. Every path draws from the same fund UTxOs. A grantee may split
 the balance into many deposits at zero outflow, or run no-op spends
 against its own grant UTxO.
 

@@ -71,25 +71,13 @@ flowchart LR
 
 ## Preprod deployment
 
-The validator hashes, derived from the committed [blueprint](plutus.json):
-
-| Validator | Hash |
-| --- | --- |
-| Proxy, `account` | `ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253` |
-| Logic, `logic_v1`, applied to the proxy hash | `2cd68e398bdf9fbc8d257614b54403451ee722520ec785fe14f8df5a` |
-| Stake script, `account_stake`, unapplied | `edcfa41389b7b924916ad7408cd2d0f75a7a3dae8717f9bbf1a668c6` |
-
-The logic credential is registered on preprod. The proxy and the logic
-are parked as reference scripts:
-
-| Script | Parked UTxO |
-| --- | --- |
-| Proxy | `574e6c3d2e64303015f4db89930848b47fef501c65c448a59d843a383a63fc7e#0` |
-| Logic | `000b0715bb8613761555becc9b50105dd3e23b93f91bce01dea72c3bbd0228f8#0` |
-
-The network file [offchain/networks/preprod.json](offchain/networks/preprod.json)
-records them. [Network setup](docs/operations/network-setup.md#preprod)
-gives the parking address and the logic's reward address.
+The logic credential is registered on preprod, and the proxy and the
+logic are parked as reference scripts. The proxy hash, the logic
+credential and the parked UTxOs are recorded in
+[Network setup: Preprod](docs/operations/network-setup.md#preprod). The
+[network file](docs/glossary.md#network-file)
+[offchain/networks/preprod.json](offchain/networks/preprod.json) holds
+the parked UTxOs the library reads.
 
 ## Quick start
 

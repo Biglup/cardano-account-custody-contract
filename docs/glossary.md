@@ -47,7 +47,7 @@ behalf. It holds the grantee's authority and nothing more.
 
 The logic's path when the control UTxO is referenced, not spent. A
 grantee spends its grant UTxO, the only input that holds an account
-token, and plain funds move beside it.
+token, and fund UTxOs move beside it.
 
 ## Agent wallet
 
@@ -80,9 +80,8 @@ The proxy mint redeemer that burns grant tokens in a sweep.
 
 A limit in a grant's scope. The per call cap (`per_call_cap`) bounds one
 transaction. The remaining cap (`cap`) bounds the rest of the grant's
-life. Under `logic_v1` each spend reduces it by at least the net amount
-of its asset that leaves the account, which can be zero. It never
-increases.
+life. Under `logic_v1` each spend reduces it by at least the net outflow
+of its asset, which can be zero. It never increases.
 
 ## Collateral wallet
 
@@ -115,8 +114,8 @@ the state NFT and writes the first control UTxO. The owner signs it.
 ## Current grant
 
 A grant issued under the account's generation whose slot is not in the
-revoked list. Under `logic_v1`, only a current grant can be spent, and only before its
-expiry.
+revoked list. Under `logic_v1`, only a current grant can be spent, and
+only before its expiry.
 
 ## Dead grant
 
@@ -158,9 +157,10 @@ library refuses a spend whose fee exceeds it.
 ## Fee sponsor
 
 A wallet or service that pays the fee and collateral of a creation or an
-owner transaction, and at creation the control UTxO's lovelace and the
-registration deposit. It gains no authority. The library takes it as the
-`sponsor` option and refuses it on a grant spend.
+owner transaction, any growth of the control output, and at creation the
+control UTxO's lovelace and the registration deposit. It gains no
+authority. The library takes it as the `sponsor` option and refuses it
+on a grant spend.
 
 ## Fund
 
@@ -185,7 +185,7 @@ grant UTxO. It carries a slot, a grantee, a generation and a scope.
 
 ## Grant spend
 
-A transaction in which a grantee spends its grant UTxO and plain funds
+A transaction in which a grantee spends its grant UTxO and fund UTxOs
 within the grant's scope, with the control UTxO referenced.
 
 ## Grant token
@@ -213,11 +213,23 @@ grants per transaction.
 
 The proxy mint redeemer that mints grant tokens at issuance.
 
+## Known logic list
+
+The logic hashes a device wallet or fee sponsor accepts in field 0 of a
+control output, the `logic` field of the account state. A hash outside
+it names code the holder cannot vouch for.
+
 ## Leaving logic
 
 In an upgrade, the logic the account state names before the
 transaction. It takes its owner path. `logic_v1` as the leaving logic
 requires only that the arriving logic runs and that nothing is minted.
+
+## Leaving value
+
+Per asset class, the value of every input at the account address minus
+the value of every output to it. Its positive part is the net outflow. A
+negative quantity is a net deposit.
 
 ## Logic
 
@@ -239,10 +251,23 @@ practice.
 
 ## Lovelace caps
 
-The caps a token grant has on lovelace: `lovelace_per_call_cap` per
+The caps a token scope has on lovelace: `lovelace_per_call_cap` per
 transaction and `lovelace_cap` for the rest of its life. They bound the
-fees and minimum UTxO lovelace that leave with the token. Both are zero
-for a lovelace grant.
+fees and minimum UTxO lovelace that leave with the token. Under
+`logic_v1` both are zero for a lovelace scope.
+
+## Lovelace scope, token scope
+
+A scope whose asset is lovelace, the empty policy id with the empty
+asset name, is a lovelace scope. A scope over any other asset is a token
+scope.
+
+## Network file
+
+The file `offchain/networks/<network>.json`, holding the parked
+reference script records of a network. `loadNetworkScripts` reads it,
+and the builders take the result as their `network` option. Without a
+file, the builders embed the scripts.
 
 ## Network setup
 
@@ -301,8 +326,8 @@ every account address and the policy id of every account token.
 
 ## Recipients
 
-The addresses a grant may pay, at most eight. An empty list allows any
-destination.
+The addresses a grant may pay. Under `logic_v1` it holds at most eight.
+An empty list allows any destination.
 
 ## Registration deposit
 
@@ -346,8 +371,7 @@ the lovelace caps, the expiry and the recipients.
 
 A grant's number within its account, taken from the next slot at
 issuance. It is never reused while the account stays under `logic_v1`.
-It ends the grant token's name. It is not a
-chain slot.
+It ends the grant token's name. It is not a chain slot.
 
 ## SpendWithGrant
 

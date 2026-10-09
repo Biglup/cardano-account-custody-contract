@@ -167,7 +167,7 @@ flowchart TD
 - **Owner path.** A device spends the control UTxO and recreates it.
   The device may spend any fund or reserve, rewrite the state within its
   bounds, issue grants or sweep dead ones.
-- **Agent path.** A grantee spends its grant UTxO and plain funds. The
+- **Agent path.** A grantee spends its grant UTxO and fund UTxOs. The
   control UTxO is only referenced, so an agent never competes with the
   owner for it. The grant UTxO returns with its remaining caps reduced.
 - **Arrival.** The account is created under this logic, or moves to it

@@ -60,7 +60,7 @@ It sums every input at the account's full address, stake part included,
 and subtracts every output paid back to it (INV-35). Each account's logic
 sees its own net outflow whatever the other outputs are. The grant output
 must record that outflow: its remaining caps sit between zero and the
-spent caps less the positive part of each asset's net outflow (INV-39).
+spent caps less each asset's net outflow (INV-39).
 A net deposit leaves a cap unchanged. A grant handed back unchanged
 beside a positive outflow fails that rule alone. Any
 surplus appears in an output, which a recipient list refuses when the
@@ -116,19 +116,19 @@ to its address under a datum hash.
 Mitigation. On the agent path the grant output's inline datum must equal
 the spent grant in every field but its remaining caps: slot, grantee,
 generation, asset, per call caps, expiry and recipients. Each remaining
-cap sits between zero and the spent cap less the positive part of the net
-outflow of its asset (INV-39). Exactly one
-output holds the grant token, at the spent grant UTxO's address, with the
-same value (INV-38). A datum given by hash never passes. `logic_v1`
-decodes the state and every grant it spends or issues strictly, so a
-datum with trailing fields is refused on the owner path, the agent path
-and at issuance (INV-46). The sweep is the one rule that reads a grant by
-its stable prefix, so that a grant of another shape is swept once dead. A
-padded grant datum therefore dies and is swept like any other, and is
-never spent. The proxy reads only field 0 of a control datum, and the
-stake script only field 1. The shape after the stable prefix is each
-logic's own, and a control output naming another logic is that logic's
-to decode (see [logic substitution](#logic-substitution-and-the-upgrade-path)).
+cap sits between zero and the spent cap less the net outflow of its
+asset (INV-39). Exactly one output holds the grant token, at the spent
+grant UTxO's address, with the same value (INV-38). A datum given by
+hash never passes. `logic_v1` decodes the state and every grant it
+spends or issues strictly, so a datum with trailing fields is refused on
+the owner path, the agent path and at issuance (INV-46). The sweep is
+the one rule that reads a grant by its stable prefix, so that a grant of
+another shape is swept once dead. A padded grant datum therefore dies
+and is swept like any other, and is never spent. The proxy reads only
+field 0 of a control datum, and the stake script only field 1. The shape
+after the stable prefix is each logic's own, and a control output naming
+another logic is that logic's to decode (see [logic
+substitution](#logic-substitution-and-the-upgrade-path)).
 
 `logic_v1` reads the proxy's redeemers back from the transaction through
 a soft cast that skips a value it cannot read. A padded redeemer the
@@ -266,7 +266,7 @@ deregistration of its credential (INV-19).
 Attack. Withdraw the account's rewards with a grantee signature over a
 referenced control UTxO, or over a grant UTxO. Spend the control UTxO or
 a grant UTxO with `Fund`, the redeemer that carries no authorisation.
-Spend a plain deposit with `Device`. Spend the control UTxO with
+Spend a fund UTxO with `Device`. Spend the control UTxO with
 `SpendWithGrant`. Sweep a grant with the grantee's signature. Spend a
 grant with its token burned. Burn grant tokens over a referenced control
 UTxO. Use `CreateAccount` on a burn with everything a creation needs
@@ -295,13 +295,13 @@ in their `else` handler (INV-13, INV-16; `logic_v1`'s `else` in
 ## Missed input validation
 
 Attack. The grantee pays exactly the per call cap and lets the account
-pay the fee. It drains lovelace from the grant UTxO on top of the cap. It
-uses a grant scoped to one asset name to move a sibling asset name under
-the same policy. It spends a token grant's whole remaining lovelace cap
-in one transaction above its lovelace per call cap. It pays part of a
-spend within the per call cap to the bare script address to dodge the
-recipient list. An issuance writes grants with a negative cap, no
-expiry, a lovelace cap on a lovelace scope, or 9 recipients. A device
+pay the fee. It drains lovelace from the grant UTxO on top of the cap.
+It uses a grant scoped to one asset name to move a sibling asset name
+under the same policy. It spends the whole remaining lovelace cap of a
+token scope in one transaction above its lovelace per call cap. It pays
+part of a spend within the per call cap to the bare script address to
+dodge the recipient list. An issuance writes grants with a negative cap,
+no expiry, a lovelace cap on a lovelace scope, or 9 recipients. A device
 rewrite moves the counters without a mint, or lowers the generation.
 
 Mitigation. The outflow is a net sum over the full account address, so
@@ -372,7 +372,7 @@ another grant UTxO. A reserve needs the control UTxO spent (INV-11), so
 an agent transaction never spends one either.
 
 Two agents of one account, or an agent and the owner, contend only when
-they pick the same plain deposit. The ledger refuses the double spend and
+they pick the same fund UTxO. The ledger refuses the double spend and
 the loser rebuilds. The owner avoids even that by paying from a reserve
 or through a fee sponsor. A revoke is one `Device` spend of the control
 UTxO, whatever is outstanding. Once it lands every grant spend sees it. A
@@ -386,7 +386,7 @@ redeemer. An owner at the outstanding bound who raises the generation
 sweeps the dead grants before reissuing the survivors. None of this
 delays the revoke itself.
 
-A grantee may still split the plain deposits at zero outflow, or run
+A grantee may still split the fund UTxOs at zero outflow, or run
 no-op spends against its own grant UTxO. Neither touches the control
 UTxO. See [fund contention](known-issues.md#fund-contention-and-fragmentation).
 
@@ -394,37 +394,38 @@ UTxO. See [fund contention](known-issues.md#fund-contention-and-fragmentation).
 
 Attack. A grant spend pays the whole balance back to the account address
 under a datum hash, or under an inline datum. A grant spend sends the
-balance to the bare script address. A grant spend strands its grant token
-on a plain deposit. A device rewrite removes every device. An account is
-created without devices. A registration is published without the state
-NFT mint, which would leave a credential registered with no account to
-create. A sweep burns a grant token without lowering the outstanding
-count, which would wedge the account at the bound. An account is pointed
-at a logic that never runs.
+balance to the bare script address. A grant spend strands its grant
+token in an output without the recreated grant. A device rewrite removes
+every device. An account is created without devices. A registration is
+published without the state NFT mint, which would leave a credential
+registered with no account to create. A sweep burns a grant token
+without lowering the outstanding count, which would wedge the account at
+the bound. An account is pointed at a logic that never runs.
 
 Mitigation. On the agent path every output at the account address that
 holds no account token carries no datum and no reference script
-(INV-37). A script output under a datum hash is spendable only by whoever
-supplies the preimage, and none of it counts as leaving. Without the rule
-a grantee with any cap could put the whole balance beyond reach. An
-inline datum is refused by the same rule: a deposit with a datum is a
-reserve, which only the owner can spend. The owner path is exempt: a
-device has full authority and may tag deposits with a datum to make
-reserves. The bare script address is not the account address, so
+(INV-37). A script output under a datum hash is spendable only by
+whoever supplies the preimage, and none of it counts as leaving. Without
+the rule a grantee with any cap could put the whole balance beyond
+reach. An inline datum is refused by the same rule: a deposit with a
+datum is a reserve, which only the owner can spend. The owner path is
+exempt: a device has full authority and may tag deposits with a datum to
+make reserves. The bare script address is not the account address, so
 sending the balance there counts as leaving and the per call cap refuses
 it (INV-35). A recipient list refuses the destination as well (INV-36).
 Through an open grant the loss stays bounded by the caps. A grant token
-on a plain deposit fails the single grant output rule (INV-38). Every
-written state lists at least one device (INV-44). Both registration arms
-require the state NFT mint (INV-14). The outstanding count follows the
-burns (INV-24). A control output naming a logic whose withdrawal is
-absent is refused by the leaving logic (INV-25), and the proxy requires
-that withdrawal on every later spend (INV-10). No account can end up
-under a logic that cannot run. A logic that is registered but defective
-is the device wallet's concern; see [unknown logic](known-issues.md#unknown-logic).
+in an output without the recreated grant fails the grant output rules
+(INV-38, INV-39). Every written state lists at least one device
+(INV-44). Both registration arms require the state NFT mint (INV-14).
+The outstanding count follows the burns (INV-24). A control output
+naming a logic whose withdrawal is absent is refused by the leaving
+logic (INV-25), and the proxy requires that withdrawal on every later
+spend (INV-10). No account can end up under a logic that cannot run. A
+logic that is registered but defective is the device wallet's concern;
+see [unknown logic](known-issues.md#unknown-logic).
 
 Permanence is the structural mitigation for the rest of this class.
-Every plain deposit needs an account token in the same transaction, and
+Every fund UTxO needs an account token in the same transaction, and
 every reserve the control UTxO (INV-11). The control UTxO always exists:
 it is created with the account, every spend recreates it (INV-9), no
 redeemer burns the NFT (INV-4), and the stake script refuses the
