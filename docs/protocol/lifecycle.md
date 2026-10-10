@@ -147,8 +147,8 @@ Transitions:
 - **Upgrade out of `logic_v1`.** The library raises the generation on
   every upgrade ([stateWithLogic](../../offchain/src/state.ts#L184)).
   `logic_v1` reads only the logic named in the state the account moves
-  to ([rules.ak#L239](../../lib/cardano_account_custody_contract/rules.ak#L239),
-  [rules.ak#L258](../../lib/cardano_account_custody_contract/rules.ak#L258)).
+  to ([rules.ak#L238](../../lib/cardano_account_custody_contract/rules.ak#L238),
+  [rules.ak#L257](../../lib/cardano_account_custody_contract/rules.ak#L257)).
   Whether the grants die is a rule of the arriving logic.
 - **Sweep.** [sweepGrant](transactions.md#sweepgrant) spends the dead
   grant UTxO, burns its token and returns its lovelace to the account.
@@ -164,7 +164,7 @@ dead by generation.
 An arrival into `logic_v1` does not constrain `next_slot`. It can set
 it below a slot already issued. Once the account has arrived,
 `next_slot` only grows, by the grants issued
-([rules.ak#L255](../../lib/cardano_account_custody_contract/rules.ak#L255)).
+([rules.ak#L254](../../lib/cardano_account_custody_contract/rules.ak#L254)).
 
 A grant written by another logic, of a shape `logic_v1` cannot decode,
 is swept by generation or revocation, never by expiry.
