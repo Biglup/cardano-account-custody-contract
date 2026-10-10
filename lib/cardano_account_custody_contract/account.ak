@@ -1,3 +1,11 @@
+//// The vocabulary of the proxy: account addresses, token names under the
+//// proxy policy, the control UTxO and the grant UTxOs, the positional
+//// reads of the stable prefixes, and the redeemer lookups. The proxy,
+//// the stake script, the rules and every logic version call these.
+//// Predicates return `False` on a violation and say when they abort;
+//// accessors that decode data abort, on an `expect`, when it has another
+//// shape.
+
 //
 // Copyright 2026 IOG.
 //
@@ -37,21 +45,26 @@ use cardano_account_custody_contract/types.{
 
 // CONSTANTS *******************************************************************
 
-/// The length of a script hash, which is what a state NFT name and the
-/// logic pointer of a control datum are.
+/// The length in bytes of a script hash, which is what a state NFT name
+/// and the logic hash a control datum names are. `is_script_hash` and
+/// `is_state_nft_name` enforce it in the proxy on every creation.
 pub const script_hash_length = 28
 
-/// The length of a state NFT name: the account's stake script hash.
+/// The length in bytes of a state NFT name: the account's stake script
+/// hash. `is_state_nft_name` enforces it in the proxy on every creation.
 pub const state_nft_name_length = script_hash_length
 
-/// The length of the slot suffix a grant token name appends to the stake
-/// script hash, as a big endian integer.
+/// The length in bytes of the grant slot a grant token name appends to
+/// the stake script hash, as a big endian integer, so a slot runs from 0
+/// to 4294967295. `grant_token_name` enforces it wherever a grant token
+/// is named and `is_grant_name` on every grant mint.
 pub const slot_length = 4
 
 // FUNCTIONS *******************************************************************
 
-/// The input the spend handler is validating; fails when the output
-/// reference is not among the inputs.
+/// The input the spend handler is validating: the one of `inputs` at
+/// `output_reference`. Aborts when the output reference is not among
+/// the inputs.
 pub fn own_input(
   inputs: List<Input>,
   output_reference: OutputReference,
@@ -60,22 +73,25 @@ pub fn own_input(
   input
 }
 
-/// The script hash an address pays to; fails on a key payment credential.
+/// The script hash `address` pays to. Aborts when the payment credential
+/// is a key.
 pub fn script_hash_of(address: Address) -> ScriptHash {
   expect Script(script_hash) = address.payment_credential
   script_hash
 }
 
-/// The account stake script hash that identifies the account owning an
-/// address and names its state NFT. Fails unless the stake credential is an
-/// inline script; outputs with any other stake part belong to no account.
+/// The stake script hash that identifies the account owning `address`
+/// and names its state NFT. Aborts when the stake credential is missing,
+/// a pointer or a key; outputs with any such stake part belong to no
+/// account.
 pub fn stake_script_hash_of(address: Address) -> ScriptHash {
   expect Some(Inline(Script(stake_script_hash))) = address.stake_credential
   stake_script_hash
 }
 
-/// The account address: the account proxy as payment credential and the
-/// account stake script as stake credential.
+/// The account address: the proxy at `script_hash` as payment credential
+/// and the account stake script at `stake_script_hash` as inline script
+/// stake credential. Never aborts.
 pub fn account_address(
   script_hash: ScriptHash,
   stake_script_hash: ScriptHash,
@@ -84,9 +100,9 @@ pub fn account_address(
     |> address.with_delegation_script(stake_script_hash)
 }
 
-/// The name of the grant token of an account's slot: the stake script hash
-/// followed by the slot as four big endian bytes. Fails for a slot outside
-/// that range.
+/// The name of the grant token of an account's grant slot: the stake
+/// script hash followed by `slot` as 4 big endian bytes, 32 bytes in
+/// all. Aborts for a slot below 0 or above 4294967295.
 pub fn grant_token_name(stake_script_hash: ScriptHash, slot: Int) -> AssetName {
   bytearray.concat(
     stake_script_hash,
@@ -94,28 +110,34 @@ pub fn grant_token_name(stake_script_hash: ScriptHash, slot: Int) -> AssetName {
   )
 }
 
-/// The stake script hash a token name under the account policy belongs
-/// to: the name itself for a state NFT, its prefix for a grant token.
+/// The stake script hash a token name under the proxy policy belongs to:
+/// the name itself for a state NFT, its first 28 bytes for a grant
+/// token. A name shorter than 28 bytes is returned whole. Never aborts.
 pub fn account_of_name(name: AssetName) -> ScriptHash {
   bytearray.take(name, state_nft_name_length)
 }
 
-/// Whether a byte string has the length of a script hash.
+/// Whether `bytes` has the length of a script hash, 28 bytes. Returns
+/// `False` on any other length. Never aborts.
 pub fn is_script_hash(bytes: ByteArray) -> Bool {
   bytearray.length(bytes) == script_hash_length
 }
 
-/// Whether a token name has the shape of a state NFT name.
+/// Whether `name` has the shape of a state NFT name: 28 bytes. Returns
+/// `False` on any other length. Never aborts.
 pub fn is_state_nft_name(name: AssetName) -> Bool {
   bytearray.length(name) == state_nft_name_length
 }
 
-/// Whether a token name has the shape of a grant token name.
+/// Whether `name` has the shape of a grant token name: 32 bytes. Returns
+/// `False` on any other length. Never aborts.
 pub fn is_grant_name(name: AssetName) -> Bool {
   bytearray.length(name) == state_nft_name_length + slot_length
 }
 
-/// Whether a value holds exactly one state NFT of the account.
+/// Whether `value` holds exactly one state NFT of the account. Other
+/// assets beside it are tolerated. Returns `False` on any other quantity.
+/// Never aborts.
 pub fn holds_state_nft(
   value: Assets,
   script_hash: ScriptHash,
@@ -124,7 +146,9 @@ pub fn holds_state_nft(
   assets.has_nft(value, script_hash, stake_script_hash)
 }
 
-/// Whether a value holds nothing but lovelace and the account's state NFT.
+/// Whether `value` holds nothing but lovelace and exactly one state NFT
+/// of the account. Returns `False` on any other asset or quantity. Never
+/// aborts.
 pub fn holds_only_lovelace_and_state_nft(
   value: Assets,
   script_hash: ScriptHash,
@@ -133,8 +157,9 @@ pub fn holds_only_lovelace_and_state_nft(
   assets.has_nft_strict(value, script_hash, stake_script_hash)
 }
 
-/// Whether a value holds nothing but lovelace and the grant token of the
-/// account's slot.
+/// Whether `value` holds nothing but lovelace and exactly one grant
+/// token of the account's grant slot `slot`. Returns `False` on any
+/// other asset or quantity. Aborts for a slot that does not fit 4 bytes.
 pub fn holds_only_lovelace_and_grant_token(
   value: Assets,
   script_hash: ScriptHash,
@@ -148,17 +173,19 @@ pub fn holds_only_lovelace_and_grant_token(
   )
 }
 
-/// Whether a value holds no token of the account policy at all: a deposit's
-/// value, or the mint of an agent spend.
+/// Whether `value` holds no token of the proxy policy at all, whatever
+/// the account: a deposit's value, or the mint of a grant spend. Returns
+/// `False` on any entry under the policy. Never aborts.
 pub fn holds_no_account_token(value: Assets, script_hash: ScriptHash) -> Bool {
   assets.tokens(value, script_hash) == dict.empty
 }
 
-/// Whether an output is the control UTxO of the account: it carries an
+/// Whether `output` is the control UTxO of the account: it carries an
 /// inline datum, holds the state NFT and sits at `address`, the account
 /// address. A control UTxO always carries its state inline, so the datum
-/// shape is checked first and a plain deposit fails on one match; the
-/// token check follows and the address comparison comes last.
+/// shape is checked first and a plain deposit returns `False` after one
+/// match; the token check follows and the address comparison comes
+/// last. The datum is not decoded. Never aborts.
 fn is_control(
   output: Output,
   address: Address,
@@ -172,8 +199,9 @@ fn is_control(
   }
 }
 
-/// Whether an output sits at the account address and holds the state NFT
-/// under an inline datum.
+/// Whether `output` sits at the account address and holds the state NFT
+/// under an inline datum. The datum is not decoded. Returns `False`
+/// otherwise. Never aborts.
 pub fn is_control_output(
   output: Output,
   script_hash: ScriptHash,
@@ -187,7 +215,9 @@ pub fn is_control_output(
   )
 }
 
-/// The account's single control output; none or several yield `None`.
+/// The single control output of the account among `outputs`: at the
+/// account address, holding the state NFT, under an inline datum. `None`
+/// when there is none or several. Never aborts.
 pub fn find_control_output(
   outputs: List<Output>,
   script_hash: ScriptHash,
@@ -205,11 +235,11 @@ pub fn find_control_output(
   }
 }
 
-/// The account's control UTxO among the inputs and the reference inputs
-/// taken together; none or several, spent and referenced at once
-/// included, yield `None`. This is the one scan the proxy runs on every
-/// spend that defers to the logic, so it reads nothing but the datum
-/// shape, the value and the address of each input.
+/// The account's control UTxO among `inputs` and `reference_inputs`
+/// taken together. `None` when there is none or several, spent and
+/// referenced at once included. This is the one scan the proxy runs on
+/// every spend that defers to the logic, so it reads nothing but the
+/// datum shape, the value and the address of each input. Never aborts.
 pub fn find_present_control(
   inputs: List<Input>,
   reference_inputs: List<Input>,
@@ -232,8 +262,9 @@ pub fn find_present_control(
   }
 }
 
-/// The single output holding one token of the account policy with the
-/// given name, wherever it sits; none or several yield `None`.
+/// The single one of `outputs` holding exactly one token of the proxy
+/// policy named `name`, wherever it sits. `None` when there is none or
+/// several. Never aborts.
 pub fn find_token_output(
   outputs: List<Output>,
   script_hash: ScriptHash,
@@ -250,8 +281,9 @@ pub fn find_token_output(
   }
 }
 
-/// The single output holding the grant token of the account's slot,
-/// wherever it sits; none or several yield `None`.
+/// The single one of `outputs` holding the grant token of the account's
+/// grant slot `slot`, wherever it sits. `None` when there is none or
+/// several. Aborts for a slot that does not fit 4 bytes.
 pub fn find_grant_output(
   outputs: List<Output>,
   script_hash: ScriptHash,
@@ -265,10 +297,11 @@ pub fn find_grant_output(
   )
 }
 
-/// Whether an output sits at the account address and holds a token of the
-/// account policy named under the account: its state NFT or one of its
-/// grant tokens. The token check runs first, since most outputs at an
-/// account address are deposits that fail it on one lookup.
+/// Whether `output` sits at the account address and holds a token of the
+/// proxy policy named under the account: its state NFT or one of its
+/// grant tokens, in any quantity. The token check runs first, since most
+/// outputs at an account address are deposits that return `False` after
+/// one lookup. Never aborts.
 pub fn holds_account_token(
   output: Output,
   script_hash: ScriptHash,
@@ -286,8 +319,9 @@ pub fn holds_account_token(
   ) && output.address == account_address(script_hash, stake_script_hash)
 }
 
-/// Whether some input holds a token of the account: its control UTxO or
-/// one of its grant UTxOs.
+/// Whether some one of `inputs` holds a token of the account at the
+/// account address: its control UTxO or one of its grant UTxOs. Returns
+/// `False` when none does. Never aborts.
 pub fn has_account_token_input(
   inputs: List<Input>,
   script_hash: ScriptHash,
@@ -301,8 +335,8 @@ pub fn has_account_token_input(
   )
 }
 
-/// The number of inputs holding a token of the account: the control UTxO
-/// and the grant UTxOs spent.
+/// The number of `inputs` holding a token of the account at the account
+/// address: the control UTxO and the grant UTxOs spent. Never aborts.
 pub fn count_account_token_inputs(
   inputs: List<Input>,
   script_hash: ScriptHash,
@@ -316,7 +350,9 @@ pub fn count_account_token_inputs(
   )
 }
 
-/// Whether a transaction spends the account's control UTxO.
+/// Whether some one of `inputs` is the account's control UTxO: at the
+/// account address, holding the state NFT, under an inline datum.
+/// Returns `False` when none is. Never aborts.
 pub fn has_control_input(
   inputs: List<Input>,
   script_hash: ScriptHash,
@@ -330,10 +366,11 @@ pub fn has_control_input(
   )
 }
 
-/// Whether every token of the account policy among the outputs is held in
+/// Whether every token of the proxy policy among `outputs` is held in
 /// quantity one by an output at the account address its name denotes: a
 /// state NFT at the address of its name, a grant token at the address of
-/// its prefix.
+/// its first 28 bytes. Outputs holding no token of the policy pass.
+/// Returns `False` on any other quantity or address. Never aborts.
 pub fn tokens_sit_at_their_own_addresses(
   outputs: List<Output>,
   script_hash: ScriptHash,
@@ -356,12 +393,13 @@ pub fn tokens_sit_at_their_own_addresses(
   )
 }
 
-/// Whether every minted entry is a grant token of the account in the
-/// given quantity: a 32 byte name prefixed by the account's stake script
+/// Whether every entry of `minted` is a grant token of the account in
+/// `quantity`: a 32 byte name prefixed by the account's stake script
 /// hash, in quantity one for an issuance and minus one for a burn. A
-/// state NFT name, another account's prefix, a burn beside an issuance or
-/// any other quantity fails, so a mint under the grant redeemers can
-/// neither mint a second state NFT nor touch another account's tokens.
+/// state NFT name, another account's prefix, a burn beside an issuance
+/// or any other quantity returns `False`, so a mint under the grant
+/// redeemers can neither mint a second state NFT nor touch another
+/// account's tokens. An empty list passes. Never aborts.
 pub fn mints_grants_of(
   minted: Pairs<AssetName, Int>,
   stake_script_hash: ScriptHash,
@@ -380,11 +418,13 @@ pub fn mints_grants_of(
   )
 }
 
-/// Whether the outputs keep the account's control UTxO in place: exactly
+/// Whether `outputs` keep the account's control UTxO in place: exactly
 /// one output holds the state NFT, at the account address, under an
-/// inline datum, with nothing but lovelace beside the NFT and no reference
-/// script. The datum is not decoded, so the rule holds whatever state
-/// shape the account's logic writes.
+/// inline datum, with nothing but lovelace beside the NFT and no
+/// reference script. The datum is not decoded, so the rule holds
+/// whatever state shape the account's logic writes. Returns `False` when
+/// no output or several hold the NFT, or the one that does breaks a
+/// condition. Never aborts.
 pub fn keeps_control_output(
   outputs: List<Output>,
   script_hash: ScriptHash,
@@ -415,10 +455,11 @@ pub fn keeps_control_output(
   }
 }
 
-/// The number of grant tokens of the account minted and the number burned
-/// in a transaction, read from the mint field. Fails on any other token of
-/// the account policy, on another account's grant token and on any
-/// quantity but one or minus one.
+/// The number of grant tokens of the account minted and the number
+/// burned, as a pair, read from `mint`, the transaction's mint field.
+/// Both are zero when nothing is minted under the proxy policy. Aborts
+/// on any other token of the proxy policy, on another account's grant
+/// token and on any quantity but one or minus one.
 pub fn grant_mint_delta(
   mint: Assets,
   script_hash: ScriptHash,
@@ -444,15 +485,15 @@ pub fn grant_mint_delta(
       )
 }
 
-/// The data an output carries as its inline datum; fails on any other
-/// datum.
+/// The data `output` carries as its inline datum. Aborts when the datum
+/// is missing or given by hash.
 pub fn inline_datum(output: Output) -> Data {
   expect InlineDatum(data) = output.datum
   data
 }
 
-/// The logic hash a control datum names in its first field, read without
-/// decoding the rest of the state. Fails on a datum that is not a
+/// The logic hash a control datum names in its first field, read
+/// without decoding the rest of the state. Aborts when `data` is not a
 /// constructor whose first field is a byte string.
 pub fn logic_of(data: Data) -> ScriptHash {
   expect [logic, ..] = builtin.unconstr_fields(data)
@@ -460,7 +501,7 @@ pub fn logic_of(data: Data) -> ScriptHash {
 }
 
 /// The device list a control datum carries in its second field, read
-/// without decoding the rest of the state. Fails on a datum that is not a
+/// without decoding the rest of the state. Aborts when `data` is not a
 /// constructor whose second field is a list of byte strings.
 pub fn devices_of(data: Data) -> List<VerificationKeyHash> {
   expect [_, devices, ..] = builtin.unconstr_fields(data)
@@ -468,16 +509,16 @@ pub fn devices_of(data: Data) -> List<VerificationKeyHash> {
   keys
 }
 
-/// The grant generation a control datum carries in its third field, read
-/// without decoding the rest of the state. Fails on a datum that is not a
-/// constructor whose third field is an integer.
+/// The grant generation a control datum carries in its third field,
+/// read without decoding the rest of the state. Aborts when `data` is
+/// not a constructor whose third field is an integer.
 pub fn generation_of(data: Data) -> Int {
   expect [_, _, generation, ..] = builtin.unconstr_fields(data)
   builtin.un_i_data(generation)
 }
 
-/// The slot a grant datum carries in its first field, read without
-/// decoding the rest of the grant. Fails on a datum that is not a
+/// The grant slot a grant datum carries in its first field, read without
+/// decoding the rest of the grant. Aborts when `data` is not a
 /// constructor whose first field is an integer.
 pub fn grant_slot_of(data: Data) -> Int {
   expect [slot, ..] = builtin.unconstr_fields(data)
@@ -485,29 +526,32 @@ pub fn grant_slot_of(data: Data) -> Int {
 }
 
 /// The generation a grant datum carries in its third field, read without
-/// decoding the rest of the grant. Fails on a datum that is not a
+/// decoding the rest of the grant. Aborts when `data` is not a
 /// constructor whose third field is an integer.
 pub fn grant_generation_of(data: Data) -> Int {
   expect [_, _, generation, ..] = builtin.unconstr_fields(data)
   builtin.un_i_data(generation)
 }
 
-/// The `AccountState` an output carries as its inline datum; fails on any
-/// other datum.
+/// The `AccountState` `output` carries as its inline datum. Aborts when
+/// the datum is missing, given by hash or not an `AccountState`.
 pub fn state_datum(output: Output) -> AccountState {
   expect state: AccountState = inline_datum(output)
   state
 }
 
-/// The `Grant` an output carries as its inline datum; fails on any other
-/// datum.
+/// The `Grant` `output` carries as its inline datum. Aborts when the
+/// datum is missing, given by hash or not a `Grant`.
 pub fn grant_datum(output: Output) -> Grant {
   expect grant: Grant = inline_datum(output)
   grant
 }
 
-/// Whether a control output holds only lovelace and the state NFT and
-/// carries a well formed `AccountState` as its inline datum.
+/// Whether `output` holds nothing but lovelace and the account's state
+/// NFT and carries a well formed `AccountState` as its inline datum.
+/// Returns `False` on the value, or on a state that breaks a bound. Once
+/// the value passes, aborts when the datum is missing, given by hash or
+/// not an `AccountState`.
 pub fn is_valid_control_output(
   output: Output,
   script_hash: ScriptHash,
@@ -520,7 +564,11 @@ pub fn is_valid_control_output(
   ) && state.is_well_formed(state_datum(output))
 }
 
-/// The account's control UTxO among the given inputs or reference inputs.
+/// The first input in list order whose output is a control output of
+/// the account: at the account address, holding the state NFT, under an
+/// inline datum. `None` when there is none; with several, the first.
+/// `inputs` may be the transaction's inputs, its reference inputs or
+/// both concatenated. Never aborts.
 pub fn find_control_input(
   inputs: List<Input>,
   script_hash: ScriptHash,
@@ -534,7 +582,8 @@ pub fn find_control_input(
   )
 }
 
-/// Whether one of the listed devices is among the required signers.
+/// Whether one of `devices` is among `extra_signatories`, the required
+/// signers. Returns `False` when none is. Never aborts.
 pub fn has_device_signature(
   devices: List<VerificationKeyHash>,
   extra_signatories: List<VerificationKeyHash>,
@@ -542,7 +591,8 @@ pub fn has_device_signature(
   list.any(devices, fn(device) { list.has(extra_signatories, device) })
 }
 
-/// Whether one of the state's devices is among the required signers.
+/// Whether one of the devices of `state` is among `extra_signatories`,
+/// the required signers. Returns `False` when none is. Never aborts.
 pub fn is_signed_by_a_device(
   state: AccountState,
   extra_signatories: List<VerificationKeyHash>,
@@ -550,11 +600,14 @@ pub fn is_signed_by_a_device(
   has_device_signature(state.devices, extra_signatories)
 }
 
-/// Whether a device listed in the account's control UTxO, spent or
-/// referenced, is among the required signers. The devices are read from
-/// the second field of the control datum, so the rule holds whatever
-/// state shape the account's logic keeps after them. Fails when no control
-/// UTxO of the account is present.
+/// Whether a device listed in the account's control UTxO, taken from
+/// `reference_inputs` first and `inputs` second, the first found, is
+/// among `extra_signatories`, the required signers. The devices are read
+/// from the second field of the control datum, so the rule holds
+/// whatever state shape the account's logic keeps after them. Returns
+/// `False` when no listed device signs. Aborts when no control UTxO of
+/// the account is present, or when its datum is not a constructor whose
+/// second field is a list of byte strings.
 pub fn is_authorised_by_a_device(
   inputs: List<Input>,
   reference_inputs: List<Input>,
@@ -573,9 +626,11 @@ pub fn is_authorised_by_a_device(
   )
 }
 
-/// Whether the transaction withdraws from the reward account of a logic
-/// script, which is what makes the ledger run that logic over the whole
-/// transaction. The amount does not matter and is zero in practice.
+/// Whether `withdrawals` draws from the reward account of the logic
+/// script at `logic`, which is what makes the ledger run that logic over
+/// the whole transaction. The amount is not read and is zero in
+/// practice. Returns `False` when there is no such withdrawal. Never
+/// aborts.
 pub fn withdraws_from(
   withdrawals: Pairs<Credential, Lovelace>,
   logic: ScriptHash,
@@ -583,9 +638,9 @@ pub fn withdraws_from(
   pairs.has_key(withdrawals, Script(logic))
 }
 
-/// The proxy redeemer of the input at `output_reference`, read from the
-/// transaction's redeemers; fails when the input carries none or one of
-/// another shape.
+/// The proxy spend redeemer of the input at `output_reference`, read
+/// from `redeemers`, the transaction's redeemers. Aborts when the input
+/// carries no redeemer or one that is not an `AccountRedeemer`.
 pub fn spend_redeemer_of(
   redeemers: Pairs<ScriptPurpose, Redeemer>,
   output_reference: OutputReference,
@@ -595,9 +650,9 @@ pub fn spend_redeemer_of(
   redeemer
 }
 
-/// The proxy redeemer of the mint under the account policy, read from the
-/// transaction's redeemers; fails when the policy is not run or its
-/// redeemer has another shape.
+/// The proxy mint redeemer of the mint under `policy_id`, the proxy
+/// policy, read from `redeemers`, the transaction's redeemers. Aborts
+/// when the policy is not run or its redeemer is not a `MintRedeemer`.
 pub fn mint_redeemer_of(
   redeemers: Pairs<ScriptPurpose, Redeemer>,
   policy_id: PolicyId,
@@ -607,8 +662,8 @@ pub fn mint_redeemer_of(
   redeemer
 }
 
-/// Whether a certificate registers the credential, alone or with a
-/// delegation.
+/// Whether `certificate` registers `credential`, alone or with a
+/// delegation. Returns `False` on any other certificate. Never aborts.
 pub fn registers_credential(
   certificate: Certificate,
   credential: Credential,
@@ -622,10 +677,12 @@ pub fn registers_credential(
   }
 }
 
-/// Whether a publish redeemer exists for a certificate registering the
-/// account's stake credential, which proves the stake script ran on it.
-/// The certificate list proves nothing on its own, since a registration
-/// in the legacy format carries no witness and runs no script.
+/// Whether `redeemers` holds a publish redeemer for a certificate
+/// registering the account's stake credential, which proves the stake
+/// script ran on it. The certificate list proves nothing on its own,
+/// since a registration in the legacy format carries no witness and
+/// runs no script. Returns `False` when there is no such redeemer.
+/// Never aborts.
 pub fn registers_stake_credential(
   redeemers: Pairs<ScriptPurpose, Redeemer>,
   stake_script_hash: ScriptHash,

@@ -1,3 +1,10 @@
+//// The checks of a grant spend and of a sweep under `logic_v1`: the
+//// grantee's signature, the expiry against the validity range, whether a
+//// grant is current or dead, the leaving value against the scope caps,
+//// the recipients, the deposits paid back and the grant written back.
+//// `grant_spend_rule` and `sweep_rule` call them. Each returns `False`
+//// on a violation; the ones that decode a datum abort and say so.
+
 //
 // Copyright 2026 IOG.
 //
@@ -28,7 +35,8 @@ use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
 // FUNCTIONS *******************************************************************
 
-/// Whether the grantee is among the transaction's required signers.
+/// Whether `grantee` is among `extra_signatories`, the transaction's
+/// required signers. Returns `False` otherwise. Never aborts.
 pub fn is_authorised_by_grantee(
   grantee: VerificationKeyHash,
   extra_signatories: List<VerificationKeyHash>,
@@ -36,8 +44,10 @@ pub fn is_authorised_by_grantee(
   list.has(extra_signatories, grantee)
 }
 
-/// Whether the validity range ends at a finite time no later than
-/// `expires_at`; an open upper bound never passes.
+/// Whether `validity_range` has a finite upper bound at or before
+/// `expires_at`, both POSIX times in milliseconds. An open upper bound
+/// returns `False`. The bound's inclusivity flag is not read. Never
+/// aborts.
 pub fn ends_before_expiry(
   validity_range: ValidityRange,
   expires_at: Int,
@@ -48,9 +58,11 @@ pub fn ends_before_expiry(
   }
 }
 
-/// Whether the validity range starts at a finite time after `expires_at`,
-/// so that the transaction can only apply once the grant has expired; an
-/// open lower bound never passes.
+/// Whether `validity_range` has a finite lower bound strictly after
+/// `expires_at`, both POSIX times in milliseconds, so the transaction
+/// can only apply once the grant has expired. An open lower bound
+/// returns `False`. The bound's inclusivity flag is not read. Never
+/// aborts.
 pub fn starts_after_expiry(
   validity_range: ValidityRange,
   expires_at: Int,
@@ -61,13 +73,15 @@ pub fn starts_after_expiry(
   }
 }
 
-/// Whether a grant can no longer be spent against the account's current
-/// state, judged from the stable prefix of its datum: issued under an
-/// older generation or revoked by slot. Expiry, as the validity range
-/// proves it, lives in the scope and so counts only when the datum
-/// decodes as a full `Grant`; a grant of another shape, issued under
-/// another revision, dies by generation or revocation alone. Fails on a
-/// datum without the prefix.
+/// Whether the grant datum `data` is dead against `state`, the state of
+/// the control UTxO, judged from the stable prefix of the datum: its
+/// generation is lower than the state's, or its slot is in the revoked
+/// list, or `validity_range` starts after its expiry. Expiry lives in the
+/// scope, so it counts only when `data` decodes as a full `Grant`; a
+/// grant of another shape, issued under another logic version, dies by
+/// generation or revocation alone. Returns `False` otherwise. Aborts
+/// when `data` is not a constructor whose third field is an integer and,
+/// once the generation is not lower, whose first field is an integer.
 pub fn is_dead(
   data: Data,
   state: AccountState,
@@ -84,9 +98,10 @@ pub fn is_dead(
   }
 }
 
-/// Whether a grant is current against the account's state: issued under
-/// its generation and not revoked by slot. Expiry is the validity range's
-/// business.
+/// Whether `grant` is current against `state`: its generation equals
+/// the state's and its slot is not in the revoked list. Expiry is not
+/// read here; `ends_before_expiry` checks it. Returns `False` otherwise.
+/// Never aborts.
 pub fn is_current(grant: Grant, state: AccountState) -> Bool {
   grant.generation == state.grant_generation && !list.has(
     state.revoked,
@@ -94,8 +109,11 @@ pub fn is_current(grant: Grant, state: AccountState) -> Bool {
   )
 }
 
-/// The value spent from an address minus the value paid back to it, per
-/// asset class; a negative quantity is a net deposit.
+/// The value of every input at `address` minus the value of every
+/// output to it, per asset class in its own unit. The address is
+/// compared whole, stake part included. A positive quantity is a net
+/// outflow and includes the fee when the account pays it; a negative
+/// quantity is a net deposit. Never aborts.
 pub fn leaving_value(
   inputs: List<Input>,
   outputs: List<Output>,
@@ -126,14 +144,18 @@ pub fn leaving_value(
   assets.merge(spent, assets.negate(returned))
 }
 
-/// The quantity of an asset class held in a value.
+/// The quantity of `asset` in `value`, in the asset's own unit; zero
+/// when the value holds none of it. Never aborts.
 pub fn quantity_of_asset(value: Assets, asset: Asset) -> Int {
   assets.quantity_of(value, asset.policy_id, asset.asset_name)
 }
 
-/// Whether a leaving value stays within the scope: the scoped asset within
-/// its per call and remaining caps, lovelace within its caps when the
-/// scoped asset is not lovelace, and nothing else leaving.
+/// Whether `leaving`, a leaving value, stays within `scope`: the scoped
+/// asset within its per call cap and its remaining cap, lovelace within
+/// its two caps for a token scope, and no other asset class with a
+/// positive quantity. A net deposit of the scoped asset or of lovelace
+/// passes its caps. Returns `False` when a cap is exceeded or another
+/// asset leaves. Never aborts.
 pub fn stays_within_scope(scope: Scope, leaving: Assets) -> Bool {
   let asset_leaving = quantity_of_asset(leaving, scope.asset)
   let lovelace_leaving = assets.lovelace_of(leaving)
@@ -151,8 +173,8 @@ pub fn stays_within_scope(scope: Scope, leaving: Assets) -> Bool {
   }
 }
 
-/// Whether only the scoped asset and lovelace have a positive leaving
-/// quantity.
+/// Whether only `asset` and lovelace have a positive quantity in
+/// `leaving`. Never aborts.
 fn nothing_else_leaves(leaving: Assets, asset: Asset) -> Bool {
   assets.reduce(
     leaving,
@@ -164,8 +186,10 @@ fn nothing_else_leaves(leaving: Assets, asset: Asset) -> Bool {
   )
 }
 
-/// Whether every output away from the account goes to a listed recipient;
-/// an empty list allows any destination.
+/// Whether every output not at `account_address` goes to one of
+/// `recipients`, addresses compared whole, stake part included. An empty
+/// list allows any destination. Returns `False` on the first output
+/// elsewhere. Never aborts.
 pub fn pays_only_recipients(
   outputs: List<Output>,
   account_address: Address,
@@ -179,8 +203,11 @@ pub fn pays_only_recipients(
   )
 }
 
-/// Whether every output paid back to the account that holds no account
-/// token is a plain deposit: no datum and no reference script.
+/// Whether every output at `account_address` that holds no account
+/// token is a plain deposit: no datum and no reference script. Outputs
+/// elsewhere and outputs holding an account token are not read further.
+/// Returns `False` on a deposit with a datum or a reference script.
+/// Never aborts.
 pub fn deposits_are_plain(
   outputs: List<Output>,
   account_address: Address,
@@ -199,8 +226,9 @@ pub fn deposits_are_plain(
   )
 }
 
-/// Whether exactly one input holds a token of the account, so that the
-/// accounting runs over a single grant and never over the control UTxO.
+/// Whether exactly one of `inputs` holds a token of the account, so that
+/// the accounting runs over a single grant and never over the control
+/// UTxO. Returns `False` on none or several. Never aborts.
 pub fn spends_one_account_token(
   inputs: List<Input>,
   script_hash: ScriptHash,
@@ -209,14 +237,18 @@ pub fn spends_one_account_token(
   account.count_account_token_inputs(inputs, script_hash, stake_script_hash) == 1
 }
 
-/// The grant after a spend: unchanged except that its remaining caps are
-/// reduced by the net outflow, never increased.
+/// The grant as a spend leaves it: every field as before, `cap` lowered
+/// by the net outflow of the scoped asset when that is positive and, for
+/// a token scope, `lovelace_cap` lowered by the net outflow of lovelace
+/// when positive. A net deposit lowers nothing. For a lovelace scope
+/// `lovelace_cap` stays as it is. Per call caps never change. Never
+/// aborts.
 pub fn grant_after_spend(grant: Grant, leaving: Assets) -> Grant {
   Grant { ..grant, scope: scope_after_spend(grant.scope, leaving) }
 }
 
-/// The scope with each remaining cap reduced by max(0, net outflow) of its
-/// asset; per call caps never change.
+/// The scope with each remaining cap lowered by max(0, net outflow) of
+/// its asset; per call caps never change. Never aborts.
 fn scope_after_spend(scope: Scope, leaving: Assets) -> Scope {
   let lovelace_cap = if state.is_lovelace(scope.asset) {
     scope.lovelace_cap
@@ -230,14 +262,14 @@ fn scope_after_spend(scope: Scope, leaving: Assets) -> Scope {
   }
 }
 
-/// Whether the output's inline datum is a grant within `expected`, the
-/// grant after the spend: every field equal but the remaining caps, each
-/// at most the expected one and at least zero. The fee is part of the
-/// outflow, so an exact datum would depend on the execution units a
-/// builder only learns by evaluating the transaction; a grantee that
-/// decrements its own caps further costs itself headroom and nothing
-/// else, and caps still never increase. A datum given by hash or missing
-/// never passes.
+/// Whether `output` carries, as its inline datum, `expected` with its
+/// remaining caps lowered: every field equal but `cap` and
+/// `lovelace_cap`, each at least zero and at most the expected one.
+/// `expected` already has its caps reduced by the net outflow, so a
+/// grantee may lower its own caps further and never raise them; an
+/// exact datum would depend on the fee, which a builder learns only by
+/// evaluating the transaction. Returns `False` when the datum is missing
+/// or given by hash. Aborts when the inline datum is not a `Grant`.
 pub fn carries_grant_within(output: Output, expected: Grant) -> Bool {
   when output.datum is {
     InlineDatum(data) -> {
@@ -250,7 +282,7 @@ pub fn carries_grant_within(output: Output, expected: Grant) -> Bool {
 
 /// Whether `actual` is `expected` with its remaining caps lowered, each
 /// no further than zero: slot, grantee, generation, asset, per call caps,
-/// expiry and recipients are equal.
+/// expiry and recipients are equal. Never aborts.
 fn is_grant_within(actual: Grant, expected: Grant) -> Bool {
   and {
     Grant {
@@ -268,7 +300,8 @@ fn is_grant_within(actual: Grant, expected: Grant) -> Bool {
   }
 }
 
-/// Whether the output carries no reference script.
+/// Whether `output` carries no reference script. Returns `False` when it
+/// carries one. Never aborts.
 pub fn carries_no_reference_script(output: Output) -> Bool {
   output.reference_script == None
 }

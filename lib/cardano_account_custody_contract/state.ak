@@ -1,3 +1,9 @@
+//// The bounds `logic_v1` puts on an account state and a grant scope, and
+//// the predicates that check them. The rules and the arrival path call
+//// these on the state a control output writes back and on the grant an
+//// issuance mints. Every function here reads plain values, returns `False`
+//// on a bound that does not hold and never aborts.
+
 //
 // Copyright 2026 IOG.
 //
@@ -21,29 +27,38 @@ use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
 // CONSTANTS *******************************************************************
 
-/// The maximum number of device keys an account may hold.
+/// The most device keys a well formed state may list. `is_well_formed`
+/// enforces it, with a lower bound of one, under `logic_v1` on every
+/// state written back.
 pub const max_devices = 8
 
-/// The maximum number of outstanding grants an account may hold.
+/// The most outstanding grants a well formed state may count.
+/// `is_well_formed` enforces it under `logic_v1` on every state written
+/// back.
 pub const max_grants = 16
 
-/// The maximum number of revoked slots the state may list before the owner
-/// has to bump the grant generation instead.
+/// The most grant slots the revoked list of a well formed state may hold.
+/// Once it is full, a device raises the grant generation to revoke more.
+/// `is_well_formed` enforces it under `logic_v1` on every state written
+/// back.
 pub const max_revoked = 32
 
-/// The maximum number of recipients a grant's scope may list.
+/// The most recipients a well formed scope may list.
+/// `is_scope_well_formed` enforces it under `logic_v1` at issuance.
 pub const max_recipients = 8
 
 // FUNCTIONS *******************************************************************
 
-/// Whether an asset class is lovelace.
+/// Whether `asset` is lovelace: the empty policy id with the empty asset
+/// name. Never aborts.
 pub fn is_lovelace(asset: Asset) -> Bool {
   asset.policy_id == ada_policy_id && asset.asset_name == ada_asset_name
 }
 
-/// Whether a scope obeys the bounds: non-negative caps, a positive expiry,
-/// at most `max_recipients` recipients, and zero lovelace caps when the
-/// asset is lovelace.
+/// Whether `scope` obeys the bounds of `logic_v1`: all four caps non
+/// negative, `expires_at` positive, at most `max_recipients` recipients,
+/// and both lovelace caps zero when `asset` is lovelace. Returns `False`
+/// when any bound does not hold. Never aborts.
 pub fn is_scope_well_formed(scope: Scope) -> Bool {
   let caps_ok = and {
     scope.per_call_cap >= 0,
@@ -62,15 +77,19 @@ pub fn is_scope_well_formed(scope: Scope) -> Bool {
   caps_ok && expiry_ok && recipients_ok && lovelace_caps_ok
 }
 
-/// Whether a grant's scope is well formed; its slot and generation are
-/// tied to the control UTxO at issuance.
+/// Whether the scope of `grant` is well formed. `slot`, `grantee` and
+/// `generation` are not read; issuance ties them to the control UTxO.
+/// Returns `False` when the scope breaks a bound. Never aborts.
 pub fn is_grant_well_formed(grant: Grant) -> Bool {
   is_scope_well_formed(grant.scope)
 }
 
-/// Whether a state obeys every bound: one to `max_devices` distinct devices,
-/// non-negative counters, at most `max_grants` outstanding grants and at
-/// most `max_revoked` revoked slots.
+/// Whether `state` obeys every bound of `logic_v1`: one to `max_devices`
+/// distinct devices, non negative `grant_generation`, `next_slot` and
+/// `outstanding`, at most `max_grants` outstanding grants and at most
+/// `max_revoked` revoked slots. `logic` is not read; any byte string
+/// passes. The revoked slots themselves are not read. Returns `False`
+/// when any bound does not hold. Never aborts.
 pub fn is_well_formed(state: AccountState) -> Bool {
   let device_count = list.length(state.devices)
   and {
@@ -85,8 +104,10 @@ pub fn is_well_formed(state: AccountState) -> Bool {
   }
 }
 
-/// Whether a state has issued nothing yet: zero counters and no revoked
-/// slot, as every account starts.
+/// Whether `state` has issued nothing yet: `next_slot` and `outstanding`
+/// zero and the revoked list empty, as every account starts. `logic`,
+/// `devices` and `grant_generation` are not read. Returns `False` when a
+/// counter is not zero or the revoked list is not empty. Never aborts.
 pub fn has_zero_counters(state: AccountState) -> Bool {
   and {
     state.next_slot == 0,

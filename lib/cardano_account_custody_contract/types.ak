@@ -1,3 +1,11 @@
+//// The datum and redeemer types the proxy, the stake script and every
+//// logic version share: the account state of the control UTxO, the grant
+//// and its scope, and the redeemers of each handler. The library modules
+//// read and write these values; the validators take the redeemers as
+//// handler arguments and read the datums from the control and grant
+//// UTxOs. Fields serialise as Plutus Data in declaration order, so
+//// the stable prefixes named below are positional contracts.
+
 //
 // Copyright 2026 IOG.
 //
@@ -24,69 +32,112 @@ use cardano/assets.{AssetName, PolicyId}
 /// An asset class: a policy id paired with an asset name. Lovelace is the
 /// empty policy id and the empty asset name, as in `cardano/assets`.
 pub type Asset {
+  /// The script hash of the minting policy, 28 bytes; empty for lovelace.
   policy_id: PolicyId,
+  /// The name under the policy, 0 to 32 bytes; empty for lovelace.
   asset_name: AssetName,
 }
 
-/// The bounds of a grant: the asset it covers, its caps, its expiry and its
-/// allowed destinations. Fields serialise as Plutus Data in declaration
-/// order.
+/// The bounds of a grant: one asset class, a per call cap and a
+/// remaining cap on it, lovelace caps for a token scope, an expiry and
+/// the allowed destinations. `is_scope_well_formed` bounds it at
+/// issuance under `logic_v1`; `grant_spend_rule` enforces it on every
+/// spend.
 pub type Scope {
-  /// The asset class the caps apply to.
+  /// The asset class the per call cap and the remaining cap apply to.
+  /// Lovelace is the empty policy id and the empty asset name.
   asset: Asset,
-  /// Most of `asset` that may leave the account in one transaction.
+  /// The most of `asset`, in its own unit, that may leave the account in
+  /// one spend. Under `logic_v1` a spend never changes it. Non negative.
   per_call_cap: Int,
-  /// Remaining `asset` that may leave over the grant's lifetime.
+  /// The `asset`, in its own unit, that may still leave over the rest of
+  /// the grant's life. Under `logic_v1` each spend lowers it by at least
+  /// the net outflow and never raises it. Non negative.
   cap: Int,
-  /// Lovelace cap per transaction when `asset` is not lovelace; else zero.
+  /// For a token scope, the most lovelace that may leave the account in
+  /// one spend: the fee when the account pays it and the lovelace sent
+  /// with the token. Zero for a lovelace scope, where `per_call_cap`
+  /// bounds the lovelace. Under `logic_v1` a spend never changes it. Non
+  /// negative.
   lovelace_per_call_cap: Int,
-  /// Remaining lifetime lovelace cap when `asset` is not lovelace; else zero.
+  /// For a token scope, the lovelace that may still leave over the rest
+  /// of the grant's life. Under `logic_v1` each spend lowers it by at
+  /// least the net outflow of lovelace and never raises it. Zero for a
+  /// lovelace scope, where it stays as it is. Non negative.
   lovelace_cap: Int,
-  /// POSIX time in milliseconds after which the grant is unusable; must be > 0.
+  /// The POSIX time in milliseconds after which the grant cannot be
+  /// spent: a spend's validity range must end at a finite time no later
+  /// than it, and a sweep by expiry needs a range starting after it.
+  /// Positive.
   expires_at: Int,
-  /// Addresses funds may be sent to; an empty list allows any destination.
+  /// The addresses a spend may pay, compared as whole addresses, stake
+  /// part included. Empty allows any destination. Otherwise every
+  /// output is at the account address or at a recipient, change
+  /// included. Under `logic_v1` at most 8.
   recipients: List<Address>,
 }
 
-/// A revocable permission living in its own grant UTxO, under the grant
-/// token named after the account and `slot`. The grantee is an Ed25519 key
-/// hash that must sign as a required signer. `generation` is the account's
-/// grant generation at issuance; the grant dies when the account's moves
-/// past it or when its slot is revoked.
+/// A revocable permission, the inline datum of a grant UTxO, under the
+/// grant token named after the account and `slot`. A device issues it
+/// under `logic_v1`; a grant spend rewrites only `scope.cap` and
+/// `scope.lovelace_cap`; a sweep burns its token once it is dead.
 ///
-/// The first three fields, `slot`, `grantee` and `generation`, are a stable
-/// prefix: other scripts read them positionally, and a sweep of a dead
-/// grant needs nothing else, so later revisions must keep them first and
-/// in this order and may only append fields after `scope`.
+/// `slot`, `grantee` and `generation` are a stable prefix: scripts read
+/// them by position without decoding the rest, and a sweep of a grant
+/// dead by generation or by slot reads nothing else. A later logic
+/// version keeps them first, in this order, and appends fields after
+/// `scope` only.
 pub type Grant {
+  /// The grant's number within its account, taken from the account's
+  /// `next_slot` at issuance. It ends the grant token's name as 4 big
+  /// endian bytes, so it is between 0 and 4294967295. It is a grant
+  /// slot, not a chain slot.
   slot: Int,
+  /// The verification key hash, 28 bytes, that must be among the
+  /// required signers of every spend under the grant.
   grantee: VerificationKeyHash,
+  /// The account's `grant_generation` at issuance, as the control output
+  /// written in that transaction carries it. The grant is dead once the
+  /// account's generation is higher.
   generation: Int,
+  /// The bounds of the grant. Every field but `cap` and `lovelace_cap`
+  /// stays as issued.
   scope: Scope,
 }
 
-/// The account's on-chain state in the control UTxO: the logic that
-/// governs the account, its owner devices and the grant bookkeeping.
-/// `logic` is the hash of the logic script whose rules apply to the
-/// account; a device rewrite that changes it is an upgrade and needs both
-/// the old and the new logic to run. `grant_generation` only ever grows
-/// and kills every grant issued under an older value; `next_slot` is the
-/// slot the next issued grant takes; `revoked` lists the slots of the
-/// current generation revoked one by one; `outstanding` counts grant
-/// tokens minted and not yet burned.
+/// The account state, the inline datum of the control UTxO. The owner
+/// writes it at creation and a device on the owner path; the proxy, the
+/// stake script and the logic read it.
 ///
-/// The first three fields are a stable prefix read positionally by
-/// scripts that never decode the whole state: the proxy reads `logic` at
-/// field 0, the stake script reads `devices` at field 1 and a logic an
-/// account arrives at reads `devices` and `grant_generation` at fields 1
-/// and 2 of the state it leaves. Later revisions must keep these three
-/// fields first and in this order and may only change what follows.
+/// `logic`, `devices` and `grant_generation` are a stable prefix read by
+/// position by scripts that never decode the whole state: the proxy
+/// reads field 0, the stake script field 1, and a logic an account
+/// arrives at fields 0, 1 and 2 of the state it leaves. A later logic
+/// version keeps these three first, in this order, and changes only
+/// what follows.
 pub type AccountState {
+  /// The script hash, 28 bytes, of the logic whose rules govern the
+  /// account. The proxy requires a withdrawal from it on every spend of
+  /// an account token and on every mint under the proxy policy. Writing
+  /// another hash is an upgrade, and both logics run.
   logic: ScriptHash,
+  /// The verification key hashes with authority over the account. Under
+  /// `logic_v1`, one to 8 distinct keys, any one of which may sign an
+  /// owner transaction.
   devices: List<VerificationKeyHash>,
+  /// The generation current grants carry; a grant issued under a lower
+  /// value is dead. Under `logic_v1` it is non negative and never
+  /// decreases, and an upgrade into `logic_v1` raises it.
   grant_generation: Int,
+  /// The grant slot the next issued grant takes. Under `logic_v1` it is
+  /// non negative, grows by the grant tokens minted and never decreases.
   next_slot: Int,
+  /// The grant slots of the current generation revoked one by one. Under
+  /// `logic_v1` at most 32, and a device may add or remove any slot.
   revoked: List<Int>,
+  /// The grant tokens minted and not yet burned. Under `logic_v1` it
+  /// moves by the tokens minted minus the tokens burned and is between
+  /// 0 and 16.
   outstanding: Int,
 }
 
