@@ -123,6 +123,11 @@ spend. A device wallet therefore:
 - refuses the account's own stake script hash as a logic. That script is
   registered already and accepts any withdrawal a device signs, so an
   account naming it runs under no rules;
+- refuses a native script hash as a logic. The proxy cannot tell a
+  native script from a Plutus script, and the script `all []` is
+  satisfied by every transaction, so an account naming it is open to
+  anyone. The hash looks like any other, so only the list catches it;
+  see [unknown logic](../security/known-issues.md#unknown-logic);
 - refuses an upgrade whose control output changes the next slot or the
   outstanding count, or keeps slots in the revoked list. No script checks
   them; see

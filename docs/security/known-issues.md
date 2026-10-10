@@ -39,6 +39,13 @@ cardano-ledger repository:
   `DijkstraRegCert` with a mandatory deposit and the decoder refusing
   tags 0 and 1; `eras/dijkstra/impl/cddl/data/dijkstra.cddl`.
 
+Two other ledger rules underpin the creation path and may change with an
+era. The ledger refuses a redeemer whose purpose names nothing in the
+transaction, which is what lets the proxy read the registration from the
+redeemers (INV-5). The Plutus V3 script context passes no deposit on a
+plain registration certificate, so the stake script reads none. Both are
+listed under [the ledger](trust-assumptions.md#the-ledger).
+
 Consequence. The owner's registration then fails as already registered.
 `CreateAccount` cannot run without it (INV-5). A deregistration always
 needs the script witness, and the stake script refuses it (INV-16). The
@@ -104,19 +111,47 @@ no deployment. It is already registered, and its withdraw handler accepts
 any withdrawal a device signed (INV-15). An account whose logic field
 names it transacts on a device signature and under no other rule.
 
+The credential need not be a Plutus script. The proxy matches the
+withdrawal by script hash, and the ledger requires a native script's
+witness on a withdrawal from its credential as it requires a Plutus
+script's. A device can therefore write the hash of a native script in
+field 0. The native script `all []`, the empty conjunction, is satisfied
+by every transaction. Its witness is the script bytes alone. Anyone can
+register its credential, and anyone can withdraw from it.
+
 Consequence. A device that signs an upgrade to an unknown hash hands the
 account to that code. Naming the stake script is owner self harm with no
 escalation, since a device already authorises the rewrite. Recovery is
 clean: arriving at a real logic again imposes that version's arrival
 rule on the state.
 
+Naming a native script that every transaction satisfies is worse. The
+account then transacts under no signature at all. Anyone who includes
+the control UTxO, withdraws zero from that credential and keeps the
+state NFT in one control output at the same address spends every deposit
+and reserve with `Device` and `Fund`, and sweeps every grant UTxO with
+`SweepGrant` and `BurnGrants`. The proxy does not decode the control
+datum it writes back, so the same transaction can rewrite the devices,
+which the stake script then reads for rewards and delegation, or write a
+logic hash no script has, which locks every UTxO at the account address
+for good; the reward account stays reachable through a reference to the
+control UTxO. The exposure lasts until a transaction points the account
+at a logic again. Arriving at `logic_v1` needs no signature either, and
+it carries over whatever device list the state holds at that point. The
+precondition is one device signature on the upgrade, so the class is
+device compromise or self harm, the same as for the stake script, but
+what follows is open to everyone.
+
 What to do. The device wallet shows the logic by a known name and refuses
 an unknown hash in field 0 of a control output it signs. It protects the
-[known logic list](../glossary.md#known-logic-list) it ships. It refuses
-a downgrade to a version with a known defect. Each logic version is
-audited on its own before its hash joins the list: its rules, its
-arrival path, and that it keeps the stable prefixes. The library
-attaches only the blueprint's logic and the logics given to it.
+[known logic list](../glossary.md#known-logic-list) it ships. A fee
+sponsor refuses the same. A native script hash looks like any other 28
+byte hash, so neither can tell it apart, and the list is the only check.
+The device wallet refuses a downgrade to a version with a known defect.
+Each logic version is audited on its own before its hash joins the
+list: its rules, its arrival path, and that it keeps the stable
+prefixes. The library attaches only the blueprint's logic and the
+logics given to it.
 
 ## Logic reward account
 
@@ -154,7 +189,9 @@ account on `logic_v1` could transact, and no on-chain change could
 recover them.
 
 What to do. Decide for each later logic version whether its `publish`
-should accept a vote delegation of its own credential.
+should accept a vote delegation of its own credential. The
+[logic v2 design notes](../logic-v2-design-notes.md#publish-accepts-a-vote-delegation-of-its-own-credential)
+plan one that does.
 
 ## Counters written on arrival
 
@@ -178,7 +215,9 @@ Consequence. Only a device can trigger any of these.
   the grant tokens minted and burned (INV-24), so issuance and sweeps
   move the count and the grant UTxOs together and the shortfall stays.
   Only another upgrade rewrites it: leaving `logic_v1` for a logic that
-  accepts the change, then arriving again with the true count.
+  accepts the change, then arriving again with the true count. A later
+  version that carries the counters over on arrival is planned; see the
+  [logic v2 design notes](../logic-v2-design-notes.md#arrival-carries-the-counters-over).
 - An outstanding count above the number of grant UTxOs lowers the number
   of grants the account can issue for as long as it stays under
   `logic_v1`, for the same reason.

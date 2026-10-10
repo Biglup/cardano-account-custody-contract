@@ -259,6 +259,18 @@ The validators rely on these Cardano ledger rules:
   else. The exception is the legacy stake registration certificate,
   which needs no witness and runs no script. See
   [stake credential squat](known-issues.md#stake-credential-squat).
+- Extra redeemers: a redeemer whose purpose names nothing in the
+  transaction that a script governs is refused, so a publish redeemer exists only for a
+  certificate the transaction carries and a script governs. The proxy
+  reads the registration from the redeemers, not from the certificate
+  list, and INV-5 relies on this.
+- Certificate deposits: the Plutus V3 script context passes no deposit
+  on a plain registration certificate, in its legacy form and in the
+  form that carries a deposit on chain. The stake script matches a
+  registration, with or without a delegation, by its kind and its
+  credential and reads no deposit. Its compiled code is built against
+  that shape, so a context that passed a deposit on a plain
+  registration would change what the creation path receives.
 - One redeemer per mint policy per transaction.
 - A withdrawal equals the reward account's whole balance.
 

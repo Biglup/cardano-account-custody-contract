@@ -67,3 +67,4 @@ sign account transactions.
 | Document | Purpose |
 | --- | --- |
 | [CONTRIBUTING](../CONTRIBUTING.md) | The repository layout, the toolchain, building and testing, the flow script, the devnet, the upgrade fixture, the evidence documents and the documentation rules. |
+| [Logic v2 design notes](logic-v2-design-notes.md) | The changes planned for a later logic version, each with what changes, why, and what it saves or fixes. |
