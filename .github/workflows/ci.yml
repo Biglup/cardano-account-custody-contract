@@ -14,9 +14,17 @@ jobs:
         with:
           version: v1.1.24
       - run: aiken fmt --check
-      - run: aiken check -D
+      - run: aiken check -D -t silent
+      - run: mkdir -p build && aiken check -D > build/check.json
       - run: aiken build
       - run: git diff --exit-code plutus.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: offchain
+      - run: npm run budgets -- ../build/check.json
+        working-directory: offchain
 
   upgrade-fixture:
     runs-on: ubuntu-latest
@@ -29,6 +37,7 @@ jobs:
         with:
           version: v1.1.24
       - run: aiken fmt --check
+      - run: aiken check -D -t silent
       - run: aiken check -D
       - run: aiken build
       - run: git diff --exit-code plutus.json
@@ -47,3 +56,16 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+  docs:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: offchain
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run links

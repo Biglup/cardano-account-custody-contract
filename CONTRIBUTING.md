@@ -39,6 +39,24 @@ off-chain code loads it directly. Continuous integration runs the three
 commands above and fails when the built `plutus.json` differs from the
 committed one.
 
+Continuous integration also runs `aiken check -D -t silent`, which
+compiles the traces out as `aiken build` does, and holds the execution
+units of every `budget_` test against `offchain/budgets.json`. The gate
+fails when a `budget_` test is missing, is not recorded, or lands more
+than 1 percent above its recorded memory or CPU, and when a test that is
+expected to pass prints a trace. `aiken check` writes its report as JSON
+when its output is not a terminal; `npm run budgets -- <report>` in
+`offchain` holds a report against the baseline, and `--refresh` rewrites
+the baseline from it. The baseline holds the figures of the default
+trace level, so a refresh takes the report of `aiken check -D` without
+`-t silent`. A change that moves a budget on purpose refreshes the
+baseline and commits it with the change:
+
+```sh
+mkdir -p build && aiken check -D > build/check.json
+cd offchain && npm run budgets -- --refresh ../build/check.json
+```
+
 ### The compiled bytes of deployed validators do not change
 
 Every account depends on the exact bytes of the deployed validators:
@@ -343,5 +361,8 @@ The documentation describes the system as it is:
 - Design rationale goes in a decision record under `docs/adr/`.
 - ASCII only. Diagrams are Mermaid flowcharts, sequence diagrams or state
   diagrams. Transaction shapes are tables.
+- Every relative link resolves, anchors included. `npm run links` in
+  `offchain` checks every Markdown file of the repository, and
+  continuous integration runs it.
 - Every fact is checked against the code. Where a document and the code
   disagree, the code wins and the document is fixed.

@@ -12,6 +12,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "budgets": "tsx scripts/budget-gate.ts",
+    "links": "tsx scripts/docs-links.ts",
     "e2e": "tsx scripts/preprod-e2e.ts",
     "setup": "SETUP_ONLY=1 tsx scripts/preprod-e2e.ts",
     "devnet:parameters": "tsx scripts/devnet-parameters.ts",
