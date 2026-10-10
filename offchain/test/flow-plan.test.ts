@@ -598,7 +598,9 @@ describe('evidence', () => {
       supporting: [],
     });
     expect(document).toContain('# Devnet evidence');
-    expect(document).toContain('cost models of its own\nConway genesis, whose memory prices equal preprod and whose CPU prices\nfor integer division and byte string equality sit below it');
+    expect(document).toContain('cost models of its own\nConway genesis, which price memory as preprod does and differ from it\nonly in CPU entries');
+    expect(document).toContain('only the step budgets differ, in either direction.');
+    expect(document).not.toContain('a little under');
     expect(document).toContain(`| 32 | ${FLOW_PLAN[31]!.description} | \`${TX_ID.slice(0, 12)}\` | confirmed |`);
     expect(document).toContain('parameters of devnet report it');
     expect(document).not.toContain(explorerLink(TX_ID));

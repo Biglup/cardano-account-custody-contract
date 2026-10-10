@@ -431,10 +431,10 @@ const REFUSAL = /refuses the spend|is not a recipient of grant|has no grant UTxO
 export type FlowOutcome = 'confirmed' | 'refused by the builder' | 'refused by the node' | 'refused by the node in phase one';
 
 /**
- * A row of the budget table in the security review a measured flow is
- * compared with: the path, the handlers the transaction runs, and the
- * net memory units and steps the review measured for them with the test
- * runner, summed over the handlers.
+ * A row of the budget table a measured flow is compared with: the path,
+ * the handlers the transaction runs, and the net memory units and steps
+ * the test runner charged for them over the largest state, summed over
+ * the handlers.
  */
 export interface BudgetReference {
   path: string;
@@ -743,13 +743,13 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
           'list of offchain/scripts/devnet-parameters.ts names copied from preprod',
           'into its genesis, the fee, size, deposit, pool, collateral and execution',
           'unit limit parameters among them, and with the cost models of its own',
-          'Conway genesis, whose memory prices equal preprod and whose CPU prices',
-          'for integer division and byte string equality sit below it, so the memory',
-          'budgets below are what preprod charges for the same work and the step',
-          'budgets a little under it; see README, Running the devnet. Its chain has',
-          'one second blocks, so a run costs nothing and confirms in about a second.',
-          'Its transactions are listed by id, since no explorer serves the chain.',
-          'Flows refused by the builder quote the check that',
+          'Conway genesis, which price memory as preprod does and differ from it',
+          'only in CPU entries, the division coefficients and the three byte string',
+          'equality entries, so the memory budgets below are what preprod charges',
+          'for the same work and only the step budgets differ, in either direction.',
+          'Its chain has one second blocks, so a run costs nothing and confirms in',
+          'about a second. Its transactions are listed by id, since no explorer',
+          'serves the chain. Flows refused by the builder quote the check that',
         ]
       : [
           'Every flow of the account custody contract exercised on the Cardano preprod',
@@ -778,7 +778,7 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
     'admit, eight devices, thirty two revoked slots and sixteen outstanding',
     'grants with eight recipients each, and records the execution units the',
     'chain charged for every script transaction, with the heaviest paths set',
-    'against the budget table of the security review. An account is never',
+    'against the budgets the test runner measured. An account is never',
     'deleted and its credential stays registered, so the run ends by sweeping',
     'the funds and the reserve back and leaving the control UTxO in place;',
     'every run therefore creates its account for a fresh owner key of the',
@@ -851,16 +851,16 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
     '## Budget comparison',
     '',
     'The heaviest transaction of each measured step against the rows of the',
-    'budget table in `docs/security-review.md`, which gives the net memory',
+    'budget table in `docs/verification.md`, which gives the net memory',
     'units and steps of each handler as the test runner charged them over the',
     'largest state, summed here over the handlers the transaction runs. The',
     'on-chain figures are what the ledger charged for the same handlers over',
     'the real transaction, so they are the ones the limits apply to. The',
     'heaviest agent sweep batch is set against the eight and forty deposit',
-    'rows of the review; its input count is in the Redeemers column, one Fund',
+    'rows of the table; its input count is in the Redeemers column, one Fund',
     'execution per deposit beside the SpendWithGrant execution. Those two rows',
     'are the one batch measured once, so their transaction and their on-chain',
-    'columns repeat and only the review columns differ. The forty',
+    'columns repeat and only the runner columns differ. The forty',
     'deposit row is not reachable on chain: the builder takes at most twelve',
     'fund UTxOs in one checked grant spend, as the refusal in the flows table',
     'above shows, so the batch over exactly twelve is the heaviest agent',
@@ -869,14 +869,14 @@ export const evidenceDocument = (facts: EvidenceFacts): string => {
       ? ['that bound leaves.']
       : [
           'that bound leaves. The upgrade is set against the upgrade row of the',
-          'review, which was measured over the largest state; the run upgrades',
+          'table, measured by the runner over the largest state; the run upgrades',
           'after the teardown, over an account holding one device, no revoked',
           'slot and one outstanding grant, so its on-chain figure sits below',
           'what the largest state would cost and the context decoding is the',
           'only addition.',
         ]),
     '',
-    '| Step | Path | Handlers | Transaction | Redeemers | On-chain memory | On-chain steps | Review net memory | Review net steps | Share of the limits |',
+    '| Step | Path | Handlers | Transaction | Redeemers | On-chain memory | On-chain steps | Runner net memory | Runner net steps | Share of the limits |',
     '| ---- | ---- | -------- | ----------- | --------- | --------------- | -------------- | ----------------- | ---------------- | ------------------- |',
     ...facts.records.flatMap((record) => budgetRows(record, facts.limits, network)),
     '',

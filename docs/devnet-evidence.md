@@ -6,13 +6,13 @@ protocol version of preprod, with the parameters the COPIED_PARAMETERS
 list of offchain/scripts/devnet-parameters.ts names copied from preprod
 into its genesis, the fee, size, deposit, pool, collateral and execution
 unit limit parameters among them, and with the cost models of its own
-Conway genesis, whose memory prices equal preprod and whose CPU prices
-for integer division and byte string equality sit below it, so the memory
-budgets below are what preprod charges for the same work and the step
-budgets a little under it; see README, Running the devnet. Its chain has
-one second blocks, so a run costs nothing and confirms in about a second.
-Its transactions are listed by id, since no explorer serves the chain.
-Flows refused by the builder quote the check that
+Conway genesis, which price memory as preprod does and differ from it
+only in CPU entries, the division coefficients and the three byte string
+equality entries, so the memory budgets below are what preprod charges
+for the same work and only the step budgets differ, in either direction.
+Its chain has one second blocks, so a run costs nothing and confirms in
+about a second. Its transactions are listed by id, since no explorer
+serves the chain. Flows refused by the builder quote the check that
 stopped them before anything reached the chain. Flows refused by the node
 were built without those checks, signed and submitted, and quote the
 ledger error Blockfrost returned when the validator failed in phase two;
@@ -35,7 +35,7 @@ a transaction can cost. The run builds the largest state the validators
 admit, eight devices, thirty two revoked slots and sixteen outstanding
 grants with eight recipients each, and records the execution units the
 chain charged for every script transaction, with the heaviest paths set
-against the budget table of the security review. An account is never
+against the budgets the test runner measured. An account is never
 deleted and its credential stays registered, so the run ends by sweeping
 the funds and the reserve back and leaving the control UTxO in place;
 every run therefore creates its account for a fresh owner key of the
@@ -202,28 +202,28 @@ first, as memory / steps.
 ## Budget comparison
 
 The heaviest transaction of each measured step against the rows of the
-budget table in `docs/security-review.md`, which gives the net memory
+budget table in `docs/verification.md`, which gives the net memory
 units and steps of each handler as the test runner charged them over the
 largest state, summed here over the handlers the transaction runs. The
 on-chain figures are what the ledger charged for the same handlers over
 the real transaction, so they are the ones the limits apply to. The
 heaviest agent sweep batch is set against the eight and forty deposit
-rows of the review; its input count is in the Redeemers column, one Fund
+rows of the table; its input count is in the Redeemers column, one Fund
 execution per deposit beside the SpendWithGrant execution. Those two rows
 are the one batch measured once, so their transaction and their on-chain
-columns repeat and only the review columns differ. The forty
+columns repeat and only the runner columns differ. The forty
 deposit row is not reachable on chain: the builder takes at most twelve
 fund UTxOs in one checked grant spend, as the refusal in the flows table
 above shows, so the batch over exactly twelve is the heaviest agent
 spend the library submits, and its share of the limit is the margin
 that bound leaves. The upgrade is set against the upgrade row of the
-review, which was measured over the largest state; the run upgrades
+table, measured by the runner over the largest state; the run upgrades
 after the teardown, over an account holding one device, no revoked
 slot and one outstanding grant, so its on-chain figure sits below
 what the largest state would cost and the context decoding is the
 only addition.
 
-| Step | Path | Handlers | Transaction | Redeemers | On-chain memory | On-chain steps | Review net memory | Review net steps | Share of the limits |
+| Step | Path | Handlers | Transaction | Redeemers | On-chain memory | On-chain steps | Runner net memory | Runner net steps | Share of the limits |
 | ---- | ---- | -------- | ----------- | --------- | --------------- | -------------- | ----------------- | ---------------- | ------------------- |
 | 27 | issue of eight grants with eight recipients each | Device and IssueGrants | `a8bf95232ba0` | 5 | 7,925,936 | 2,563,669,709 | 6,910,000 | 2,130,000,000 | 45.2% / 25.6% |
 | 28 | revoke of one slot | Device | `3438c8839821` | 4 | 1,614,693 | 528,972,381 | 1,100,000 | 320,000,000 | 9.2% / 5.2% |

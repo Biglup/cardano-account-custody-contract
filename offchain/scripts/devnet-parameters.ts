@@ -34,9 +34,10 @@ const NODE_PROPERTIES_PATH = resolve(DEVNET_DIRECTORY, 'node.properties');
  * limit, protocol version and reference script parameters, with the
  * minimum UTxO cost and the execution unit prices converted below. The
  * cost models are not among them: the devnet image takes them from its
- * own Conway genesis, which the README, Running the devnet, sets against
- * preprod's. The governance and reward parameters stay as the devnet sets
- * them.
+ * own Conway genesis, which prices memory as preprod does and differs
+ * from it only in CPU entries, the division coefficients and the three
+ * equalsByteString entries. The governance and reward parameters stay
+ * as the devnet sets them.
  */
 const COPIED_PARAMETERS: [string, string][] = [
   ['minFeeA', 'min_fee_a'],
