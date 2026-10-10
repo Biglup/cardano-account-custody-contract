@@ -29,14 +29,29 @@ use cardano_account_custody_contract/types.{StakeRedeemer}
 
 // VALIDATORS ******************************************************************
 
-/// The account's stake validator, applied to the account's initial device
-/// key as `owner` and the account proxy's hash as `proxy_hash`. Its
-/// script hash is the account's stake credential, the name of its state
-/// NFT and the prefix of its grant token names. It reads only the devices
-/// from the control datum, so it answers to no logic version. Publish:
-/// registering the credential creates the account and needs the owner;
-/// delegating needs a device; every other certificate is refused.
-/// Withdraw needs a device.
+/// The account's stake script, applied to the owner key hash as `owner`
+/// and the proxy's hash as `proxy_hash`. Its script hash is the
+/// account's stake credential, the name of its state NFT and the prefix
+/// of its grant token names. The redeemer is not read. It reads field 1
+/// of the control datum, the devices, and nothing else, so it holds
+/// under every logic.
+///
+/// Withdraw: a device of the control UTxO, taken from the reference
+/// inputs first and the inputs second, is among the required signers,
+/// for any amount.
+///
+/// Publish: `RegisterCredential` and `RegisterAndDelegateCredential` of
+/// the script credential create the account, so `owner` is among the
+/// required signers, the proxy mints exactly one token named after the
+/// credential and the single control output lists `owner` among its
+/// devices; `DelegateCredential` of the script credential needs a device
+/// of the control UTxO, taken the same way as for a withdrawal; every
+/// other certificate returns `False`.
+///
+/// Every other purpose aborts. Aborts also when a device check finds no
+/// control UTxO of the account, when a creation finds no single control
+/// output, and when the control datum read is not a constructor whose
+/// second field is a list of byte strings.
 validator account_stake(owner: VerificationKeyHash, proxy_hash: ScriptHash) {
   withdraw(_redeemer: StakeRedeemer, credential: Credential, self: Transaction) {
     expect Script(stake_script_hash) = credential
@@ -65,7 +80,10 @@ validator account_stake(owner: VerificationKeyHash, proxy_hash: ScriptHash) {
 // FUNCTIONS *******************************************************************
 
 /// Whether a device of the account named by `stake_script_hash` signs,
-/// read from the control UTxO the transaction spends or references.
+/// read from the control UTxO taken from the reference inputs first and
+/// the inputs second. Aborts when no control UTxO of the account is
+/// present and when its inline datum is not a constructor whose second
+/// field is a list of byte strings.
 fn is_authorised_by_a_device(
   self: Transaction,
   proxy_hash: ScriptHash,
@@ -81,9 +99,10 @@ fn is_authorised_by_a_device(
 }
 
 /// Whether the transaction creates the account named by `stake_script_hash`
-/// with the owner in it: the owner signs, the account policy mints exactly
-/// one token named after the credential, and the control output holding
-/// that token lists the owner among its devices.
+/// with the owner in it: the owner signs, the proxy mints exactly one
+/// token named after the credential, and the control output holding
+/// that token lists the owner among its devices. Aborts on every abort of
+/// `lists_the_owner_as_a_device`; every other violation returns `False`.
 fn creates_the_account(
   self: Transaction,
   owner: VerificationKeyHash,
@@ -105,9 +124,9 @@ fn creates_the_account(
 /// Whether the account's single control output among the outputs lists
 /// `owner` in the device list of its inline state. Only the second field
 /// of the datum is decoded, since the logic the control names checks the
-/// whole state in the same transaction. Fails when no single control
-/// output exists or its datum is not an inline constructor with a key
-/// list second.
+/// whole state in the same transaction. Aborts when no single control
+/// output exists or its datum is not an inline constructor whose second
+/// field is a list of byte strings.
 fn lists_the_owner_as_a_device(
   outputs: List<Output>,
   owner: VerificationKeyHash,

@@ -1,3 +1,12 @@
+//// The rules a logic version applies, one per proxy redeemer:
+//// `device_rule` and `sweep_rule` for the inputs of the owner path,
+//// `grant_spend_rule` for the input of the agent path, `issue_grants_rule`
+//// and `burn_grants_rule` for the mint, with `recreates_control_output`
+//// and `issues_grant` as their parts. The owner and agent paths in `logic`
+//// call them. Every rule returns `False` or aborts on an `expect` or a
+//// `fail`; both make the ledger reject the transaction, and each rule
+//// says which violation does what.
+
 //
 // Copyright 2026 IOG.
 //
@@ -31,14 +40,25 @@ use cardano_account_custody_contract/types.{AccountState}
 
 // FUNCTIONS *******************************************************************
 
-/// The owner path on the control UTxO: `own` is the spent UTxO carrying
-/// the `Device` redeemer and `old` the state of the account's control
-/// UTxO, which the logic found spent and pointing at `own_hash`. The UTxO
-/// is the control UTxO; a device signs; every account token in the inputs
-/// and outputs sits at its own account address; a single valid control
-/// output recreates the NFT, under this logic with a non decreasing
-/// generation and counters that follow the grant tokens minted and
-/// burned, or under another logic as an upgrade.
+/// The owner path on the control UTxO. `own` is the spent UTxO, which
+/// carries `Device`; `old` is the state of the account's control UTxO,
+/// spent in the same transaction; `self` is the transaction;
+/// `proxy_hash` and `stake_script_hash` name the account; `own_hash` is
+/// the logic running.
+///
+/// Holds when all of these hold:
+///
+/// - `own` holds the state NFT of the account.
+/// - A device of `old` is among the required signers.
+/// - Every account token in the inputs and in the outputs sits, in
+///   quantity one, at the address its name denotes.
+/// - `recreates_control_output` holds: a single control output recreates
+///   the control UTxO, under this logic with a well formed state, a non
+///   decreasing generation and counters that follow the grant tokens
+///   minted and burned, or under another logic that runs, as an upgrade.
+///
+/// Aborts, once the earlier checks pass, on every abort of
+/// `recreates_control_output`. Every other violation returns `False`.
 pub fn device_rule(
   own: Output,
   old: AccountState,
@@ -59,20 +79,42 @@ pub fn device_rule(
   }
 }
 
-/// The agent path on a grant UTxO: `own` is the spent UTxO carrying the
-/// `SpendWithGrant` redeemer and `control_state` the state of the
-/// account's control UTxO, which the logic found referenced and pointing
-/// at itself. The UTxO holds only lovelace and its token and is the only
-/// account token among the inputs; the grant is current against the
-/// control state; the grantee signs; the validity range ends before the
-/// grant expires; the leaving value stays within the scope caps; outputs
-/// away from the account go to allowed recipients; deposits paid back are
-/// plain; placement holds; the single grant output sits at the same
-/// address with the same value, carries the grant with every field as
-/// spent but its remaining caps, each reduced by at least what left and
-/// never below zero, and no reference script; nothing is minted under the
-/// policy. Placement already pins the grant output to the account
-/// address, so the address rule on it is defence in depth.
+/// The agent path on a grant UTxO. `own` is the spent UTxO, which
+/// carries `SpendWithGrant`; `control_state` is the state of the
+/// account's control UTxO, referenced in the same transaction; `self` is
+/// the transaction; `proxy_hash` and `stake_script_hash` name the
+/// account.
+///
+/// Holds when all of these hold:
+///
+/// - `own` holds only lovelace and the grant token of the slot in its
+///   datum, and is the only input holding a token of the account.
+/// - The grant is current against `control_state`.
+/// - The grantee is among the required signers.
+/// - The validity range has a finite upper bound no later than
+///   `expires_at`.
+/// - The leaving value at the account address stays within the scope.
+/// - With a non empty recipient list, every output is at the account
+///   address or at a recipient.
+/// - Every output to the account address without an account token has
+///   no datum and no reference script.
+/// - Every account token in the inputs and in the outputs sits, in
+///   quantity one, at the address its name denotes.
+/// - The grant output sits at the address of `own`, holds the same
+///   value, carries the spent grant with only `cap` and `lovelace_cap`
+///   changed, each at least zero and at most the old cap lowered by the
+///   net outflow of its asset when that outflow is positive, with
+///   `lovelace_cap` left as it is for a lovelace scope, and carries no
+///   reference script.
+/// - Nothing is minted or burned under the proxy policy.
+///
+/// Aborts when `own` carries no inline datum or one that is not a
+/// `Grant`, when the slot in that datum does not fit 4 bytes, when the
+/// grant token of that slot is in no output or in several, and, once
+/// the earlier checks pass, when the grant output's inline datum is not
+/// a `Grant`. Every other violation returns `False`. Placement already
+/// pins the grant output to the account address; the address check on
+/// it is defence in depth.
 pub fn grant_spend_rule(
   own: Output,
   control_state: AccountState,
@@ -116,13 +158,30 @@ pub fn grant_spend_rule(
   }
 }
 
-/// The owner path on a dead grant UTxO: `own` is the spent UTxO carrying
-/// the `SweepGrant` redeemer and `control_state` the state of the
-/// account's control UTxO, which the logic found spent. The UTxO holds
-/// only lovelace and its token, a device signs, the grant is dead and its
-/// token is burned. The grant is read through the stable prefix of its
-/// datum, so a grant issued under another revision of the grant shape is
-/// swept once its generation or its slot is dead.
+/// The owner path on a dead grant UTxO. `own` is the spent UTxO, which
+/// carries `SweepGrant`; `control_state` is the state of the account's
+/// control UTxO, spent in the same transaction; `self` is the
+/// transaction; `proxy_hash` and `stake_script_hash` name the account.
+/// The grant is judged from the stable prefix of the datum of `own`,
+/// and from its expiry only when the datum decodes as a `Grant`, so a
+/// grant of another logic version's shape is swept once its generation
+/// or its slot is dead.
+///
+/// Holds when all of these hold:
+///
+/// - `own` holds only lovelace and the grant token of the slot in field
+///   0 of its datum.
+/// - A device of `control_state` is among the required signers.
+/// - The grant is dead against `control_state` and the validity range:
+///   issued under a lower generation, revoked by slot, or, when the
+///   datum is a `Grant`, with a validity range starting after its expiry.
+/// - The mint burns exactly one of that grant token.
+///
+/// Aborts when `own` carries no inline datum, when the datum is not a
+/// constructor whose first field is an integer, when the slot does not
+/// fit 4 bytes and, once the value and signature checks pass, when the
+/// third field of the datum is not an integer. Every other violation
+/// returns `False`.
 pub fn sweep_rule(
   own: Output,
   control_state: AccountState,
@@ -149,12 +208,28 @@ pub fn sweep_rule(
   }
 }
 
-/// The `IssueGrants` mint over `minted`, the tokens minted under the
-/// policy, with `old` the state of the account's spent control UTxO: a
-/// device signs; the minted names are the next slots in order, each in
-/// quantity one, each in exactly one output at the account address
-/// holding only lovelace and that token, with no reference script and a
-/// well formed grant of that slot and the recreated control's generation.
+/// The `IssueGrants` rule of the owner path. `minted` is the mint under
+/// the proxy policy, ascending by name as the ledger lists it; `old` is
+/// the state of the spent control UTxO; `self` is the transaction;
+/// `proxy_hash` and `stake_script_hash` name the account.
+///
+/// Holds when all of these hold:
+///
+/// - A device of `old` is among the required signers.
+/// - The entry at index `i` of `minted` passes `issues_grant` for slot
+///   `old.next_slot + i` and the generation the single control output
+///   carries.
+///
+/// A grant token name ends in its slot as 4 big endian bytes, so the
+/// sorted mint names exactly the next slots, consecutive and in order,
+/// or some entry's name differs from the name of its slot and
+/// `issues_grant` returns `False` for it once its own aborts are passed.
+/// The counters of the new state are checked by
+/// `recreates_control_output`, not here.
+///
+/// Aborts when the outputs hold no single control output of the account,
+/// when its inline datum is not an `AccountState`, and on every abort of
+/// `issues_grant`. Every other violation returns `False`.
 pub fn issue_grants_rule(
   minted: Pairs<AssetName, Int>,
   old: AccountState,
@@ -187,9 +262,19 @@ pub fn issue_grants_rule(
   }
 }
 
-/// The `BurnGrants` mint over `minted`, the tokens minted under the
-/// policy, with `old` the state of the account's spent control UTxO: a
-/// device signs and every entry burns one grant token of the account.
+/// The `BurnGrants` rule of the owner path. `minted` is the mint under
+/// the proxy policy; `old` is the state of the spent control UTxO;
+/// `stake_script_hash` names the account; `extra_signatories` are the
+/// required signers.
+///
+/// Holds when all of these hold:
+///
+/// - A device of `old` is among `extra_signatories`.
+/// - Every entry of `minted` is a grant token of the account, a 32 byte
+///   name with the stake script hash as prefix, in quantity -1.
+///
+/// Nothing aborts; every violation returns `False`. Whether each burned
+/// grant is dead is checked by `sweep_rule` on its grant UTxO, not here.
 pub fn burn_grants_rule(
   minted: Pairs<AssetName, Int>,
   old: AccountState,
@@ -212,16 +297,35 @@ pub fn burn_grants_rule(
   }
 }
 
-/// Whether exactly one output at the account address holds the state NFT
-/// and recreates the control UTxO. When its datum names this logic, the
-/// output is a valid control output whose state follows from `old`: a
-/// non decreasing generation, and counters moved by the grant tokens
-/// minted and burned. When it names another logic, the account is
-/// leaving: this logic only requires that the new logic runs, through a
-/// withdrawal, and that nothing is minted or burned under the policy
-/// while no logic ties the counters to the mint; the arriving logic
-/// validates the state. Fails when no single control output exists or
-/// its datum has no logic field.
+/// Whether the single control output recreates the control UTxO from
+/// `old`, the state of the spent control UTxO. `self` is the
+/// transaction; `proxy_hash` and `stake_script_hash` name the account;
+/// `own_hash` is the logic running.
+///
+/// When the output's datum names this logic, holds when all of these
+/// hold:
+///
+/// - The output holds only lovelace and the state NFT.
+/// - The new state is well formed.
+/// - Its generation is at least the generation of `old`.
+/// - Its next slot is the next slot of `old` plus the grant tokens
+///   minted.
+/// - Its outstanding count is the count of `old` plus the grant tokens
+///   minted minus the grant tokens burned.
+///
+/// When the datum names another logic, the account leaves: holds when
+/// the transaction withdraws from that logic and nothing is minted or
+/// burned under the proxy policy, so no counter moves while no logic
+/// ties the counters to the mint. The arriving logic validates the
+/// state.
+///
+/// Aborts when the outputs hold no single control output of the account
+/// and when its inline datum is not a constructor whose first field is a
+/// byte string. When that field names this logic, also aborts when the
+/// datum is not an `AccountState` and when the mint under the proxy
+/// policy holds a token that is not a grant token of the account or a
+/// grant token in a quantity other than 1 or -1. Every other violation
+/// returns `False`.
 pub fn recreates_control_output(
   old: AccountState,
   self: Transaction,
@@ -262,11 +366,24 @@ pub fn recreates_control_output(
   }
 }
 
-/// Whether a minted entry is one grant token named after `slot`, landing in
-/// exactly one output at the account address that holds only lovelace and
-/// that token, carries no reference script, and carries a well formed grant
-/// of that slot issued under `generation`. Fails when the token lands in no
-/// output or in several, or under a datum that is not a grant.
+/// Whether `token`, one entry of the mint under the proxy policy, issues
+/// the grant of `slot` under `generation` into `outputs`. `proxy_hash`
+/// and `stake_script_hash` name the account.
+///
+/// Holds when all of these hold:
+///
+/// - The entry is in quantity 1.
+/// - Its name is the grant token name of `slot`.
+/// - The single output holding the token sits at the account address.
+/// - That output holds only lovelace and the token.
+/// - It carries no reference script.
+/// - Its inline datum is a `Grant` whose slot is `slot`, whose
+///   generation is `generation` and whose scope is well formed.
+///
+/// Aborts when the token is in no output or in several, when that
+/// output's datum is missing, given by hash or not a `Grant`, and, once
+/// the quantity check passes, when `slot` does not fit 4 bytes. Every
+/// other violation returns `False`.
 pub fn issues_grant(
   token: Pair<AssetName, Int>,
   slot: Int,

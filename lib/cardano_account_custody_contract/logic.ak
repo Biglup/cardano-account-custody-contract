@@ -1,3 +1,12 @@
+//// The rules a logic version shares: the withdraw dispatch, the publish
+//// handler, the owner, agent and arrival paths and the walk over the
+//// proxy redeemers. A logic runs once per transaction through a
+//// withdrawal from its credential. It reads the control UTxO that names
+//// it, the proxy redeemers and the transaction, and returns `False` or
+//// aborts on an `expect`; either makes the ledger reject the
+//// transaction. `logic_v1` writes the dispatch out in its own handler
+//// and calls the path functions here.
+
 //
 // Copyright 2026 IOG.
 //
@@ -32,16 +41,21 @@ use cardano_account_custody_contract/types.{
 
 // FUNCTIONS *******************************************************************
 
-/// The withdraw handler every logic version shares, run as the logic
-/// whose script hash is `own_hash` over the proxy at `proxy_hash`. The
-/// control UTxOs whose datum names this logic are looked up among the
-/// inputs and the reference inputs. Exactly one, spent, is the owner path;
-/// exactly one, referenced, is the agent path; none is an arrival, which
-/// creates the account or receives it from another logic; two, spent and
-/// referenced at once or of two accounts, are refused: one account per
-/// logic version per transaction. `validators/logic_v1.ak` holds the
-/// frozen dispatch of the deployed logic; this function is the source for
-/// later logic versions.
+/// The withdraw handler of a logic version, run as the logic whose
+/// script hash is `own_hash` over the proxy at `proxy_hash`; `self` is
+/// the transaction. It looks for control UTxOs whose datum names this
+/// logic among the inputs and the reference inputs. Exactly one among
+/// the inputs and none referenced is the owner path,
+/// `validates_owner_transaction`; none among the inputs and exactly one
+/// referenced is the agent path, `validates_agent_transaction`; none in
+/// either is an arrival, `validates_arrival`, which creates the account
+/// or receives it from another logic. Any other count, a control UTxO
+/// spent and referenced at once or two accounts naming this logic,
+/// returns `False`: one account per logic per transaction. `logic_v1`
+/// writes this dispatch out in its own handler instead of calling it, so
+/// a change here leaves its script unchanged. Aborts on every abort of
+/// `is_own_control` over the inputs and the reference inputs and on
+/// every abort of the path taken.
 pub fn validates_withdrawal(
   own_hash: ScriptHash,
   proxy_hash: ScriptHash,
@@ -65,10 +79,13 @@ pub fn validates_withdrawal(
   }
 }
 
-/// The publish handler every logic version shares: the credential may be
-/// registered by anyone, which the withdrawal needs once; every other
-/// certificate is refused, so the credential stays registered for every
-/// account on the version.
+/// The publish handler every logic version shares. `RegisterCredential`
+/// of a script credential returns `True`, so anyone may register the
+/// logic credential, which the withdrawal needs once per network.
+/// `UnregisterCredential`, `DelegateCredential`,
+/// `RegisterAndDelegateCredential` and every other certificate return
+/// `False`, so the credential stays registered for every account on the
+/// version.
 pub fn publish(certificate: Certificate) -> Bool {
   when certificate is {
     RegisterCredential { credential: Script(_), .. } -> True
@@ -76,12 +93,15 @@ pub fn publish(certificate: Certificate) -> Bool {
   }
 }
 
-/// Whether an output is the control UTxO of an account under the proxy
-/// whose datum names `own_hash`: it carries an inline datum, sits at an
-/// account address, holds the state NFT of that address and names the
-/// logic in its first field. The datum shape is checked first, since a
-/// control UTxO always carries its state inline and a deposit fails on
-/// one match.
+/// Whether `output` is the control UTxO of an account under the proxy at
+/// `proxy_hash` whose datum names `own_hash`: it carries an inline datum,
+/// sits at an account address, holds the state NFT of that address and
+/// names the logic in its first field. The datum shape is checked first,
+/// since a control UTxO always carries its state inline and a deposit
+/// without a datum returns `False` on one match. Aborts when the output
+/// sits at an account address, holds the state NFT of that address and
+/// carries an inline datum that is not a constructor whose first field
+/// is a byte string.
 pub fn is_own_control(
   output: Output,
   proxy_hash: ScriptHash,
@@ -103,13 +123,31 @@ pub fn is_own_control(
   }
 }
 
-/// The owner path: `control` is the account's control UTxO, spent. It
-/// carries `Device`; every control output naming this logic sits at the
-/// account address, so the `Device` rule covers it and no other account
-/// arrives at this logic unvalidated; the mint under the policy, if any,
-/// passes the rule its proxy redeemer names; every input at the account
-/// address passes the rule its proxy redeemer names, with
-/// `SpendWithGrant` refused and `Fund` left to the proxy.
+/// The owner path. `control` is the account's control UTxO, spent,
+/// whose datum names `own_hash`, the logic running; `proxy_hash` is the
+/// proxy; `self` is the transaction.
+///
+/// Holds when all of these hold:
+///
+/// - The proxy spend redeemer of `control` is `Device`.
+/// - Every output that is a control output naming this logic sits at
+///   the spent account's address, so the `Device` rule covers it and no
+///   other account arrives at this logic unvalidated.
+/// - The mint under the proxy policy is empty, or its redeemer is
+///   `IssueGrants` and `issue_grants_rule` holds, or `BurnGrants` and
+///   `burn_grants_rule` holds. `CreateAccount` returns `False`.
+/// - Every input at the account address spent under a proxy redeemer
+///   other than `Fund` passes `device_rule` for `Device` or `sweep_rule`
+///   for `SweepGrant`. `SpendWithGrant` returns `False`. `Fund` is left
+///   to the proxy.
+///
+/// Aborts when the inline datum of `control` is not an `AccountState`,
+/// when the redeemers hold no spend entry for `control` or one that is
+/// not an `AccountRedeemer`, on every abort of `is_own_control` over the
+/// outputs away from the account address, when the mint under the proxy
+/// policy is not empty and the redeemers hold no mint entry for the
+/// policy or one that is not a `MintRedeemer`, and on every abort of the
+/// rules it calls. Every other violation returns `False`.
 pub fn validates_owner_transaction(
   control: Input,
   own_hash: ScriptHash,
@@ -176,12 +214,24 @@ pub fn validates_owner_transaction(
   }
 }
 
-/// The agent path: `control` is the account's control UTxO, referenced.
-/// Nothing is minted under the policy, no control output names this
-/// logic, since a referenced control UTxO is never recreated and an
-/// arrival needs the arrival path, and every input at the account
-/// address carries `Fund`, validated by the proxy, or `SpendWithGrant`
-/// and passes its rule.
+/// The agent path. `control` is the account's control UTxO, referenced,
+/// whose datum names `own_hash`, the logic running; `proxy_hash` is the
+/// proxy; `self` is the transaction.
+///
+/// Holds when all of these hold:
+///
+/// - Nothing is minted or burned under the proxy policy.
+/// - No output is a control output naming this logic. A referenced
+///   control UTxO is never recreated and an arrival needs the arrival
+///   path.
+/// - Every input at the account address spent under a proxy redeemer
+///   other than `Fund` carries `SpendWithGrant` and passes
+///   `grant_spend_rule`. `Device` and `SweepGrant` return `False`. `Fund`
+///   is left to the proxy.
+///
+/// Aborts when the inline datum of `control` is not an `AccountState`,
+/// on every abort of `is_own_control` over the outputs, and on every
+/// abort of `grant_spend_rule`. Every other violation returns `False`.
 pub fn validates_agent_transaction(
   control: Output,
   own_hash: ScriptHash,
@@ -222,7 +272,8 @@ pub fn validates_agent_transaction(
 /// rather than the inputs, so a `Fund` deposit costs one comparison and
 /// no scan: `Fund` is validated by the proxy, an input paying to the proxy
 /// always carries a proxy redeemer, and a redeemer of another shape or
-/// for an input elsewhere belongs to another script or account.
+/// for an input elsewhere belongs to another script or account. Aborts
+/// only on an abort of `rule`; every other violation returns `False`.
 pub fn validates_spends(
   self: Transaction,
   address: Address,
@@ -254,14 +305,31 @@ pub fn validates_spends(
   )
 }
 
-/// No control UTxO naming this logic is present, so an account arrives:
-/// exactly one control output names this logic, holds only lovelace and
-/// the state NFT and carries a well formed state. Without a control UTxO
-/// of that account among the inputs the account is being created and the
-/// state NFT must be the only mint under the policy, over zero counters.
-/// With one, the account leaves another logic, which must run as well;
-/// the generation grows strictly, the devices stay the same and nothing
-/// is minted under the policy. Fails without a single such output.
+/// The arrival path: no control UTxO naming this logic is present, so an
+/// account arrives at the logic whose script hash is `own_hash`, over
+/// the proxy at `proxy_hash`; `self` is the transaction.
+///
+/// Holds when all of these hold:
+///
+/// - The single control output naming this logic holds only lovelace
+///   and the state NFT.
+/// - Its state is well formed.
+/// - Without a control UTxO of that account among the inputs, the
+///   account is created: the mint under the proxy policy is exactly the
+///   state NFT in quantity 1 and the state has zero counters.
+/// - With one, the account leaves another logic: the transaction
+///   withdraws from the logic the spent control datum names, the new
+///   generation is greater than the one it carries, the devices are the
+///   same and nothing is minted or burned under the proxy policy.
+///
+/// No signature is checked here: at creation the stake script requires
+/// the owner's, at an upgrade the leaving logic decides. Aborts on every
+/// abort of `is_own_control` over the outputs, when no single output is
+/// a control output naming this logic, when that output's inline datum
+/// is not an `AccountState`, and, at an upgrade, once the earlier checks
+/// pass, when the spent control datum is not a constructor whose first
+/// field is a byte string, third an integer and second a list of byte
+/// strings. Every other violation returns `False`.
 pub fn validates_arrival(
   own_hash: ScriptHash,
   proxy_hash: ScriptHash,

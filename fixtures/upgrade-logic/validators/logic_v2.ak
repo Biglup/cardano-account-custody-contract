@@ -35,35 +35,37 @@ use cardano_account_custody_contract/types.{LogicRedeemer}
 
 // CONSTANTS *******************************************************************
 
-/// The most tokens one transaction may mint or burn under the account
-/// policy here: the size of an issuance or a sweep, which the deployed
-/// logic leaves to the execution budget. Eight grants with eight
-/// recipients each issue or sweep within half of the memory limit and
-/// sixteen exceed it, so the bound is the batch the off-chain builders
-/// apply.
+/// The most tokens one transaction may mint or burn under the proxy
+/// policy while an account names this logic. Every such token is a
+/// grant token on the owner path or the state NFT at creation, so it
+/// bounds the grants one issuance or one sweep handles. `logic_v1` has
+/// no such bound. `mints_within_batch` enforces it on every withdrawal.
 pub const max_grant_batch = 8
 
 // VALIDATORS ******************************************************************
 
-/// The second logic of the upgrade proof, applied to the account proxy's
-/// hash like the deployed one. It is the shared rules of `logic`, the
-/// owner, agent and arrival paths with the one control UTxO per
-/// transaction rule, plus one bound a user can see: at most
-/// `max_grant_batch` tokens are minted or burned under the account
-/// policy in one transaction, so an issuance or a sweep of more grants
-/// is refused here where the deployed logic accepts whatever fits the
-/// budget. The shared rules admit only grant tokens of the account on
-/// the owner path and the state NFT alone at creation, so the bound is a
-/// bound on grants issued or swept. The bound is visible from the
-/// outside, which is what makes the move observable; it is not a rule
-/// the contract wants.
+/// The second logic of the upgrade proof, applied to the proxy's hash
+/// like `logic_v1`. Its script hash is the logic credential a control
+/// datum names in field 0 while an account runs it.
 ///
-/// An account moves here from the deployed logic with the upgrade the
-/// shared arrival path validates, the generation bumped so that every
-/// grant issued before is dead, and moves back the same way.
+/// Withdraw: `logic.validates_withdrawal` holds, the owner, agent and
+/// arrival paths with the one control UTxO per transaction rule, and the
+/// mint under the proxy policy holds at most `max_grant_batch` entries.
+/// The shared rules admit only grant tokens of the account on the owner
+/// path and the state NFT alone at creation, so the bound is a bound on
+/// grants issued or swept; an issuance or a sweep of more grants returns
+/// `False` here where `logic_v1` has no such bound. The bound is visible
+/// from the outside, which is what makes the move observable; it is not
+/// a rule the contract wants. Aborts on every abort of the path taken.
 ///
-/// Publish: the credential may be registered by anyone, which the
-/// withdrawal needs once; every other certificate is refused.
+/// An account moves here from `logic_v1` with the upgrade the shared
+/// arrival path validates, the generation raised so that every grant
+/// issued before is dead, and moves back the same way.
+///
+/// Publish accepts `RegisterCredential` of a script credential and
+/// returns `False` for every other certificate.
+///
+/// Every other purpose aborts.
 validator logic_v2(proxy_hash: ScriptHash) {
   withdraw(_redeemer: LogicRedeemer, credential: Credential, self: Transaction) {
     expect Script(own_hash) = credential
@@ -88,7 +90,7 @@ validator logic_v2(proxy_hash: ScriptHash) {
 
 // FUNCTIONS *******************************************************************
 
-/// Whether the mint under the account policy holds at most
+/// Whether the mint under the proxy policy holds at most
 /// `max_grant_batch` entries, each a token minted or burned.
 fn mints_within_batch(mint: Assets, policy_id: PolicyId) -> Bool {
   dict.size(assets.tokens(mint, policy_id)) <= max_grant_batch

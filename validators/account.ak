@@ -26,14 +26,48 @@ use cardano_account_custody_contract/types.{
 
 // VALIDATORS ******************************************************************
 
-/// The account proxy, the permanent part of every account. Its script
-/// hash is the policy id of every account token and the payment
-/// credential of every account address. It pins the naming, quantity and
-/// placement of every account token and keeps the control UTxO in place;
-/// every other rule belongs to the logic the control datum names, which
-/// every path but a plain `Fund` runs through a withdrawal. Mint takes
-/// `CreateAccount`, `IssueGrants` and `BurnGrants`; spend takes `Fund`,
-/// `Device`, `SpendWithGrant` and `SweepGrant`.
+/// The proxy: the permanent validator of every account. Its script hash
+/// is the payment credential of every account address and the policy id
+/// of every account token. It pins the naming, quantity and placement
+/// of account tokens, gates creation on the stake script and keeps the
+/// control UTxO in place. Every other rule belongs to the logic named in
+/// field 0 of the control datum, which the proxy requires to run through
+/// a withdrawal on every path but `Fund`.
+///
+/// Mint, `CreateAccount`: the mint under the proxy policy is one entry in
+/// quantity 1 whose 28 byte name is the stake script hash; the redeemers
+/// hold a publish entry registering that credential; the single control
+/// output holds only lovelace and the NFT and carries no reference
+/// script; every account token in the outputs sits at its own address;
+/// the control datum names a 28 byte logic hash the transaction
+/// withdraws from. Any other mint returns `False`. Aborts when no single
+/// control output of the account exists or its datum is not an inline
+/// constructor whose first field is a byte string.
+///
+/// Mint, `IssueGrants` and `BurnGrants`: every entry is a 32 byte grant
+/// token name of the account the first name denotes, in quantity 1 or
+/// -1 respectively; that account's control UTxO is present exactly once
+/// among the inputs and the reference inputs and the transaction
+/// withdraws from the logic it names; for `IssueGrants`, every account
+/// token in the outputs sits at its own address. Aborts on an empty mint
+/// and when that control UTxO's inline datum is not a constructor whose
+/// first field is a byte string.
+///
+/// Spend: aborts unless the spent UTxO has a script payment credential
+/// and an inline script stake credential. `Fund`: the UTxO holds no
+/// token under the proxy policy; without a datum some input holds a token of
+/// the same account, with a datum the control UTxO is spent. `Device`,
+/// `SpendWithGrant` and `SweepGrant` make the same checks: the control
+/// UTxO is present exactly once among the inputs and the reference
+/// inputs and the transaction withdraws from the logic it names, which
+/// aborts on a control datum that is not a constructor whose first field
+/// is a byte string; if the UTxO holds a token under the proxy policy, every
+/// account token in the outputs sits at its own address; if it holds the
+/// state NFT, exactly one output recreates the control UTxO at the same
+/// address with only lovelace and the NFT, an inline datum and no
+/// reference script. Every other violation returns `False`.
+///
+/// Every other purpose aborts.
 validator account {
   mint(redeemer: MintRedeemer, policy_id: PolicyId, self: Transaction) {
     let minted = assets.tokens(self.mint, policy_id) |> dict.to_pairs
@@ -132,7 +166,8 @@ validator account {
 
 /// Whether every minted entry is a grant token of one account, the one
 /// the first name denotes, in `quantity`, with that account's control
-/// UTxO present and its logic running. Fails on an empty mint.
+/// UTxO present and its logic running. Aborts on an empty mint and on
+/// every abort of `runs_the_logic`.
 fn mints_grants_of_one_account(
   self: Transaction,
   policy_id: PolicyId,
@@ -149,7 +184,10 @@ fn mints_grants_of_one_account(
 
 /// Whether the account's control UTxO is present exactly once among the
 /// inputs and the reference inputs and the transaction withdraws from the
-/// logic named in the first field of its datum.
+/// logic named in the first field of its datum. Returns `False` when no
+/// control UTxO is present or several are. Aborts when the control
+/// UTxO's inline datum is not a constructor whose first field is a byte
+/// string.
 fn runs_the_logic(
   self: Transaction,
   script_hash: ScriptHash,

@@ -25,14 +25,41 @@ use cardano_account_custody_contract/types.{LogicRedeemer}
 
 // VALIDATORS ******************************************************************
 
-/// The first version of the account logic, applied to the account proxy's
-/// hash. Its script hash is the credential every account on it names, so
-/// the proxy requires a withdrawal from it whenever such a control UTxO is
-/// spent or referenced and the ledger runs it once over the transaction.
-/// Withdraw: one control UTxO naming this logic spent is the owner path,
-/// one referenced the agent path, none an arrival, any other mix is refused.
-/// Publish admits only the registration of the credential. The dispatch
-/// is spelled out, not called from `logic`: the compiled code is final.
+/// The first version of the account logic, applied to the proxy's hash.
+/// Its script hash is the logic credential a control datum names in
+/// field 0. The proxy requires a withdrawal from it at creation and
+/// whenever such a control UTxO is spent or referenced, and the ledger
+/// runs it once over the whole transaction. The dispatch is written out
+/// here instead of calling `logic.validates_withdrawal`, so a change to
+/// that function does not change this script.
+///
+/// Withdraw: exactly one control UTxO naming this logic spent and none
+/// referenced is the owner path, `logic.validates_owner_transaction`:
+/// the control UTxO carries `Device`, no control output naming this
+/// logic sits at another address, the mint under the proxy policy is
+/// empty or passes `issue_grants_rule` or `burn_grants_rule` under its
+/// redeemer, with `CreateAccount` returning `False`, and every input at
+/// the account address passes `device_rule` for `Device` or
+/// `sweep_rule` for `SweepGrant`, with `SpendWithGrant` returning
+/// `False` and `Fund` left to the proxy. None
+/// spent and exactly one referenced is the agent path,
+/// `logic.validates_agent_transaction`: nothing is minted or burned
+/// under the proxy policy, no output is a control output naming this
+/// logic, and every input at the account address passes
+/// `grant_spend_rule` for `SpendWithGrant`, with `Device` and
+/// `SweepGrant` returning `False`. None in either is an arrival,
+/// `logic.validates_arrival`, a creation or an upgrade into this logic:
+/// the single control output naming this logic holds only lovelace and
+/// the state NFT under a well formed state; a creation mints exactly the
+/// state NFT over zero counters, an upgrade withdraws from the leaving
+/// logic, raises the generation, keeps the devices and mints nothing.
+/// Any other count returns `False`. Aborts on every abort of the path
+/// taken.
+///
+/// Publish accepts `RegisterCredential` of a script credential and
+/// returns `False` for every other certificate.
+///
+/// Every other purpose aborts.
 validator logic_v1(proxy_hash: ScriptHash) {
   withdraw(_redeemer: LogicRedeemer, credential: Credential, self: Transaction) {
     expect Script(own_hash) = credential
