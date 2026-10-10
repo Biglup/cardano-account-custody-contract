@@ -22,65 +22,21 @@ use cardano/certificate.{RegisterCredential, UnregisterCredential}
 use cardano/transaction.{DatumHash, NoDatum, Output, Transaction}
 use cardano_account_custody_contract/logic
 use cardano_account_custody_contract/test_helpers.{
-  account_address, control_output, control_value, device_key, fund_output,
-  grant_output, input, logic_hash, next_logic_hash, output, publishing,
-  recipient_address, referencing, registration, script_hash, stake_script_hash,
-  state_datum, state_nft, stranger_key, with_proxy_redeemers, withdrawing,
+  account_address, control_output, control_value, creation, device_key, expiry,
+  fund_output, grant_output, input, issued_state, logic_hash, lovelace_grant,
+  next_logic_hash, output, recipient_address, referencing, script_hash,
+  stake_script_hash, state, state_datum, state_nft, stranger_key,
+  with_proxy_redeemers, withdrawing,
 }
-use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
+use cardano_account_custody_contract/types.{Grant, Scope}
 
 // CONSTANTS *******************************************************************
-
-/// The POSIX millisecond at which the grants of these fixtures expire. A
-/// spend runs under a validity range ending just before it and a sweep
-/// under one starting just after it, so one number stands for both sides
-/// of the time rules.
-const expiry = 1_800_000_000_000
 
 /// The hash standing in for another script at the payment credential.
 const other_script_hash =
   #"00000000000000000000000000000000000000000000000000000077"
 
 // FUNCTIONS *******************************************************************
-
-/// The fresh state of the account under test under the test logic.
-fn state() -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices: [device_key],
-    grant_generation: 0,
-    next_slot: 0,
-    revoked: [],
-    outstanding: 0,
-  }
-}
-
-/// The state once one grant has been issued.
-fn granted_state() -> AccountState {
-  AccountState { ..state(), next_slot: 1, outstanding: 1 }
-}
-
-/// The grant of slot 0 to the stranger over lovelace, 3 ADA per call and
-/// 5 ADA in total, with no recipient restriction.
-fn lovelace_grant() -> Grant {
-  Grant {
-    slot: 0,
-    grantee: stranger_key,
-    generation: 0,
-    scope: Scope {
-      asset: Asset {
-        policy_id: assets.ada_policy_id,
-        asset_name: assets.ada_asset_name,
-      },
-      per_call_cap: 3_000_000,
-      cap: 5_000_000,
-      lovelace_per_call_cap: 0,
-      lovelace_cap: 0,
-      expires_at: expiry,
-      recipients: [],
-    },
-  }
-}
 
 /// Whether the shared handler, run as the test logic over the test
 /// proxy, accepts `tx`.
@@ -127,21 +83,7 @@ fn grant_spend() -> Transaction {
     [stranger_key],
     interval.before(expiry - 1),
   )
-    |> referencing([input(100, control_output(granted_state(), 2_000_000))])
-    |> with_proxy_redeemers()
-    |> withdrawing([logic_hash])
-}
-
-/// The creation of the account under test over the fresh state.
-fn creation() -> Transaction {
-  test_helpers.transaction(
-    [],
-    [control_output(state(), 2_000_000)],
-    state_nft(stake_script_hash),
-    [device_key],
-    interval.everything,
-  )
-    |> publishing(registration(stake_script_hash))
+    |> referencing([input(100, control_output(issued_state(1), 2_000_000))])
     |> with_proxy_redeemers()
     |> withdrawing([logic_hash])
 }
@@ -234,7 +176,13 @@ test validates_withdrawal_takes_the_agent_path_on_a_referenced_control() {
 }
 
 test validates_withdrawal_takes_the_arrival_path_without_a_control() {
-  run(creation())
+  run(
+    creation(
+      [control_output(state(), 2_000_000)],
+      state_nft(stake_script_hash),
+      [device_key],
+    ),
+  )
 }
 
 test validates_withdrawal_rejects_the_control_spent_and_referenced() {

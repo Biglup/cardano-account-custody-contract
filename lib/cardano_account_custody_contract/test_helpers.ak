@@ -13,10 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Builders for the hand made transactions the validator tests exercise.
-// Every builder works against one fictitious account proxy, one logic
-// and one account owner, so tests only spell out what differs between
-// cases.
+// Builders and fixtures for the hand made transactions the validator
+// tests exercise. Every builder works against one fictitious account
+// proxy, one logic and one account owner, and the fixtures are the
+// states, grants, inputs, outputs and transactions several suites share,
+// so tests only spell out what differs between cases.
 
 // USINGS **********************************************************************
 
@@ -27,18 +28,27 @@ use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use aiken/interval.{Interval}
 use cardano/address.{Address, Script}
 use cardano/assets.{Assets}
-use cardano/certificate.{Certificate, RegisterCredential}
+use cardano/certificate.{
+  Certificate, DelegateBlockProduction, DelegateCredential, RegisterCredential,
+}
 use cardano/transaction.{
   Datum, InlineDatum, Input, Mint, NoDatum, Output, OutputReference, Publish,
   Spend, Transaction, Withdraw,
 }
 use cardano_account_custody_contract/account
 use cardano_account_custody_contract/types.{
-  AccountRedeemer, AccountState, BurnGrants, CreateAccount, Device, Fund, Grant,
-  IssueGrants, MintRedeemer, Operate, Run, SpendWithGrant, SweepGrant,
+  AccountRedeemer, AccountState, Asset, BurnGrants, CreateAccount, Device, Fund,
+  Grant, IssueGrants, MintRedeemer, Operate, Run, Scope, SpendWithGrant,
+  SweepGrant,
 }
 
 // CONSTANTS *******************************************************************
+
+/// The POSIX millisecond at which the grants of the shared fixtures
+/// expire. A spend runs under a validity range ending just before it and
+/// a sweep under one starting just after it, so one number stands for
+/// both sides of the time rules.
+pub const expiry = 1_800_000_000_000
 
 /// The hash standing in for the account proxy script.
 pub const script_hash: ScriptHash =
@@ -399,4 +409,254 @@ pub fn minting(self: Transaction, redeemer: MintRedeemer) -> Transaction {
       [Pair(purpose, data)],
     ),
   }
+}
+
+/// The fresh state of the account under test: the test logic, one device
+/// and zero counters.
+pub fn state() -> AccountState {
+  AccountState {
+    logic: logic_hash,
+    devices: [device_key],
+    grant_generation: 0,
+    next_slot: 0,
+    revoked: [],
+    outstanding: 0,
+  }
+}
+
+/// The fresh state once `count` grants have been issued.
+pub fn issued_state(count: Int) -> AccountState {
+  AccountState { ..state(), next_slot: count, outstanding: count }
+}
+
+/// The state once slots 0 and 1 have been issued.
+pub fn granted_state() -> AccountState {
+  AccountState { ..state(), next_slot: 2, outstanding: 2 }
+}
+
+/// The state once the account has moved to the next logic: the generation
+/// bumped so that every grant issued before is dead, everything else as
+/// the granted state.
+pub fn upgraded_state() -> AccountState {
+  AccountState {
+    ..granted_state(),
+    logic: next_logic_hash,
+    grant_generation: 1,
+  }
+}
+
+/// Lovelace as a scoped asset.
+pub fn lovelace_asset() -> Asset {
+  Asset { policy_id: assets.ada_policy_id, asset_name: assets.ada_asset_name }
+}
+
+/// A native asset under a policy that is not the account policy.
+pub fn token_asset() -> Asset {
+  Asset {
+    policy_id: #"00000000000000000000000000000000000000000000000000000099",
+    asset_name: "token",
+  }
+}
+
+/// `quantity` units of the native asset.
+pub fn token(quantity: Int) -> Assets {
+  assets.from_asset(token_asset().policy_id, token_asset().asset_name, quantity)
+}
+
+/// One token under a policy that is not the account policy.
+pub fn other_token() -> Assets {
+  assets.from_asset(token_asset().policy_id, "other", 1)
+}
+
+/// A scope over lovelace with a per call cap of 3 ADA, a cap of 5 ADA and
+/// no recipient restriction.
+pub fn lovelace_scope() -> Scope {
+  Scope {
+    asset: lovelace_asset(),
+    per_call_cap: 3_000_000,
+    cap: 5_000_000,
+    lovelace_per_call_cap: 0,
+    lovelace_cap: 0,
+    expires_at: expiry,
+    recipients: [],
+  }
+}
+
+/// A scope over the native asset with a per call cap of 10, a cap of 50,
+/// 2 ADA of lovelace caps and the recipient as its only allowed
+/// destination.
+pub fn token_scope() -> Scope {
+  Scope {
+    asset: token_asset(),
+    per_call_cap: 10,
+    cap: 50,
+    lovelace_per_call_cap: 2_000_000,
+    lovelace_cap: 2_000_000,
+    expires_at: expiry,
+    recipients: [recipient_address()],
+  }
+}
+
+/// The grant of slot 0 to the stranger under the lovelace scope.
+pub fn lovelace_grant() -> Grant {
+  Grant {
+    slot: 0,
+    grantee: stranger_key,
+    generation: 0,
+    scope: lovelace_scope(),
+  }
+}
+
+/// The grant of slot 1 to the stranger under the token scope.
+pub fn token_grant() -> Grant {
+  Grant { slot: 1, grantee: stranger_key, generation: 0, scope: token_scope() }
+}
+
+/// The grant with its remaining asset and lovelace caps replaced.
+pub fn with_caps(grant: Grant, cap: Int, lovelace_cap: Int) -> Grant {
+  Grant { ..grant, scope: Scope { ..grant.scope, cap, lovelace_cap } }
+}
+
+/// The control UTxO of the fresh state, spent at index 0.
+pub fn control_input() -> Input {
+  input(0, control_output(state(), 2_000_000))
+}
+
+/// The control UTxO of the granted state as a reference input, at an
+/// index no spent input uses.
+pub fn control_reference() -> Input {
+  input(100, control_output(granted_state(), 2_000_000))
+}
+
+/// The grant UTxO of `grant`, spent at index 0.
+pub fn grant_input(grant: Grant) -> Input {
+  input(0, grant_output(grant, 2_000_000))
+}
+
+/// A deposit of 10 ADA at the account address, spent at index 1.
+pub fn fund_input() -> Input {
+  input(1, fund_output(assets.from_lovelace(10_000_000)))
+}
+
+/// A deposit of 10 ADA and 20 tokens at the account address, spent at
+/// index 1.
+pub fn treasury_input() -> Input {
+  input(
+    1,
+    fund_output(assets.merge(assets.from_lovelace(10_000_000), token(20))),
+  )
+}
+
+/// An output paying `lovelace` to the recipient outside the account.
+pub fn payout(lovelace: Int) -> Output {
+  output(recipient_address(), assets.from_lovelace(lovelace), NoDatum)
+}
+
+/// A deposit output returning `lovelace` to the account address.
+pub fn change(lovelace: Int) -> Output {
+  fund_output(assets.from_lovelace(lovelace))
+}
+
+/// A mint burning the state NFT of the account under test.
+pub fn burn() -> Assets {
+  assets.from_asset(script_hash, stake_script_hash, -1)
+}
+
+/// A mint burning the grant token of `slot` of the account under test.
+pub fn grant_burn(slot: Int) -> Assets {
+  assets.from_asset(
+    script_hash,
+    account.grant_token_name(stake_script_hash, slot),
+    -1,
+  )
+}
+
+/// An account state as the spend handler's optional datum.
+pub fn state_data(state: Option<AccountState>) -> Option<Data> {
+  when state is {
+    Some(state) -> {
+      let data: Data = state
+      Some(data)
+    }
+    None -> None
+  }
+}
+
+/// A grant as the spend handler's datum.
+pub fn grant_data(grant: Grant) -> Option<Data> {
+  let data: Data = grant
+  Some(data)
+}
+
+/// A certificate delegating the account's stake credential to a pool.
+pub fn delegation() -> Certificate {
+  DelegateCredential {
+    credential: Script(stake_script_hash),
+    delegate: DelegateBlockProduction { stake_pool: stranger_key },
+  }
+}
+
+/// A transaction made of the given parts as a builder submits it: the
+/// proxy redeemers attached and the test logic withdrawing.
+pub fn logic_transaction(
+  inputs: List<Input>,
+  outputs: List<Output>,
+  minted: Assets,
+  signatories: List<ByteArray>,
+  validity_range: Interval,
+) -> Transaction {
+  transaction(inputs, outputs, minted, signatories, validity_range)
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash])
+}
+
+/// The transaction with no withdrawal at all, so that no logic runs.
+pub fn without_withdrawals(self: Transaction) -> Transaction {
+  Transaction { ..self, withdrawals: [] }
+}
+
+/// A transaction creating the account under test with the given outputs
+/// and mint, its registration published through the stake script and the
+/// test logic withdrawing.
+pub fn creation(
+  outputs: List<Output>,
+  minted: Assets,
+  signatories: List<ByteArray>,
+) -> Transaction {
+  transaction([], outputs, minted, signatories, interval.everything)
+    |> publishing(registration(stake_script_hash))
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash])
+}
+
+/// The transaction with the control UTxO of `current` spent at index 0,
+/// the given inputs beside it, outputs and mint, signed by the device.
+pub fn owner_transaction(
+  current: AccountState,
+  inputs: List<Input>,
+  outputs: List<Output>,
+  minted: Assets,
+) -> Transaction {
+  logic_transaction(
+    [input(0, control_output(current, 2_000_000)), ..inputs],
+    outputs,
+    minted,
+    [device_key],
+    interval.everything,
+  )
+}
+
+/// The upgrade of the granted account to the next logic: a device rewrite
+/// of its control UTxO into `next`, with the old and the new logic
+/// withdrawing.
+pub fn upgrade_into(next: AccountState) -> Transaction {
+  transaction(
+    [input(0, control_output(granted_state(), 2_000_000))],
+    [control_output(next, 2_000_000)],
+    assets.zero,
+    [device_key],
+    interval.everything,
+  )
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash, next_logic_hash])
 }

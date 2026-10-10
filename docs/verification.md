@@ -57,13 +57,13 @@ aiken build
 ## Test suites
 
 The Aiken suites, with the number of tests each file declares. The
-`aiken check` run reports 2369 checks from these 884 tests, of which 15
+`aiken check` run reports 2375 checks from these 890 tests, of which 15
 are property tests run 100 times each.
 
 | File | Tests | Covers |
 | --- | --- | --- |
 | [validators/attacks.test.ak](../validators/attacks.test.ak) | 171 | 111 `attack_` tests, one or more per vulnerability class, and 60 `budget_` tests, of which 16 are baselines and one bounds the datum size |
-| [validators/logic_v1.test.ak](../validators/logic_v1.test.ak) | 218 | The logic over whole transactions, every path |
+| [validators/logic_v1.test.ak](../validators/logic_v1.test.ak) | 224 | The logic over whole transactions, every path, and the dispatch equivalence tests |
 | [validators/account.test.ak](../validators/account.test.ak) | 104 | The proxy's mint and spend handlers |
 | [validators/account_stake.test.ak](../validators/account_stake.test.ak) | 40 | The stake script |
 | [lib/.../account.test.ak](../lib/cardano_account_custody_contract/account.test.ak) | 166 | `account.ak`, 3 property tests among them over the grant token names (`grant_token_names_*`) |
@@ -77,6 +77,17 @@ The fixture project's `fixtures/upgrade-logic/validators/logic_v2.test.ak`
 holds 19 tests. Its `aiken check -D` run reports 1855 checks, those tests
 over the contract's library suite, which the project compiles through a
 symlink.
+
+The fixtures the suites share, the fresh and granted states, the lovelace
+and token scopes and grants, the control, grant and deposit inputs, the
+payout and change outputs and the creation, owner and upgrade
+transactions, are defined once in
+`lib/cardano_account_custody_contract/test_helpers.ak`. A suite defines
+only the variants that differ from them, under a name that says how:
+`bumped_state`, `early_token_scope`, `two_device_state`,
+`timeless_transaction`. The wrappers that call a validator, `run`,
+`run_as`, `proxy_spend`, `proxy_mint`, `register` and `withdraw`, stay in
+the validator suites, since a library module cannot name a validator.
 
 The off-chain library's suites are in `offchain/test`, run with vitest.
 Each of the modules `blueprint`, `body`, `config`, `data`, `discovery`,
@@ -116,6 +127,19 @@ transaction it mounts and of the rule that refuses it. A plain unit or
 property test of a library function carries none: its name states the
 claim. The `budget_` tests follow the scenario rule, since their fixtures
 are scenarios.
+
+Every `attack_` narration ends with the invariants of
+[invariants.md](security/invariants.md) the refusing rules enforce, as
+`Proves INV-n.`, so `grep 'Proves INV-' validators/attacks.test.ak`
+lists what each attack test proves and `grep -A1 'INV-35'` the tests
+behind one invariant.
+
+The dispatch `logic_v1` writes out and `logic.validates_withdrawal`, the
+withdraw handler later versions call, are pinned to each other by the
+`withdraw_dispatches_*_like_the_shared_handler` tests in
+`validators/logic_v1.test.ak`: one per dispatch shape, the control UTxO
+spent, referenced, both, absent, and two accounts spent or referenced,
+each asserting the same verdict from both.
 
 Functional tests that already cover an attack variant are listed below
 as companions.

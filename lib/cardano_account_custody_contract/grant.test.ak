@@ -31,9 +31,11 @@ use cardano_account_custody_contract/grant.{
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, fund_output,
-  grant_output, grant_value, input, logic_hash, other_account_address,
-  other_fund_output, other_stake_script_hash, output, recipient_address,
-  script_hash, stake_script_hash, state_datum, stranger_key,
+  grant_output, grant_value, granted_state, input, lovelace_asset,
+  lovelace_grant, lovelace_scope, other_account_address, other_fund_output,
+  other_stake_script_hash, output, recipient_address, script_hash,
+  stake_script_hash, state_datum, stranger_key, token, token_asset, token_grant,
+  token_scope,
 }
 use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
@@ -46,61 +48,32 @@ const first_live_slot = state.max_revoked + 8
 
 // FUNCTIONS *******************************************************************
 
-/// Lovelace as a scoped asset.
-fn lovelace_asset() -> Asset {
-  Asset { policy_id: assets.ada_policy_id, asset_name: assets.ada_asset_name }
-}
-
-/// A native asset under a policy that is not the account policy.
-fn token_asset() -> Asset {
-  Asset {
-    policy_id: #"00000000000000000000000000000000000000000000000000000099",
-    asset_name: "token",
-  }
-}
-
-/// `quantity` units of the native asset.
-fn token(quantity: Int) -> Assets {
-  assets.from_asset(token_asset().policy_id, token_asset().asset_name, quantity)
-}
-
 /// `quantity` units of another asset under the native asset's policy.
-fn other_token(quantity: Int) -> Assets {
+fn sibling_token(quantity: Int) -> Assets {
   assets.from_asset(token_asset().policy_id, "other", quantity)
 }
 
-/// A scope over the native asset with a per call cap of 10, a cap of 50,
-/// lovelace caps of 1 and 2 ADA and no recipient restriction, expiring at
-/// 1000.
-fn token_scope() -> Scope {
+/// The token scope expiring at 1000, with a lovelace per call cap of 1
+/// ADA below its 2 ADA lovelace cap and no recipient restriction, so that
+/// the time and lovelace rules run over small numbers.
+fn early_token_scope() -> Scope {
   Scope {
-    asset: token_asset(),
-    per_call_cap: 10,
-    cap: 50,
+    ..token_scope(),
     lovelace_per_call_cap: 1_000_000,
-    lovelace_cap: 2_000_000,
     expires_at: 1_000,
     recipients: [],
   }
 }
 
-/// The token scope moved onto lovelace with a per call cap of 3 ADA, a
-/// cap of 5 ADA and no lovelace caps.
-fn lovelace_scope() -> Scope {
-  Scope {
-    ..token_scope(),
-    asset: lovelace_asset(),
-    per_call_cap: 3_000_000,
-    cap: 5_000_000,
-    lovelace_per_call_cap: 0,
-    lovelace_cap: 0,
-  }
+/// The lovelace scope expiring at 1000.
+fn early_lovelace_scope() -> Scope {
+  Scope { ..lovelace_scope(), expires_at: 1_000 }
 }
 
-/// The token scope with every cap at zero.
+/// The early token scope with every cap at zero.
 fn empty_scope() -> Scope {
   Scope {
-    ..token_scope(),
+    ..early_token_scope(),
     per_call_cap: 0,
     cap: 0,
     lovelace_per_call_cap: 0,
@@ -108,34 +81,20 @@ fn empty_scope() -> Scope {
   }
 }
 
-/// The state of the account under test: one device, generation 1 and two
-/// issued grants.
-fn state() -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices: [device_key],
-    grant_generation: 1,
-    next_slot: 2,
-    revoked: [],
-    outstanding: 2,
-  }
+/// The granted state with its generation bumped to 1.
+fn bumped_state() -> AccountState {
+  AccountState { ..granted_state(), grant_generation: 1 }
 }
 
-/// The grant of slot 0 to the stranger under the lovelace scope, issued
-/// under generation 1.
-fn lovelace_grant() -> Grant {
-  Grant {
-    slot: 0,
-    grantee: stranger_key,
-    generation: 1,
-    scope: lovelace_scope(),
-  }
+/// The lovelace grant issued under generation 1 over the early lovelace
+/// scope.
+fn bumped_lovelace_grant() -> Grant {
+  Grant { ..lovelace_grant(), generation: 1, scope: early_lovelace_scope() }
 }
 
-/// The grant of slot 1 to the stranger under the token scope, issued
-/// under generation 1.
-fn token_grant() -> Grant {
-  Grant { slot: 1, grantee: stranger_key, generation: 1, scope: token_scope() }
+/// The token grant issued under generation 1 over the early token scope.
+fn bumped_token_grant() -> Grant {
+  Grant { ..token_grant(), generation: 1, scope: early_token_scope() }
 }
 
 /// A leaving value of `lovelace` and `tokens` units of the native asset.
@@ -153,7 +112,7 @@ fn scope_fuzzer() -> Fuzzer<Scope> {
   let lovelace_cap <- fuzz.map(fuzz.int_between(0, 100))
   if over_lovelace {
     Scope {
-      ..lovelace_scope(),
+      ..early_lovelace_scope(),
       per_call_cap,
       cap,
       lovelace_per_call_cap: 0,
@@ -161,7 +120,7 @@ fn scope_fuzzer() -> Fuzzer<Scope> {
     }
   } else {
     Scope {
-      ..token_scope(),
+      ..early_token_scope(),
       per_call_cap,
       cap,
       lovelace_per_call_cap,
@@ -220,7 +179,7 @@ fn lowered_grant_fuzzer() -> Fuzzer<(Grant, Grant)> {
   let scope <- fuzz.and_then(scope_fuzzer())
   let cap <- fuzz.and_then(fuzz.int_between(0, scope.cap))
   let lovelace_cap <- fuzz.map(fuzz.int_between(0, scope.lovelace_cap))
-  let expected = Grant { ..token_grant(), scope }
+  let expected = Grant { ..bumped_token_grant(), scope }
   (expected, Grant { ..expected, scope: Scope { ..scope, cap, lovelace_cap } })
 }
 
@@ -232,7 +191,7 @@ fn strayed_grant_fuzzer() -> Fuzzer<(Grant, Grant)> {
   let stray <- fuzz.map(
     fuzz.either(fuzz.int_between(1, 50), fuzz.int_between(-50, -1)),
   )
-  let expected = Grant { ..token_grant(), scope }
+  let expected = Grant { ..bumped_token_grant(), scope }
   let strayed = if on_lovelace {
     Scope {
       ..scope,
@@ -297,13 +256,13 @@ fn revoked_grant_fuzzer() -> Fuzzer<(AccountState, Grant)> {
   let (_, slot) = picked
   (
     AccountState {
-      ..state(),
+      ..bumped_state(),
       grant_generation,
       next_slot: first_live_slot,
       revoked,
       outstanding: 16,
     },
-    Grant { ..lovelace_grant(), slot, generation },
+    Grant { ..bumped_lovelace_grant(), slot, generation },
   )
 }
 
@@ -323,13 +282,13 @@ fn live_grant_fuzzer() -> Fuzzer<(AccountState, Grant)> {
   let slot <- fuzz.map(fuzz.int_between(first_live_slot, first_live_slot + 20))
   (
     AccountState {
-      ..state(),
+      ..bumped_state(),
       grant_generation,
       next_slot: first_live_slot + 21,
       revoked,
       outstanding: 16,
     },
-    Grant { ..lovelace_grant(), slot, generation: grant_generation },
+    Grant { ..bumped_lovelace_grant(), slot, generation: grant_generation },
   )
 }
 
@@ -387,19 +346,28 @@ test starts_after_expiry_rejects_an_unbounded_range() {
 }
 
 test is_current_accepts_a_grant_of_the_generation_not_revoked() {
-  is_current(lovelace_grant(), state())
+  is_current(bumped_lovelace_grant(), bumped_state())
 }
 
 test is_current_rejects_an_older_generation() {
-  !is_current(Grant { ..lovelace_grant(), generation: 0 }, state())
+  !is_current(
+    Grant { ..bumped_lovelace_grant(), generation: 0 },
+    bumped_state(),
+  )
 }
 
 test is_current_rejects_a_newer_generation() {
-  !is_current(Grant { ..lovelace_grant(), generation: 2 }, state())
+  !is_current(
+    Grant { ..bumped_lovelace_grant(), generation: 2 },
+    bumped_state(),
+  )
 }
 
 test is_current_rejects_a_revoked_slot() {
-  !is_current(lovelace_grant(), AccountState { ..state(), revoked: [3, 0] })
+  !is_current(
+    bumped_lovelace_grant(),
+    AccountState { ..bumped_state(), revoked: [3, 0] },
+  )
 }
 
 /// Whether `grant`, as an inline datum, is dead against `state` within
@@ -416,63 +384,63 @@ fn dead(
 /// The lovelace grant of `generation` as a datum of another shape: its
 /// four fields followed by a fifth.
 fn padded_lovelace_grant(generation: Int) -> Data {
-  let slot: Data = lovelace_grant().slot
-  let grantee: Data = lovelace_grant().grantee
+  let slot: Data = bumped_lovelace_grant().slot
+  let grantee: Data = bumped_lovelace_grant().grantee
   let generation: Data = generation
-  let scope: Data = lovelace_grant().scope
+  let scope: Data = bumped_lovelace_grant().scope
   let extra_field: Data = 7
   builtin.constr_data(0, [slot, grantee, generation, scope, extra_field])
 }
 
 test is_dead_rejects_a_live_grant() {
-  !dead(lovelace_grant(), state(), interval.before(999))
+  !dead(bumped_lovelace_grant(), bumped_state(), interval.before(999))
 }
 
 test is_dead_accepts_an_older_generation() {
   dead(
-    Grant { ..lovelace_grant(), generation: 0 },
-    state(),
+    Grant { ..bumped_lovelace_grant(), generation: 0 },
+    bumped_state(),
     interval.everything,
   )
 }
 
 test is_dead_accepts_a_revoked_slot() {
   dead(
-    lovelace_grant(),
-    AccountState { ..state(), revoked: [0] },
+    bumped_lovelace_grant(),
+    AccountState { ..bumped_state(), revoked: [0] },
     interval.everything,
   )
 }
 
 test is_dead_accepts_a_range_starting_after_the_expiry() {
-  dead(lovelace_grant(), state(), interval.after(1_001))
+  dead(bumped_lovelace_grant(), bumped_state(), interval.after(1_001))
 }
 
 test is_dead_rejects_a_range_starting_at_the_expiry() {
-  !dead(lovelace_grant(), state(), interval.after(1_000))
+  !dead(bumped_lovelace_grant(), bumped_state(), interval.after(1_000))
 }
 
 /// A grant of another shape dies by its prefix alone: an older generation
 /// or a revoked slot kills it, and a range past the expiry its scope would
 /// carry does not, since that scope cannot be read.
 test is_dead_accepts_an_older_generation_of_a_grant_of_another_shape() {
-  is_dead(padded_lovelace_grant(0), state(), interval.everything)
+  is_dead(padded_lovelace_grant(0), bumped_state(), interval.everything)
 }
 
 test is_dead_accepts_a_revoked_slot_of_a_grant_of_another_shape() {
   is_dead(
     padded_lovelace_grant(1),
-    AccountState { ..state(), revoked: [0] },
+    AccountState { ..bumped_state(), revoked: [0] },
     interval.everything,
   )
 }
 
 test is_dead_ignores_the_expiry_of_a_grant_of_another_shape() {
-  !is_dead(padded_lovelace_grant(1), state(), interval.after(1_001))
+  !is_dead(padded_lovelace_grant(1), bumped_state(), interval.after(1_001))
 }
 
 test is_dead_fails_for_a_datum_without_the_prefix() fail {
-  is_dead(builtin.constr_data(0, []), state(), interval.everything)
+  is_dead(builtin.constr_data(0, []), bumped_state(), interval.everything)
 }
 
 test a_revoked_slot_is_never_current(case via revoked_grant_fuzzer()) {
@@ -513,12 +481,12 @@ test a_grant_of_an_older_generation_is_never_current(
 
 test leaving_value_subtracts_what_returns_to_the_address() {
   let inputs = [
-    input(0, grant_output(lovelace_grant(), 2_000_000)),
+    input(0, grant_output(bumped_lovelace_grant(), 2_000_000)),
     input(1, fund_output(leaving(10_000_000, 20))),
     input(2, output(recipient_address(), assets.from_lovelace(1), NoDatum)),
   ]
   let outputs = [
-    grant_output(lovelace_grant(), 2_000_000),
+    grant_output(bumped_lovelace_grant(), 2_000_000),
     fund_output(leaving(7_000_000, 15)),
     output(recipient_address(), leaving(3_000_000, 5), NoDatum),
   ]
@@ -541,11 +509,11 @@ test leaving_value_ignores_the_other_accounts_address() {
 /// like a payout.
 test leaving_value_counts_the_fee_the_account_pays() {
   let inputs = [
-    input(0, grant_output(lovelace_grant(), 2_000_000)),
+    input(0, grant_output(bumped_lovelace_grant(), 2_000_000)),
     input(1, fund_output(assets.from_lovelace(10_000_000))),
   ]
   let outputs = [
-    grant_output(lovelace_grant(), 2_000_000),
+    grant_output(bumped_lovelace_grant(), 2_000_000),
     fund_output(assets.from_lovelace(7_000_000)),
     output(recipient_address(), assets.from_lovelace(2_000_000), NoDatum),
   ]
@@ -603,71 +571,71 @@ test quantity_of_asset_reads_lovelace_and_tokens() {
 }
 
 test stays_within_scope_accepts_the_per_call_cap_exactly() {
-  stays_within_scope(token_scope(), leaving(1_000_000, 10))
+  stays_within_scope(early_token_scope(), leaving(1_000_000, 10))
 }
 
 test stays_within_scope_rejects_one_above_the_per_call_cap() {
-  !stays_within_scope(token_scope(), leaving(0, 11))
+  !stays_within_scope(early_token_scope(), leaving(0, 11))
 }
 
 test stays_within_scope_accepts_the_remaining_cap_exactly() {
-  let nearly_spent = Scope { ..token_scope(), cap: 5 }
+  let nearly_spent = Scope { ..early_token_scope(), cap: 5 }
   stays_within_scope(nearly_spent, leaving(0, 5))
 }
 
 test stays_within_scope_rejects_more_than_the_remaining_cap() {
-  let nearly_spent = Scope { ..token_scope(), cap: 5 }
+  let nearly_spent = Scope { ..early_token_scope(), cap: 5 }
   !stays_within_scope(nearly_spent, leaving(0, 6))
 }
 
 test stays_within_scope_accepts_the_remaining_cap_of_a_lovelace_scope_exactly() {
-  let nearly_spent = Scope { ..lovelace_scope(), cap: 2_000_000 }
+  let nearly_spent = Scope { ..early_lovelace_scope(), cap: 2_000_000 }
   stays_within_scope(nearly_spent, assets.from_lovelace(2_000_000))
 }
 
 test stays_within_scope_rejects_one_above_the_remaining_cap_of_a_lovelace_scope() {
-  let nearly_spent = Scope { ..lovelace_scope(), cap: 2_000_000 }
+  let nearly_spent = Scope { ..early_lovelace_scope(), cap: 2_000_000 }
   !stays_within_scope(nearly_spent, assets.from_lovelace(2_000_001))
 }
 
 test stays_within_scope_accepts_the_lovelace_per_call_cap_exactly() {
-  stays_within_scope(token_scope(), leaving(1_000_000, 0))
+  stays_within_scope(early_token_scope(), leaving(1_000_000, 0))
 }
 
 test stays_within_scope_rejects_one_above_the_lovelace_per_call_cap() {
-  !stays_within_scope(token_scope(), leaving(1_000_001, 0))
+  !stays_within_scope(early_token_scope(), leaving(1_000_001, 0))
 }
 
 test stays_within_scope_accepts_the_remaining_lovelace_cap_exactly() {
-  let nearly_spent = Scope { ..token_scope(), lovelace_cap: 500_000 }
+  let nearly_spent = Scope { ..early_token_scope(), lovelace_cap: 500_000 }
   stays_within_scope(nearly_spent, leaving(500_000, 0))
 }
 
 test stays_within_scope_rejects_lovelace_above_the_remaining_lovelace_cap() {
-  let nearly_spent = Scope { ..token_scope(), lovelace_cap: 500_000 }
+  let nearly_spent = Scope { ..early_token_scope(), lovelace_cap: 500_000 }
   !stays_within_scope(nearly_spent, leaving(500_001, 0))
 }
 
 test stays_within_scope_ignores_the_lovelace_caps_for_a_lovelace_scope() {
-  stays_within_scope(lovelace_scope(), assets.from_lovelace(3_000_000))
+  stays_within_scope(early_lovelace_scope(), assets.from_lovelace(3_000_000))
 }
 
 test stays_within_scope_rejects_a_foreign_asset_leaving() {
   !stays_within_scope(
-    lovelace_scope(),
-    assets.merge(assets.from_lovelace(1), other_token(1)),
+    early_lovelace_scope(),
+    assets.merge(assets.from_lovelace(1), sibling_token(1)),
   )
 }
 
 test stays_within_scope_accepts_a_foreign_asset_entering() {
   stays_within_scope(
-    lovelace_scope(),
-    assets.merge(assets.from_lovelace(1), other_token(-1)),
+    early_lovelace_scope(),
+    assets.merge(assets.from_lovelace(1), sibling_token(-1)),
   )
 }
 
 test stays_within_scope_accepts_a_deposit() {
-  stays_within_scope(token_scope(), leaving(-1, -1))
+  stays_within_scope(early_token_scope(), leaving(-1, -1))
 }
 
 test stays_within_scope_is_monotone_in_the_outflow(
@@ -736,8 +704,8 @@ test pays_only_recipients_compares_the_full_address() {
 test deposits_are_plain_accepts_account_token_outputs_and_plain_deposits() {
   deposits_are_plain(
     [
-      control_output(state(), 2_000_000),
-      grant_output(lovelace_grant(), 2_000_000),
+      control_output(bumped_state(), 2_000_000),
+      grant_output(bumped_lovelace_grant(), 2_000_000),
       fund_output(assets.from_lovelace(1)),
       output(
         recipient_address(),
@@ -754,7 +722,7 @@ test deposits_are_plain_accepts_account_token_outputs_and_plain_deposits() {
 test deposits_are_plain_rejects_a_deposit_under_a_datum_hash() {
   !deposits_are_plain(
     [
-      grant_output(lovelace_grant(), 2_000_000),
+      grant_output(bumped_lovelace_grant(), 2_000_000),
       output(account_address(), assets.from_lovelace(1), DatumHash(device_key)),
     ],
     account_address(),
@@ -804,7 +772,7 @@ test deposits_are_plain_rejects_another_accounts_token_under_a_datum() {
 test spends_one_account_token_accepts_a_single_grant_input() {
   spends_one_account_token(
     [
-      input(0, grant_output(lovelace_grant(), 2_000_000)),
+      input(0, grant_output(bumped_lovelace_grant(), 2_000_000)),
       input(1, fund_output(assets.from_lovelace(1))),
     ],
     script_hash,
@@ -815,8 +783,8 @@ test spends_one_account_token_accepts_a_single_grant_input() {
 test spends_one_account_token_rejects_a_grant_and_the_control() {
   !spends_one_account_token(
     [
-      input(0, grant_output(lovelace_grant(), 2_000_000)),
-      input(1, control_output(state(), 2_000_000)),
+      input(0, grant_output(bumped_lovelace_grant(), 2_000_000)),
+      input(1, control_output(bumped_state(), 2_000_000)),
     ],
     script_hash,
     stake_script_hash,
@@ -826,8 +794,8 @@ test spends_one_account_token_rejects_a_grant_and_the_control() {
 test spends_one_account_token_rejects_two_grant_inputs() {
   !spends_one_account_token(
     [
-      input(0, grant_output(lovelace_grant(), 2_000_000)),
-      input(1, grant_output(token_grant(), 2_000_000)),
+      input(0, grant_output(bumped_lovelace_grant(), 2_000_000)),
+      input(1, grant_output(bumped_token_grant(), 2_000_000)),
     ],
     script_hash,
     stake_script_hash,
@@ -850,7 +818,7 @@ test spends_one_account_token_ignores_another_accounts_control_input() {
         output(
           other_account_address(),
           control_value(other_stake_script_hash, 1),
-          state_datum(state()),
+          state_datum(bumped_state()),
         ),
       ),
     ],
@@ -860,40 +828,40 @@ test spends_one_account_token_ignores_another_accounts_control_input() {
 }
 
 test grant_after_spend_reduces_the_remaining_caps_only() {
-  grant_after_spend(token_grant(), leaving(500_000, 7)) == Grant {
-    ..token_grant(),
-    scope: Scope { ..token_scope(), cap: 43, lovelace_cap: 1_500_000 },
+  grant_after_spend(bumped_token_grant(), leaving(500_000, 7)) == Grant {
+    ..bumped_token_grant(),
+    scope: Scope { ..early_token_scope(), cap: 43, lovelace_cap: 1_500_000 },
   }
 }
 
 test grant_after_spend_keeps_the_lovelace_cap_of_a_lovelace_grant() {
-  grant_after_spend(lovelace_grant(), assets.from_lovelace(1_000_000)) == Grant {
-    ..lovelace_grant(),
-    scope: Scope { ..lovelace_scope(), cap: 4_000_000 },
+  grant_after_spend(bumped_lovelace_grant(), assets.from_lovelace(1_000_000)) == Grant {
+    ..bumped_lovelace_grant(),
+    scope: Scope { ..early_lovelace_scope(), cap: 4_000_000 },
   }
 }
 
 test grant_after_spend_keeps_the_scope_on_a_net_deposit() {
-  grant_after_spend(token_grant(), leaving(-500_000, -7)) == token_grant()
+  grant_after_spend(bumped_token_grant(), leaving(-500_000, -7)) == bumped_token_grant()
 }
 
 test grant_after_spend_ignores_a_lovelace_deposit_beside_a_token_withdrawal() {
-  grant_after_spend(token_grant(), leaving(-500_000, 7)) == Grant {
-    ..token_grant(),
-    scope: Scope { ..token_scope(), cap: 43, lovelace_cap: 2_000_000 },
+  grant_after_spend(bumped_token_grant(), leaving(-500_000, 7)) == Grant {
+    ..bumped_token_grant(),
+    scope: Scope { ..early_token_scope(), cap: 43, lovelace_cap: 2_000_000 },
   }
 }
 
 test grant_after_spend_reduces_the_caps_to_zero_on_an_exact_spend() {
-  grant_after_spend(token_grant(), leaving(2_000_000, 50)) == Grant {
-    ..token_grant(),
-    scope: Scope { ..token_scope(), cap: 0, lovelace_cap: 0 },
+  grant_after_spend(bumped_token_grant(), leaving(2_000_000, 50)) == Grant {
+    ..bumped_token_grant(),
+    scope: Scope { ..early_token_scope(), cap: 0, lovelace_cap: 0 },
   }
 }
 
 test grant_after_spend_never_raises_a_cap(case via scope_and_outflow_fuzzer()) {
   let (scope, outflow) = case
-  let grant = Grant { ..token_grant(), scope }
+  let grant = Grant { ..bumped_token_grant(), scope }
   let after = grant_after_spend(grant, outflow)
   fuzz.label_when(
     after.scope.cap == scope.cap && after.scope.lovelace_cap == scope.lovelace_cap,
@@ -910,7 +878,7 @@ test grant_after_spend_changes_nothing_but_the_remaining_caps(
   case via scope_and_outflow_fuzzer(),
 ) {
   let (scope, outflow) = case
-  let grant = Grant { ..token_grant(), scope }
+  let grant = Grant { ..bumped_token_grant(), scope }
   let after = grant_after_spend(grant, outflow)
   Grant {
     ..after,
@@ -928,13 +896,19 @@ test grant_after_spend_keeps_the_caps_non_negative_within_scope(
   let (scope, outflow) = case
   let within = stays_within_scope(scope, outflow)
   fuzz.label_when(within, @"within scope", @"beyond scope")
-  let after = grant_after_spend(Grant { ..token_grant(), scope }, outflow)
+  let after = grant_after_spend(
+    Grant { ..bumped_token_grant(), scope },
+    outflow,
+  )
   !within || after.scope.cap >= 0 && after.scope.lovelace_cap >= 0
 }
 
 /// The token grant with its remaining caps replaced.
 fn recapped(cap: Int, lovelace_cap: Int) -> Grant {
-  Grant { ..token_grant(), scope: Scope { ..token_scope(), cap, lovelace_cap } }
+  Grant {
+    ..bumped_token_grant(),
+    scope: Scope { ..early_token_scope(), cap, lovelace_cap },
+  }
 }
 
 /// Whether the grant output carrying `actual` passes as the token grant
@@ -944,7 +918,7 @@ fn carries_within(actual: Grant, expected: Grant) -> Bool {
 }
 
 test carries_grant_within_accepts_the_expected_grant() {
-  carries_within(token_grant(), token_grant())
+  carries_within(bumped_token_grant(), bumped_token_grant())
 }
 
 test carries_grant_within_accepts_a_lower_cap() {
@@ -977,8 +951,8 @@ test carries_grant_within_rejects_a_negative_lovelace_cap() {
 
 test carries_grant_within_rejects_a_lovelace_cap_on_a_lovelace_grant() {
   let lowered = Grant {
-    ..lovelace_grant(),
-    scope: Scope { ..lovelace_scope(), cap: 4_000_000 },
+    ..bumped_lovelace_grant(),
+    scope: Scope { ..early_lovelace_scope(), cap: 4_000_000 },
   }
   and {
     carries_within(lowered, lowered),
@@ -1007,13 +981,19 @@ test carries_grant_within_rejects_a_changed_per_call_cap() {
 }
 
 test carries_grant_within_rejects_a_changed_generation() {
-  !carries_within(Grant { ..token_grant(), generation: 2 }, token_grant())
+  !carries_within(
+    Grant { ..bumped_token_grant(), generation: 2 },
+    bumped_token_grant(),
+  )
 }
 
 test carries_grant_within_rejects_a_changed_expiry() {
   !carries_within(
-    Grant { ..token_grant(), scope: Scope { ..token_scope(), expires_at: 999 } },
-    token_grant(),
+    Grant {
+      ..bumped_token_grant(),
+      scope: Scope { ..early_token_scope(), expires_at: 999 },
+    },
+    bumped_token_grant(),
   )
 }
 
@@ -1023,7 +1003,7 @@ test carries_grant_within_rejects_a_datum_given_by_hash() {
     grant_value(stake_script_hash, 1, 1),
     DatumHash(stranger_key),
   )
-  !carries_grant_within(hashed, token_grant())
+  !carries_grant_within(hashed, bumped_token_grant())
 }
 
 test carries_grant_within_rejects_a_missing_datum() {
@@ -1032,7 +1012,7 @@ test carries_grant_within_rejects_a_missing_datum() {
     grant_value(stake_script_hash, 1, 1),
     NoDatum,
   )
-  !carries_grant_within(bare, token_grant())
+  !carries_grant_within(bare, bumped_token_grant())
 }
 
 test carries_grant_within_accepts_caps_lowered_down_to_zero(
@@ -1060,12 +1040,12 @@ test carries_grant_within_refuses_a_cap_above_the_expected_or_below_zero(
 }
 
 test carries_no_reference_script_accepts_a_plain_grant_output() {
-  carries_no_reference_script(grant_output(lovelace_grant(), 1))
+  carries_no_reference_script(grant_output(bumped_lovelace_grant(), 1))
 }
 
 test carries_no_reference_script_rejects_a_reference_script() {
   let weighted = Output {
-    ..grant_output(lovelace_grant(), 1),
+    ..grant_output(bumped_lovelace_grant(), 1),
     reference_script: Some(script_hash),
   }
   !carries_no_reference_script(weighted)

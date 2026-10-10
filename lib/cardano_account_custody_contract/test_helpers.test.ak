@@ -28,27 +28,15 @@ use cardano_account_custody_contract/test_helpers.{
   next_logic_hash, other_account_address, other_control_output,
   other_fund_output, other_grant_output, other_stake_script_hash,
   output_reference, publishing, referencing, registration, script_hash, spending,
-  stake_script_hash, state_nft, stranger_key, with_proxy_redeemers, withdrawing,
+  stake_script_hash, state, state_nft, stranger_key, with_proxy_redeemers,
+  withdrawing,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, BurnGrants, CreateAccount, Device, Fund, Grant,
-  IssueGrants, Operate, Run, Scope, SpendWithGrant, SweepGrant,
+  Asset, BurnGrants, CreateAccount, Device, Fund, Grant, IssueGrants, Operate,
+  Run, Scope, SpendWithGrant, SweepGrant,
 }
 
 // FUNCTIONS *******************************************************************
-
-/// The fresh state of the account under test: one device and zero
-/// counters.
-fn state() -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices: [device_key],
-    grant_generation: 0,
-    next_slot: 0,
-    revoked: [],
-    outstanding: 0,
-  }
-}
 
 /// A minimal grant of slot 3 to the stranger over lovelace.
 fn grant() -> Grant {

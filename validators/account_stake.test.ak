@@ -21,19 +21,18 @@ use aiken/interval
 use cardano/address.{Script, VerificationKey}
 use cardano/assets
 use cardano/certificate.{
-  AlwaysAbstain, Certificate, DelegateBlockProduction, DelegateCredential,
-  DelegateVote, RegisterAndDelegateCredential, RegisterCredential,
-  RegisterDelegateRepresentative, UnregisterCredential,
+  AlwaysAbstain, Certificate, DelegateVote, RegisterAndDelegateCredential,
+  RegisterCredential, RegisterDelegateRepresentative, UnregisterCredential,
 }
 use cardano/governance.{StakePool}
 use cardano/script_context.{ScriptContext, Voting}
 use cardano/transaction.{DatumHash, Input, NoDatum, Output, Transaction}
 use cardano_account_custody_contract/test_helpers.{
-  account_address, control_output, control_value, device_key, fund_output,
-  grant_datum, grant_output, input, logic_hash, other_account_address,
-  other_device_key, other_stake_script_hash, output, recipient_address,
-  registration, script_hash, stake_script_hash, state_datum, state_nft,
-  stranger_key, withdrawing,
+  account_address, control_output, control_value, delegation, device_key,
+  fund_output, grant_datum, grant_output, input, issued_state, logic_hash,
+  other_account_address, other_device_key, other_stake_script_hash, output,
+  recipient_address, registration, script_hash, stake_script_hash, state,
+  state_datum, state_nft, stranger_key, withdrawing,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, CreateAccount, Grant, Operate, Scope,
@@ -41,30 +40,16 @@ use cardano_account_custody_contract/types.{
 
 // FUNCTIONS *******************************************************************
 
-/// The state of the account under test: two devices and one issued
-/// grant.
-fn state() -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices: [device_key, other_device_key],
-    grant_generation: 0,
-    next_slot: 1,
-    revoked: [],
-    outstanding: 1,
-  }
+/// The state of the account under test: the fresh state with a second
+/// device and one issued grant.
+fn two_device_state() -> AccountState {
+  AccountState { ..issued_state(1), devices: [device_key, other_device_key] }
 }
 
-/// The state an account is created with: the given devices and zero
-/// counters.
+/// The state an account is created with: the fresh state over the given
+/// devices.
 fn fresh_state(devices: List<ByteArray>) -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices,
-    grant_generation: 0,
-    next_slot: 0,
-    revoked: [],
-    outstanding: 0,
-  }
+  AccountState { ..state(), devices }
 }
 
 /// A grant of the account whose grantee is the first device.
@@ -90,13 +75,13 @@ fn grant() -> Grant {
 
 /// A grant UTxO of the account whose grantee is the first device, so that
 /// only the control UTxO rule can refuse it.
-fn grant_input() -> Input {
+fn device_grant_input() -> Input {
   input(1, grant_output(grant(), 2_000_000))
 }
 
-/// The control UTxO of the state, spent at index 0.
-fn control_input() -> Input {
-  input(0, control_output(state(), 2_000_000))
+/// The control UTxO of the two device state, spent at index 0.
+fn two_device_control_input() -> Input {
+  input(0, control_output(two_device_state(), 2_000_000))
 }
 
 /// A transaction paying a withdrawal of `lovelace` from the account's
@@ -155,7 +140,7 @@ fn publication(
 /// A transaction creating the account under test with `devices`, signed
 /// by `signatories`: the state NFT is minted into a fresh control output
 /// and `certificate` registers the credential through the stake script.
-fn creation(
+fn creation_publishing(
   certificate: Certificate,
   devices: List<ByteArray>,
   signatories: List<ByteArray>,
@@ -175,7 +160,11 @@ fn creation(
 /// in place of the fresh one, signed by the owner.
 fn creation_with_control(control: Output) -> Transaction {
   Transaction {
-    ..creation(registration(stake_script_hash), [device_key], [device_key]),
+    ..creation_publishing(
+      registration(stake_script_hash),
+      [device_key],
+      [device_key],
+    ),
     outputs: [control],
   }
 }
@@ -208,14 +197,6 @@ fn delegating_registration() -> Certificate {
   }
 }
 
-/// A certificate delegating the account's stake credential to a pool.
-fn delegation() -> Certificate {
-  DelegateCredential {
-    credential: Script(stake_script_hash),
-    delegate: DelegateBlockProduction { stake_pool: stranger_key },
-  }
-}
-
 /// A certificate deregistering the account's stake credential.
 fn deregistration() -> Certificate {
   UnregisterCredential { credential: Script(stake_script_hash), refund: Never }
@@ -225,7 +206,11 @@ fn deregistration() -> Certificate {
 
 test publish_accepts_a_registration_signed_by_the_owner() {
   register(
-    creation(registration(stake_script_hash), [device_key], [device_key]),
+    creation_publishing(
+      registration(stake_script_hash),
+      [device_key],
+      [device_key],
+    ),
   )
 }
 
@@ -233,13 +218,13 @@ test publish_accepts_a_registration_with_a_delegation_signed_by_the_owner() {
   let delegating = delegating_registration()
   publish(
     delegating,
-    creation(delegating, [device_key], [stranger_key, device_key]),
+    creation_publishing(delegating, [device_key], [stranger_key, device_key]),
   )
 }
 
 test publish_accepts_a_registration_with_the_owner_among_several_devices() {
   register(
-    creation(
+    creation_publishing(
       registration(stake_script_hash),
       [other_device_key, device_key],
       [device_key],
@@ -249,7 +234,7 @@ test publish_accepts_a_registration_with_the_owner_among_several_devices() {
 
 test publish_rejects_a_registration_without_the_owner_signature() {
   !register(
-    creation(
+    creation_publishing(
       registration(stake_script_hash),
       [device_key, other_device_key],
       [other_device_key],
@@ -259,19 +244,23 @@ test publish_rejects_a_registration_without_the_owner_signature() {
 
 test publish_rejects_a_registration_signed_by_a_device_over_the_control() {
   let tx = Transaction {
-    ..creation(
+    ..creation_publishing(
       registration(stake_script_hash),
       [device_key, other_device_key],
       [other_device_key],
     ),
-    reference_inputs: [control_input()],
+    reference_inputs: [two_device_control_input()],
   }
   !register(tx)
 }
 
 test publish_rejects_a_registration_without_the_mint() {
   let tx = Transaction {
-    ..creation(registration(stake_script_hash), [device_key], [device_key]),
+    ..creation_publishing(
+      registration(stake_script_hash),
+      [device_key],
+      [device_key],
+    ),
     mint: assets.zero,
   }
   !register(tx)
@@ -279,7 +268,11 @@ test publish_rejects_a_registration_without_the_mint() {
 
 test publish_rejects_a_registration_minting_two_state_nfts() {
   let tx = Transaction {
-    ..creation(registration(stake_script_hash), [device_key], [device_key]),
+    ..creation_publishing(
+      registration(stake_script_hash),
+      [device_key],
+      [device_key],
+    ),
     mint: assets.from_asset(script_hash, stake_script_hash, 2),
   }
   !register(tx)
@@ -287,7 +280,11 @@ test publish_rejects_a_registration_minting_two_state_nfts() {
 
 test publish_rejects_a_registration_minting_another_accounts_state_nft() {
   let tx = Transaction {
-    ..creation(registration(stake_script_hash), [device_key], [device_key]),
+    ..creation_publishing(
+      registration(stake_script_hash),
+      [device_key],
+      [device_key],
+    ),
     mint: state_nft(other_stake_script_hash),
   }
   !register(tx)
@@ -295,14 +292,18 @@ test publish_rejects_a_registration_minting_another_accounts_state_nft() {
 
 test publish_rejects_a_registration_with_the_owner_outside_the_devices() {
   !register(
-    creation(registration(stake_script_hash), [other_device_key], [device_key]),
+    creation_publishing(
+      registration(stake_script_hash),
+      [other_device_key],
+      [device_key],
+    ),
   )
 }
 
 test publish_rejects_a_registration_with_a_delegation_without_the_mint() {
   let delegating = delegating_registration()
   let tx = Transaction {
-    ..creation(delegating, [device_key], [device_key]),
+    ..creation_publishing(delegating, [device_key], [device_key]),
     mint: assets.zero,
   }
   !publish(delegating, tx)
@@ -310,12 +311,19 @@ test publish_rejects_a_registration_with_a_delegation_without_the_mint() {
 
 test publish_rejects_a_registration_with_a_delegation_with_the_owner_outside_the_devices() {
   let delegating = delegating_registration()
-  !publish(delegating, creation(delegating, [other_device_key], [device_key]))
+  !publish(
+    delegating,
+    creation_publishing(delegating, [other_device_key], [device_key]),
+  )
 }
 
 test publish_rejects_a_registration_without_a_control_output() fail {
   let tx = Transaction {
-    ..creation(registration(stake_script_hash), [device_key], [device_key]),
+    ..creation_publishing(
+      registration(stake_script_hash),
+      [device_key],
+      [device_key],
+    ),
     outputs: [],
   }
   register(tx)
@@ -375,7 +383,11 @@ test publish_rejects_a_registration_with_a_control_output_carrying_a_grant() fai
 /// mint of two names, and both must pass for the creation to apply.
 test publish_accepts_a_second_nft_beside_the_mint_that_the_mint_handler_refuses() {
   let tx = Transaction {
-    ..creation(registration(stake_script_hash), [device_key], [device_key]),
+    ..creation_publishing(
+      registration(stake_script_hash),
+      [device_key],
+      [device_key],
+    ),
     mint: assets.merge(
       state_nft(stake_script_hash),
       state_nft(other_stake_script_hash),
@@ -389,20 +401,20 @@ test publish_rejects_a_registration_of_a_key_credential() {
     credential: VerificationKey(stake_script_hash),
     deposit: Never,
   }
-  !publish(foreign, creation(foreign, [device_key], [device_key]))
+  !publish(foreign, creation_publishing(foreign, [device_key], [device_key]))
 }
 
 test publish_accepts_a_delegation_signed_by_a_device_over_a_referenced_control() {
   publish(
     delegation(),
-    publication(delegation(), [control_input()], [other_device_key]),
+    publication(delegation(), [two_device_control_input()], [other_device_key]),
   )
 }
 
 test publish_accepts_a_delegation_signed_by_a_device_over_a_spent_control() {
   let tx = Transaction {
     ..publication(delegation(), [], [device_key]),
-    inputs: [control_input()],
+    inputs: [two_device_control_input()],
   }
   publish(delegation(), tx)
 }
@@ -410,7 +422,7 @@ test publish_accepts_a_delegation_signed_by_a_device_over_a_spent_control() {
 test publish_rejects_a_delegation_without_a_device_signature() {
   !publish(
     delegation(),
-    publication(delegation(), [control_input()], [stranger_key]),
+    publication(delegation(), [two_device_control_input()], [stranger_key]),
   )
 }
 
@@ -424,7 +436,7 @@ test publish_rejects_a_delegation_over_another_accounts_control() fail {
     output(
       other_account_address(),
       control_value(other_stake_script_hash, 2_000_000),
-      state_datum(state()),
+      state_datum(two_device_state()),
     ),
   )
   publish(delegation(), publication(delegation(), [other], [device_key]))
@@ -433,14 +445,14 @@ test publish_rejects_a_delegation_over_another_accounts_control() fail {
 test publish_rejects_a_deregistration_signed_by_a_device_over_the_control() {
   !publish(
     deregistration(),
-    publication(deregistration(), [control_input()], [device_key]),
+    publication(deregistration(), [two_device_control_input()], [device_key]),
   )
 }
 
 test publish_rejects_a_deregistration_without_a_device_signature() {
   !publish(
     deregistration(),
-    publication(deregistration(), [control_input()], [stranger_key]),
+    publication(deregistration(), [two_device_control_input()], [stranger_key]),
   )
 }
 
@@ -453,23 +465,29 @@ test publish_rejects_a_delegate_representative_registration() {
     delegate_representative: Script(stake_script_hash),
     deposit: 500_000_000,
   }
-  !publish(drep, publication(drep, [control_input()], [device_key]))
+  !publish(drep, publication(drep, [two_device_control_input()], [device_key]))
 }
 
 test withdraw_accepts_a_device_signature_over_a_referenced_control() {
-  withdraw(withdrawal(1_000_000, [], [control_input()], [other_device_key]))
+  withdraw(
+    withdrawal(1_000_000, [], [two_device_control_input()], [other_device_key]),
+  )
 }
 
 test withdraw_accepts_a_device_signature_over_a_spent_control() {
-  withdraw(withdrawal(1_000_000, [control_input()], [], [device_key]))
+  withdraw(
+    withdrawal(1_000_000, [two_device_control_input()], [], [device_key]),
+  )
 }
 
 test withdraw_accepts_a_withdrawal_of_zero() {
-  withdraw(withdrawal(0, [], [control_input()], [device_key]))
+  withdraw(withdrawal(0, [], [two_device_control_input()], [device_key]))
 }
 
 test withdraw_rejects_a_missing_device_signature() {
-  !withdraw(withdrawal(1_000_000, [], [control_input()], [stranger_key]))
+  !withdraw(
+    withdrawal(1_000_000, [], [two_device_control_input()], [stranger_key]),
+  )
 }
 
 test withdraw_rejects_the_owner_signature_alone_without_the_control() fail {
@@ -482,7 +500,7 @@ test withdraw_rejects_another_accounts_control() fail {
     output(
       other_account_address(),
       control_value(other_stake_script_hash, 2_000_000),
-      state_datum(state()),
+      state_datum(two_device_state()),
     ),
   )
   withdraw(withdrawal(1_000_000, [], [other], [device_key]))
@@ -494,7 +512,7 @@ test withdraw_rejects_a_control_that_lacks_the_state_nft() fail {
     output(
       account_address(),
       assets.from_lovelace(2_000_000),
-      state_datum(state()),
+      state_datum(two_device_state()),
     ),
   )
   withdraw(withdrawal(1_000_000, [], [forged], [device_key]))
@@ -513,13 +531,13 @@ test withdraw_rejects_a_control_without_an_inline_state() fail {
 }
 
 test withdraw_rejects_a_grant_utxo_posing_as_the_control() fail {
-  withdraw(withdrawal(1_000_000, [], [grant_input()], [device_key]))
+  withdraw(withdrawal(1_000_000, [], [device_grant_input()], [device_key]))
 }
 
 test publish_rejects_a_delegation_over_a_grant_utxo() fail {
   publish(
     delegation(),
-    publication(delegation(), [grant_input()], [device_key]),
+    publication(delegation(), [device_grant_input()], [device_key]),
   )
 }
 
@@ -534,14 +552,14 @@ test withdraw_rejects_a_key_credential() fail {
     script_hash,
     Operate,
     VerificationKey(stake_script_hash),
-    withdrawal(1_000_000, [], [control_input()], [device_key]),
+    withdrawal(1_000_000, [], [two_device_control_input()], [device_key]),
   )
 }
 
 test else_fails_for_any_other_purpose() fail {
   let redeemer: Data = Operate
   let context = ScriptContext {
-    transaction: withdrawal(0, [], [control_input()], [device_key]),
+    transaction: withdrawal(0, [], [two_device_control_input()], [device_key]),
     redeemer,
     info: Voting(StakePool(stranger_key)),
   }

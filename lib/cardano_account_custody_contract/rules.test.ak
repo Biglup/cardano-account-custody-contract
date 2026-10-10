@@ -25,26 +25,13 @@ use cardano_account_custody_contract/rules.{
 }
 use cardano_account_custody_contract/test_helpers.{
   account_address, control_output, control_value, device_key, grant_datum,
-  grant_output, grant_token, grant_value, input, logic_hash, next_logic_hash,
-  other_account_address, output, recipient_address, script_hash,
+  grant_output, grant_token, grant_value, granted_state, input, logic_hash,
+  next_logic_hash, other_account_address, output, recipient_address, script_hash,
   stake_script_hash, stranger_key, withdrawing,
 }
 use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
 
 // FUNCTIONS *******************************************************************
-
-/// The state of the account under test: the test logic, one device and
-/// two issued grants.
-fn state() -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices: [device_key],
-    grant_generation: 0,
-    next_slot: 2,
-    revoked: [],
-    outstanding: 2,
-  }
-}
 
 /// A grant of slot 2 to the stranger over lovelace.
 fn grant() -> Grant {
@@ -67,11 +54,12 @@ fn grant() -> Grant {
   }
 }
 
-/// A device transaction spending the control UTxO of `state` into the
-/// given outputs with the given mint, the test logic withdrawing.
-fn transaction(outputs: List<Output>, minted: Assets) -> Transaction {
+/// A device transaction spending the control UTxO of the granted state
+/// into the given outputs with the given mint, the test logic
+/// withdrawing, with no proxy redeemer attached.
+fn device_transaction(outputs: List<Output>, minted: Assets) -> Transaction {
   test_helpers.transaction(
-    [input(0, control_output(state(), 2_000_000))],
+    [input(0, control_output(granted_state(), 2_000_000))],
     outputs,
     minted,
     [device_key],
@@ -84,7 +72,7 @@ fn transaction(outputs: List<Output>, minted: Assets) -> Transaction {
 /// test logic.
 fn recreates(tx: Transaction) -> Bool {
   recreates_control_output(
-    state(),
+    granted_state(),
     tx,
     script_hash,
     stake_script_hash,
@@ -94,7 +82,7 @@ fn recreates(tx: Transaction) -> Bool {
 
 /// The state once slot 2 has been issued.
 fn issued() -> AccountState {
-  AccountState { ..state(), next_slot: 3, outstanding: 3 }
+  AccountState { ..granted_state(), next_slot: 3, outstanding: 3 }
 }
 
 /// The minted entry of the grant token of slot 2.
@@ -111,15 +99,20 @@ fn issues(outputs: List<Output>) -> Bool {
 // TESTS ***********************************************************************
 
 test recreates_control_output_accepts_the_same_state() {
-  recreates(transaction([control_output(state(), 2_000_000)], assets.zero))
+  recreates(
+    device_transaction(
+      [control_output(granted_state(), 2_000_000)],
+      assets.zero,
+    ),
+  )
 }
 
 test recreates_control_output_accepts_a_bumped_generation() {
   recreates(
-    transaction(
+    device_transaction(
       [
         control_output(
-          AccountState { ..state(), grant_generation: 1 },
+          AccountState { ..granted_state(), grant_generation: 1 },
           2_000_000,
         ),
       ],
@@ -130,7 +123,7 @@ test recreates_control_output_accepts_a_bumped_generation() {
 
 test recreates_control_output_follows_a_mint() {
   recreates(
-    transaction(
+    device_transaction(
       [control_output(issued(), 2_000_000), grant_output(grant(), 2_000_000)],
       grant_token(stake_script_hash, 2),
     ),
@@ -139,8 +132,13 @@ test recreates_control_output_follows_a_mint() {
 
 test recreates_control_output_follows_a_burn() {
   recreates(
-    transaction(
-      [control_output(AccountState { ..state(), outstanding: 1 }, 2_000_000)],
+    device_transaction(
+      [
+        control_output(
+          AccountState { ..granted_state(), outstanding: 1 },
+          2_000_000,
+        ),
+      ],
       assets.from_asset(
         script_hash,
         account.grant_token_name(stake_script_hash, 0),
@@ -151,10 +149,10 @@ test recreates_control_output_follows_a_burn() {
 }
 
 test recreates_control_output_rejects_a_lowered_generation() {
-  let current = AccountState { ..state(), grant_generation: 2 }
+  let current = AccountState { ..granted_state(), grant_generation: 2 }
   !recreates_control_output(
     current,
-    transaction(
+    device_transaction(
       [
         control_output(
           AccountState { ..current, grant_generation: 1 },
@@ -170,13 +168,20 @@ test recreates_control_output_rejects_a_lowered_generation() {
 }
 
 test recreates_control_output_rejects_counters_moved_without_a_mint() {
-  !recreates(transaction([control_output(issued(), 2_000_000)], assets.zero))
+  !recreates(
+    device_transaction([control_output(issued(), 2_000_000)], assets.zero),
+  )
 }
 
 test recreates_control_output_rejects_an_ill_formed_state() {
   !recreates(
-    transaction(
-      [control_output(AccountState { ..state(), devices: [] }, 2_000_000)],
+    device_transaction(
+      [
+        control_output(
+          AccountState { ..granted_state(), devices: [] },
+          2_000_000,
+        ),
+      ],
       assets.zero,
     ),
   )
@@ -189,19 +194,19 @@ test recreates_control_output_rejects_extra_tokens_on_the_control() {
       control_value(stake_script_hash, 2_000_000),
       assets.from_asset(#"ab", "dust", 1),
     ),
-    test_helpers.state_datum(state()),
+    test_helpers.state_datum(granted_state()),
   )
-  !recreates(transaction([parked], assets.zero))
+  !recreates(device_transaction([parked], assets.zero))
 }
 
 test recreates_control_output_fails_without_a_control_output() fail {
-  recreates(transaction([], assets.zero))
+  recreates(device_transaction([], assets.zero))
 }
 
 test recreates_control_output_fails_for_a_datum_without_a_logic_field() fail {
   let data: Data = 42
   recreates(
-    transaction(
+    device_transaction(
       [
         output(
           account_address(),
@@ -216,10 +221,10 @@ test recreates_control_output_fails_for_a_datum_without_a_logic_field() fail {
 
 test recreates_control_output_accepts_an_upgrade_with_the_new_logic_withdrawing() {
   recreates(
-    transaction(
+    device_transaction(
       [
         control_output(
-          AccountState { ..state(), logic: next_logic_hash },
+          AccountState { ..granted_state(), logic: next_logic_hash },
           2_000_000,
         ),
       ],
@@ -235,7 +240,7 @@ test recreates_control_output_accepts_an_upgrade_into_a_state_of_another_shape()
   let logic: Data = next_logic_hash
   let foreign: Data = builtin.constr_data(0, [logic])
   recreates(
-    transaction(
+    device_transaction(
       [
         output(
           account_address(),
@@ -251,10 +256,10 @@ test recreates_control_output_accepts_an_upgrade_into_a_state_of_another_shape()
 
 test recreates_control_output_rejects_an_upgrade_without_the_new_logic_withdrawing() {
   !recreates(
-    transaction(
+    device_transaction(
       [
         control_output(
-          AccountState { ..state(), logic: next_logic_hash },
+          AccountState { ..granted_state(), logic: next_logic_hash },
           2_000_000,
         ),
       ],
@@ -265,7 +270,7 @@ test recreates_control_output_rejects_an_upgrade_without_the_new_logic_withdrawi
 
 test recreates_control_output_rejects_a_mint_during_an_upgrade() {
   !recreates(
-    transaction(
+    device_transaction(
       [
         control_output(
           AccountState { ..issued(), logic: next_logic_hash },
@@ -281,13 +286,13 @@ test recreates_control_output_rejects_a_mint_during_an_upgrade() {
 
 test recreates_control_output_rejects_an_upgrade_output_at_another_address() fail {
   recreates(
-    transaction(
+    device_transaction(
       [
         output(
           other_account_address(),
           control_value(stake_script_hash, 2_000_000),
           test_helpers.state_datum(
-            AccountState { ..state(), logic: next_logic_hash },
+            AccountState { ..granted_state(), logic: next_logic_hash },
           ),
         ),
       ],
@@ -414,7 +419,7 @@ test burn_grants_rule_accepts_burns_of_the_accounts_grant_tokens() {
       Pair(account.grant_token_name(stake_script_hash, 0), -1),
       Pair(account.grant_token_name(stake_script_hash, 1), -1),
     ],
-    state(),
+    granted_state(),
     stake_script_hash,
     [device_key],
   )
@@ -423,7 +428,7 @@ test burn_grants_rule_accepts_burns_of_the_accounts_grant_tokens() {
 test burn_grants_rule_rejects_a_missing_device_signature() {
   !burn_grants_rule(
     [Pair(account.grant_token_name(stake_script_hash, 0), -1)],
-    state(),
+    granted_state(),
     stake_script_hash,
     [stranger_key],
   )
@@ -432,7 +437,7 @@ test burn_grants_rule_rejects_a_missing_device_signature() {
 test burn_grants_rule_rejects_a_mint_among_the_burns() {
   !burn_grants_rule(
     [Pair(account.grant_token_name(stake_script_hash, 0), 1)],
-    state(),
+    granted_state(),
     stake_script_hash,
     [device_key],
   )
@@ -441,7 +446,7 @@ test burn_grants_rule_rejects_a_mint_among_the_burns() {
 test burn_grants_rule_rejects_the_state_nft() {
   !burn_grants_rule(
     [Pair(stake_script_hash, -1)],
-    state(),
+    granted_state(),
     stake_script_hash,
     [device_key],
   )
@@ -455,7 +460,7 @@ test burn_grants_rule_rejects_another_accounts_grant_token() {
         -1,
       ),
     ],
-    state(),
+    granted_state(),
     stake_script_hash,
     [device_key],
   )

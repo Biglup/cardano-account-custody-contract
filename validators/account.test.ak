@@ -27,155 +27,36 @@ use cardano/transaction.{
 }
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/test_helpers.{
-  account_address, control_output, control_value, device_key, fund_output,
-  grant_datum, grant_output, grant_token, grant_value, input, logic_hash,
-  next_logic_hash, other_account_address, other_control_output,
-  other_stake_script_hash, output, output_reference, publishing,
-  recipient_address, referencing, registration, script_hash, spending,
-  stake_script_hash, state_datum, state_nft, stranger_key, with_proxy_redeemers,
-  withdrawing,
+  account_address, burn, change, control_input, control_output,
+  control_reference, control_value, creation, device_key, expiry, fund_input,
+  fund_output, grant_burn, grant_data, grant_datum, grant_input, grant_output,
+  grant_token, grant_value, granted_state, input, logic_hash, logic_transaction,
+  lovelace_grant, next_logic_hash, other_account_address, other_control_output,
+  other_stake_script_hash, other_token, output, output_reference, payout,
+  publishing, recipient_address, referencing, registration, script_hash,
+  spending, stake_script_hash, state, state_data, state_datum, state_nft,
+  stranger_key, with_caps, with_proxy_redeemers, withdrawing,
+  without_withdrawals,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, BurnGrants, CreateAccount, Device, Fund, Grant,
-  IssueGrants, Scope, SpendWithGrant, SweepGrant,
+  AccountState, BurnGrants, CreateAccount, Device, Fund, IssueGrants,
+  SpendWithGrant, SweepGrant,
 }
 
 // CONSTANTS *******************************************************************
 
-/// The POSIX millisecond at which the grants of these fixtures expire. A
-/// spend runs under a validity range ending just before it and a sweep
-/// under one starting just after it, so one number stands for both sides
-/// of the time rules.
-const expiry = 1_800_000_000_000
-
 // FUNCTIONS *******************************************************************
 
-/// The fresh state of the account under test: the test logic, one device
-/// and zero counters.
-fn state() -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices: [device_key],
-    grant_generation: 0,
-    next_slot: 0,
-    revoked: [],
-    outstanding: 0,
-  }
-}
-
-/// The state once slots 0 and 1 have been issued.
-fn granted_state() -> AccountState {
-  AccountState { ..state(), next_slot: 2, outstanding: 2 }
-}
-
-/// One token under a policy that is not the account policy.
-fn other_token() -> Assets {
-  assets.from_asset(
-    #"00000000000000000000000000000000000000000000000000000099",
-    "other",
-    1,
-  )
-}
-
-/// A scope over lovelace with a per call cap of 3 ADA, a cap of 5 ADA and
-/// no recipient restriction.
-fn lovelace_scope() -> Scope {
-  Scope {
-    asset: Asset {
-      policy_id: assets.ada_policy_id,
-      asset_name: assets.ada_asset_name,
-    },
-    per_call_cap: 3_000_000,
-    cap: 5_000_000,
-    lovelace_per_call_cap: 0,
-    lovelace_cap: 0,
-    expires_at: expiry,
-    recipients: [],
-  }
-}
-
-/// The grant of slot 0 to the stranger under the lovelace scope.
-fn lovelace_grant() -> Grant {
-  Grant {
-    slot: 0,
-    grantee: stranger_key,
-    generation: 0,
-    scope: lovelace_scope(),
-  }
-}
-
-/// The grant with its remaining asset and lovelace caps replaced.
-fn with_caps(grant: Grant, cap: Int, lovelace_cap: Int) -> Grant {
-  Grant { ..grant, scope: Scope { ..grant.scope, cap, lovelace_cap } }
-}
-
-/// The control UTxO of the fresh state, spent at index 0.
-fn control_input() -> Input {
-  input(0, control_output(state(), 2_000_000))
-}
-
-/// The control UTxO of the granted state as a reference input, at an
-/// index no spent input uses.
-fn control_reference() -> Input {
-  input(100, control_output(granted_state(), 2_000_000))
-}
-
-/// The grant UTxO of `grant`, spent at index 0.
-fn grant_input(grant: Grant) -> Input {
-  input(0, grant_output(grant, 2_000_000))
-}
-
-/// A deposit of 10 ADA at the account address, spent at index 1.
-fn fund_input() -> Input {
-  input(1, fund_output(assets.from_lovelace(10_000_000)))
-}
-
-/// An output paying `lovelace` to the recipient outside the account.
-fn payout(lovelace: Int) -> Output {
-  output(recipient_address(), assets.from_lovelace(lovelace), NoDatum)
-}
-
-/// A deposit output returning `lovelace` to the account address.
-fn change(lovelace: Int) -> Output {
-  fund_output(assets.from_lovelace(lovelace))
-}
-
-/// A mint burning the state NFT of the account under test.
-fn burn() -> Assets {
-  assets.from_asset(script_hash, stake_script_hash, -1)
-}
-
-/// A mint burning the grant token of `slot` of the account under test.
-fn grant_burn(slot: Int) -> Assets {
-  assets.from_asset(
-    script_hash,
-    custody.grant_token_name(stake_script_hash, slot),
-    -1,
-  )
-}
-
-/// A transaction made of the given parts as a builder submits it: the
-/// proxy redeemers attached and the test logic withdrawing.
-fn transaction(
+/// A transaction made of the given parts as a builder submits it, valid
+/// at any time: the proxy redeemers attached and the test logic
+/// withdrawing.
+fn timeless_transaction(
   inputs: List<Input>,
   outputs: List<Output>,
   minted: Assets,
   signatories: List<ByteArray>,
 ) -> Transaction {
-  test_helpers.transaction(
-    inputs,
-    outputs,
-    minted,
-    signatories,
-    interval.everything,
-  )
-    |> with_proxy_redeemers()
-    |> withdrawing([logic_hash])
-}
-
-/// The transaction with no withdrawal at all, so that no logic runs.
-fn without_withdrawals(self: Transaction) -> Transaction {
-  Transaction { ..self, withdrawals: [] }
+  logic_transaction(inputs, outputs, minted, signatories, interval.everything)
 }
 
 /// Whether the proxy's mint handler accepts `redeemer` over `tx`.
@@ -203,27 +84,10 @@ fn mint(
   minted: Assets,
   signatories: List<ByteArray>,
 ) -> Bool {
-  proxy_mint(redeemer, transaction(inputs, outputs, minted, signatories))
-}
-
-/// A transaction creating the account under test with the given outputs
-/// and mint, its registration published through the stake script and the
-/// test logic withdrawing.
-fn creation(
-  outputs: List<Output>,
-  minted: Assets,
-  signatories: List<ByteArray>,
-) -> Transaction {
-  test_helpers.transaction(
-    [],
-    outputs,
-    minted,
-    signatories,
-    interval.everything,
+  proxy_mint(
+    redeemer,
+    timeless_transaction(inputs, outputs, minted, signatories),
   )
-    |> publishing(registration(stake_script_hash))
-    |> with_proxy_redeemers()
-    |> withdrawing([logic_hash])
 }
 
 /// Whether the mint handler accepts `CreateAccount` over a creation with
@@ -242,23 +106,6 @@ fn creation_with_control(control: Output) -> Transaction {
   creation([control], state_nft(stake_script_hash), [device_key])
 }
 
-/// An account state as the spend handler's optional datum.
-fn state_data(state: Option<AccountState>) -> Option<Data> {
-  when state is {
-    Some(state) -> {
-      let data: Data = state
-      Some(data)
-    }
-    None -> None
-  }
-}
-
-/// A grant as the spend handler's datum.
-fn grant_data(grant: Grant) -> Option<Data> {
-  let data: Data = grant
-  Some(data)
-}
-
 /// Whether the spend handler accepts `redeemer` with an optional account
 /// state datum for the input at `index` of a transaction made of the given
 /// parts.
@@ -275,14 +122,14 @@ fn spend(
     state_data(state),
     redeemer,
     index,
-    transaction(inputs, outputs, minted, signatories),
+    timeless_transaction(inputs, outputs, minted, signatories),
   )
 }
 
 /// A device rewrite of the fresh control UTxO into itself, as the owner
 /// path's simplest transaction.
 fn device_transaction() -> Transaction {
-  transaction(
+  timeless_transaction(
     [control_input(), fund_input()],
     [control_output(state(), 2_000_000), payout(10_000_000)],
     assets.zero,
@@ -313,7 +160,7 @@ fn grant_transaction() -> Transaction {
 /// spent, the token burned.
 fn sweep_transaction() -> Transaction {
   let revoked = AccountState { ..granted_state(), revoked: [0] }
-  transaction(
+  timeless_transaction(
     [
       input(0, control_output(revoked, 2_000_000)),
       input(1, grant_output(lovelace_grant(), 2_000_000)),
@@ -329,7 +176,7 @@ fn sweep_transaction() -> Transaction {
 
 /// An issuance of slot 0 over the fresh control UTxO.
 fn issue_transaction() -> Transaction {
-  transaction(
+  timeless_transaction(
     [control_input()],
     [
       control_output(
@@ -728,7 +575,7 @@ test issue_grants_accepts_a_mint_with_the_control_spent_and_its_logic_run() {
 /// logic, which refuses it; the proxy only asks that the control UTxO is
 /// present and its logic runs.
 test issue_grants_accepts_a_mint_with_the_control_referenced() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [fund_input()],
     [grant_output(lovelace_grant(), 2_000_000), change(8_000_000)],
     grant_token(stake_script_hash, 0),
@@ -750,7 +597,7 @@ test issue_grants_rejects_a_withdrawal_from_a_logic_the_control_does_not_name() 
 }
 
 test issue_grants_rejects_a_mint_without_the_control_utxo() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [fund_input()],
     [grant_output(lovelace_grant(), 2_000_000), change(8_000_000)],
     grant_token(stake_script_hash, 0),
@@ -762,7 +609,7 @@ test issue_grants_rejects_a_mint_without_the_control_utxo() {
 test issue_grants_rejects_an_empty_mint() fail {
   proxy_mint(
     IssueGrants,
-    transaction(
+    timeless_transaction(
       [control_input()],
       [control_output(state(), 2_000_000)],
       assets.zero,
@@ -775,7 +622,7 @@ test issue_grants_rejects_an_empty_mint() fail {
 /// present; the spent control UTxO of this account does not stand in for
 /// it.
 test issue_grants_rejects_a_name_of_an_account_whose_control_is_absent() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input()],
     [
       control_output(state(), 2_000_000),
@@ -824,7 +671,7 @@ test issue_grants_rejects_a_quantity_of_two() {
 /// present: another account's grant token minted beside this account's
 /// is refused whatever that account's logic would allow.
 test issue_grants_rejects_another_accounts_grant_token_beside_its_own() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input()],
     [
       control_output(
@@ -851,7 +698,7 @@ test issue_grants_rejects_another_accounts_grant_token_beside_its_own() {
 /// minted beside this account's grant token is refused, so no second
 /// control UTxO of any account is ever minted outside `CreateAccount`.
 test issue_grants_rejects_another_accounts_state_nft_beside_its_own_grant() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input()],
     [
       control_output(
@@ -872,7 +719,7 @@ test issue_grants_rejects_another_accounts_state_nft_beside_its_own_grant() {
 }
 
 test issue_grants_rejects_the_accounts_own_state_nft_beside_its_grant() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input()],
     [
       control_output(
@@ -895,7 +742,7 @@ test issue_grants_rejects_the_accounts_own_state_nft_beside_its_grant() {
 /// account address: the account's own grant token placed at another
 /// account's address is refused by the proxy, whatever its logic says.
 test issue_grants_rejects_its_own_grant_token_at_another_accounts_address() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input()],
     [
       control_output(
@@ -915,7 +762,7 @@ test issue_grants_rejects_its_own_grant_token_at_another_accounts_address() {
 }
 
 test issue_grants_rejects_its_own_grant_token_at_a_key_address() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input()],
     [
       control_output(
@@ -940,7 +787,7 @@ test issue_grants_rejects_the_state_nft_sent_outside_the_account() {
     control_value(stake_script_hash, 2_000_000),
     NoDatum,
   )
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input()],
     [stray, grant_output(lovelace_grant(), 2_000_000)],
     grant_token(stake_script_hash, 0),
@@ -957,7 +804,7 @@ test burn_grants_accepts_a_burn_with_the_control_spent_and_its_logic_run() {
 /// state NFT under `BurnGrants` is refused by the proxy itself, with the
 /// control UTxO spent, a device signing and the logic running.
 test burn_grants_rejects_the_state_nft_name() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input()],
     [payout(2_000_000)],
     burn(),
@@ -967,7 +814,7 @@ test burn_grants_rejects_the_state_nft_name() {
 }
 
 test burn_grants_rejects_the_state_nft_name_beside_a_grant_burn() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [
       input(0, control_output(granted_state(), 2_000_000)),
       input(1, grant_output(lovelace_grant(), 2_000_000)),
@@ -1022,7 +869,7 @@ test burn_grants_rejects_a_missing_logic_withdrawal() {
 }
 
 test burn_grants_rejects_a_burn_without_the_control_utxo() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [input(1, grant_output(lovelace_grant(), 2_000_000))],
     [change(2_000_000)],
     grant_burn(0),
@@ -1071,7 +918,7 @@ test fund_spends_a_deposit_carrying_a_foreign_inline_datum_alongside_the_control
       InlineDatum(foreign),
     ),
   )
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input(), deposit],
     [control_output(state(), 2_000_000), payout(10_000_000)],
     assets.zero,
@@ -1092,7 +939,7 @@ test fund_rejects_a_deposit_with_a_datum_alongside_a_grant_utxo_only() {
       InlineDatum(foreign),
     ),
   )
-  let tx = transaction(
+  let tx = timeless_transaction(
     [grant_input(lovelace_grant()), reserve],
     [grant_output(lovelace_grant(), 2_000_000), payout(10_000_000)],
     assets.zero,
@@ -1219,7 +1066,7 @@ test device_rejects_a_missing_logic_withdrawal() {
 
 /// The device transaction with the NFT holding output replaced.
 fn device_transaction_with_control(control: Output) -> Transaction {
-  transaction(
+  timeless_transaction(
     [control_input(), fund_input()],
     [control, payout(10_000_000)],
     assets.zero,
@@ -1311,7 +1158,7 @@ test device_rejects_the_control_output_under_a_datum_hash() {
 }
 
 test device_rejects_the_state_nft_in_two_outputs() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input(), fund_input()],
     [
       control_output(state(), 2_000_000),
@@ -1325,7 +1172,7 @@ test device_rejects_the_state_nft_in_two_outputs() {
 }
 
 test device_rejects_a_missing_control_output() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input(), fund_input()],
     [payout(12_000_000)],
     assets.zero,
@@ -1381,7 +1228,7 @@ test device_rejects_a_withdrawal_from_a_logic_the_control_does_not_name() {
 /// version it names.
 test device_requires_the_logic_the_control_names() {
   let upgraded = AccountState { ..state(), logic: next_logic_hash }
-  let tx = transaction(
+  let tx = timeless_transaction(
     [input(0, control_output(upgraded, 2_000_000))],
     [control_output(upgraded, 2_000_000)],
     assets.zero,
@@ -1399,7 +1246,7 @@ test device_requires_the_logic_the_control_names() {
 }
 
 test device_rejects_a_spend_without_the_control_utxo() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [fund_input()],
     [payout(10_000_000)],
     assets.zero,
@@ -1414,7 +1261,7 @@ test device_rejects_the_control_spent_and_referenced() {
 }
 
 test device_rejects_two_control_utxos_of_the_account_spent() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input(), input(1, control_output(state(), 2_000_000))],
     [control_output(state(), 2_000_000)],
     assets.zero,
@@ -1424,7 +1271,7 @@ test device_rejects_two_control_utxos_of_the_account_spent() {
 }
 
 test device_accepts_another_accounts_control_beside_its_own() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [control_input(), input(1, other_control_output(state(), 2_000_000))],
     [
       control_output(state(), 2_000_000),
@@ -1437,7 +1284,7 @@ test device_accepts_another_accounts_control_beside_its_own() {
 }
 
 test device_rejects_another_accounts_control_in_place_of_its_own() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [input(0, other_control_output(state(), 2_000_000)), fund_input()],
     [other_control_output(state(), 2_000_000), payout(10_000_000)],
     assets.zero,
@@ -1457,7 +1304,7 @@ test spend_rejects_a_control_whose_datum_is_given_by_hash() {
       DatumHash(stranger_key),
     ),
   )
-  let tx = transaction(
+  let tx = timeless_transaction(
     [hashed, fund_input()],
     [control_output(state(), 2_000_000), payout(10_000_000)],
     assets.zero,
@@ -1476,7 +1323,7 @@ test spend_rejects_a_control_whose_datum_has_no_logic_field() fail {
       InlineDatum(data),
     ),
   )
-  let tx = transaction(
+  let tx = timeless_transaction(
     [bare, fund_input()],
     [control_output(state(), 2_000_000), payout(10_000_000)],
     assets.zero,
@@ -1601,7 +1448,7 @@ test sweep_grant_rejects_a_missing_logic_withdrawal() {
 /// A sweep over a referenced control UTxO passes the proxy and is the
 /// logic's to refuse.
 test sweep_grant_accepts_a_referenced_control() {
-  let tx = transaction(
+  let tx = timeless_transaction(
     [input(1, grant_output(lovelace_grant(), 2_000_000))],
     [change(2_000_000)],
     grant_burn(0),

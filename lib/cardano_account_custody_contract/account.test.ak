@@ -43,10 +43,10 @@ use cardano_account_custody_contract/account.{
 }
 use cardano_account_custody_contract/test_helpers.{
   control_output, control_value, device_key, fund_output, grant_output,
-  grant_token, grant_value, input, logic_hash, next_logic_hash,
+  grant_token, grant_value, input, issued_state, logic_hash, next_logic_hash,
   other_account_address, other_stake_script_hash, output, output_reference,
   publishing, recipient_address, registration, script_hash, stake_script_hash,
-  state_nft, stranger_key,
+  state_nft, stranger_key, token,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, Device, Grant, IssueGrants, Operate, Run, Scope,
@@ -54,21 +54,9 @@ use cardano_account_custody_contract/types.{
 
 // FUNCTIONS *******************************************************************
 
-/// The state of the account under test: one device and one issued grant.
-fn state() -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices: [device_key],
-    grant_generation: 0,
-    next_slot: 1,
-    revoked: [],
-    outstanding: 1,
-  }
-}
-
 /// The control UTxO of the state with 2 ADA.
 fn control() -> transaction.Output {
-  control_output(state(), 2_000_000)
+  control_output(issued_state(1), 2_000_000)
 }
 
 /// A minimal grant of slot 0 to the stranger over lovelace.
@@ -95,15 +83,6 @@ fn grant() -> Grant {
 /// The grant UTxO of the grant with 2 ADA.
 fn grant_utxo() -> transaction.Output {
   grant_output(grant(), 2_000_000)
-}
-
-/// One token under a policy that is not the account policy.
-fn other_token() -> assets.Assets {
-  assets.from_asset(
-    #"00000000000000000000000000000000000000000000000000000099",
-    "token",
-    1,
-  )
 }
 
 /// A slot anywhere in the four byte range a grant token name encodes.
@@ -317,7 +296,7 @@ test holds_only_lovelace_and_state_nft_accepts_the_nft_alone() {
 }
 
 test holds_only_lovelace_and_state_nft_rejects_an_extra_token() {
-  let value = assets.merge(control_value(stake_script_hash, 1), other_token())
+  let value = assets.merge(control_value(stake_script_hash, 1), token(1))
   !holds_only_lovelace_and_state_nft(value, script_hash, stake_script_hash)
 }
 
@@ -374,7 +353,7 @@ test holds_only_lovelace_and_grant_token_rejects_the_state_nft() {
 
 test holds_only_lovelace_and_grant_token_rejects_an_extra_token() {
   !holds_only_lovelace_and_grant_token(
-    assets.merge(grant_value(stake_script_hash, 0, 1), other_token()),
+    assets.merge(grant_value(stake_script_hash, 0, 1), token(1)),
     script_hash,
     stake_script_hash,
     0,
@@ -384,7 +363,7 @@ test holds_only_lovelace_and_grant_token_rejects_an_extra_token() {
 test holds_no_account_token_accepts_lovelace_and_foreign_tokens() {
   and {
     holds_no_account_token(assets.from_lovelace(1), script_hash),
-    holds_no_account_token(other_token(), script_hash),
+    holds_no_account_token(token(1), script_hash),
     holds_no_account_token(assets.zero, script_hash),
   }
 }
@@ -516,11 +495,7 @@ test holds_account_token_rejects_a_fund_utxo() {
 }
 
 test holds_account_token_rejects_a_foreign_token_at_the_account_address() {
-  !holds_account_token(
-    fund_output(other_token()),
-    script_hash,
-    stake_script_hash,
-  )
+  !holds_account_token(fund_output(token(1)), script_hash, stake_script_hash)
 }
 
 test holds_account_token_rejects_another_accounts_token_at_the_account_address() {
@@ -795,12 +770,12 @@ test keeps_control_output_rejects_the_nft_at_another_address() {
   let stray = output(
     recipient_address(),
     control_value(stake_script_hash, 1),
-    test_helpers.state_datum(state()),
+    test_helpers.state_datum(issued_state(1)),
   )
   let exported = output(
     other_account_address(),
     control_value(stake_script_hash, 1),
-    test_helpers.state_datum(state()),
+    test_helpers.state_datum(issued_state(1)),
   )
   and {
     !keeps_control_output([stray], script_hash, stake_script_hash),
@@ -811,8 +786,8 @@ test keeps_control_output_rejects_the_nft_at_another_address() {
 test keeps_control_output_rejects_an_extra_token() {
   let parked = output(
     test_helpers.account_address(),
-    assets.merge(control_value(stake_script_hash, 1), other_token()),
-    test_helpers.state_datum(state()),
+    assets.merge(control_value(stake_script_hash, 1), token(1)),
+    test_helpers.state_datum(issued_state(1)),
   )
   !keeps_control_output([parked], script_hash, stake_script_hash)
 }
@@ -847,7 +822,7 @@ test grant_mint_delta_is_zero_without_a_mint() {
 }
 
 test grant_mint_delta_ignores_other_policies() {
-  grant_mint_delta(other_token(), script_hash, stake_script_hash) == (0, 0)
+  grant_mint_delta(token(1), script_hash, stake_script_hash) == (0, 0)
 }
 
 test grant_mint_delta_counts_minted_and_burned_grant_tokens() {
@@ -895,11 +870,11 @@ test grant_mint_delta_fails_on_a_burn_of_two() fail {
 }
 
 test state_datum_decodes_the_inline_state() {
-  state_datum(control()) == state()
+  state_datum(control()) == issued_state(1)
 }
 
 test state_datum_fails_without_a_datum() fail {
-  state_datum(fund_output(assets.from_lovelace(5))) == state()
+  state_datum(fund_output(assets.from_lovelace(5))) == issued_state(1)
 }
 
 test state_datum_fails_for_a_datum_hash() fail {
@@ -908,7 +883,7 @@ test state_datum_fails_for_a_datum_hash() fail {
     control_value(stake_script_hash, 1),
     DatumHash(stranger_key),
   )
-  state_datum(hashed) == state()
+  state_datum(hashed) == issued_state(1)
 }
 
 test state_datum_fails_for_a_malformed_datum() fail {
@@ -918,11 +893,11 @@ test state_datum_fails_for_a_malformed_datum() fail {
     control_value(stake_script_hash, 1),
     transaction.InlineDatum(data),
   )
-  state_datum(malformed) == state()
+  state_datum(malformed) == issued_state(1)
 }
 
 test state_datum_fails_for_a_grant_datum() fail {
-  state_datum(grant_utxo()) == state()
+  state_datum(grant_utxo()) == issued_state(1)
 }
 
 test is_valid_control_output_accepts_a_well_formed_state() {
@@ -930,7 +905,7 @@ test is_valid_control_output_accepts_a_well_formed_state() {
 }
 
 test is_valid_control_output_rejects_an_ill_formed_state() {
-  let empty = AccountState { ..state(), devices: [] }
+  let empty = AccountState { ..issued_state(1), devices: [] }
   !is_valid_control_output(
     control_output(empty, 2_000_000),
     script_hash,
@@ -941,8 +916,8 @@ test is_valid_control_output_rejects_an_ill_formed_state() {
 test is_valid_control_output_rejects_an_extra_token() {
   let parked = output(
     test_helpers.account_address(),
-    assets.merge(control_value(stake_script_hash, 1), other_token()),
-    test_helpers.state_datum(state()),
+    assets.merge(control_value(stake_script_hash, 1), token(1)),
+    test_helpers.state_datum(issued_state(1)),
   )
   !is_valid_control_output(parked, script_hash, stake_script_hash)
 }
@@ -971,19 +946,22 @@ test find_control_input_ignores_another_accounts_control_input() {
     output(
       other_account_address(),
       control_value(other_stake_script_hash, 1),
-      test_helpers.state_datum(state()),
+      test_helpers.state_datum(issued_state(1)),
     ),
   )
   find_control_input([other], script_hash, stake_script_hash) == None
 }
 
 test is_signed_by_a_device_accepts_any_device() {
-  let two = AccountState { ..state(), devices: [device_key, stranger_key] }
+  let two = AccountState {
+    ..issued_state(1),
+    devices: [device_key, stranger_key],
+  }
   is_signed_by_a_device(two, [stranger_key])
 }
 
 test is_signed_by_a_device_rejects_a_missing_device_signature() {
-  !is_signed_by_a_device(state(), [stranger_key])
+  !is_signed_by_a_device(issued_state(1), [stranger_key])
 }
 
 test is_authorised_by_a_device_accepts_a_device_over_a_referenced_control() {
@@ -1193,7 +1171,7 @@ test inline_datum_fails_for_a_datum_hash() fail {
 }
 
 test logic_of_reads_the_first_field_of_an_account_state() {
-  let data: Data = state()
+  let data: Data = issued_state(1)
   logic_of(data) == logic_hash
 }
 
@@ -1216,7 +1194,7 @@ test logic_of_fails_for_a_first_field_that_is_not_bytes() fail {
 }
 
 test devices_of_reads_the_second_field_of_an_account_state() {
-  let data: Data = state()
+  let data: Data = issued_state(1)
   devices_of(data) == [device_key]
 }
 
@@ -1231,7 +1209,7 @@ test devices_of_fails_for_a_second_field_that_is_not_a_key_list() fail {
 }
 
 test generation_of_reads_the_third_field_of_an_account_state() {
-  let data: Data = AccountState { ..state(), grant_generation: 3 }
+  let data: Data = AccountState { ..issued_state(1), grant_generation: 3 }
   generation_of(data) == 3
 }
 
@@ -1378,7 +1356,7 @@ test find_present_control_ignores_another_accounts_control() {
   let other = output(
     other_account_address(),
     control_value(other_stake_script_hash, 2_000_000),
-    test_helpers.state_datum(state()),
+    test_helpers.state_datum(issued_state(1)),
   )
   find_present_control([input(0, other)], [], script_hash, stake_script_hash) == None
 }
@@ -1387,7 +1365,7 @@ test find_present_control_ignores_the_nft_at_another_address() {
   let stray = output(
     other_account_address(),
     control_value(stake_script_hash, 2_000_000),
-    test_helpers.state_datum(state()),
+    test_helpers.state_datum(issued_state(1)),
   )
   find_present_control([input(0, stray)], [], script_hash, stake_script_hash) == None
 }

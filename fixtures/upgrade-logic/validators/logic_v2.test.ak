@@ -34,68 +34,29 @@ use cardano/transaction.{Input, NoDatum, Output, Transaction}
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/logic
 use cardano_account_custody_contract/test_helpers.{
-  control_output, device_key, fund_output, grant_output, input, logic_hash,
-  next_logic_hash, output, publishing, recipient_address, referencing,
-  registration, script_hash, stake_script_hash, state_nft, stranger_key,
-  with_proxy_redeemers, withdrawing,
+  control_output, device_key, expiry, fund_output, grant_output, input,
+  logic_hash, lovelace_scope, next_logic_hash, output, publishing,
+  recipient_address, referencing, registration, script_hash, stake_script_hash,
+  state, state_nft, stranger_key, with_proxy_redeemers, withdrawing,
 }
-use cardano_account_custody_contract/types.{
-  AccountState, Asset, Grant, Run, Scope,
-}
+use cardano_account_custody_contract/types.{AccountState, Grant, Run, Scope}
 use logic_v2
 
 // CONSTANTS *******************************************************************
-
-/// The POSIX millisecond at which the grants of these fixtures expire. A
-/// spend runs under a validity range ending just before it and a sweep
-/// under one starting just after it, so one number stands for both sides
-/// of the time rules.
-const expiry = 1_800_000_000_000
 
 /// One grant more than the batch the second logic admits.
 const over_the_batch = logic_v2.max_grant_batch + 1
 
 // FUNCTIONS *******************************************************************
 
-/// The fresh state of an account under `logic`: one device and zero
-/// counters.
+/// The fresh state of an account under `logic`.
 fn state_under(logic: ByteArray) -> AccountState {
-  AccountState {
-    logic,
-    devices: [device_key],
-    grant_generation: 0,
-    next_slot: 0,
-    revoked: [],
-    outstanding: 0,
-  }
-}
-
-/// The fresh state of the account under test, which runs the second
-/// logic as `next_logic_hash`.
-fn state() -> AccountState {
-  state_under(next_logic_hash)
+  AccountState { ..state(), logic }
 }
 
 /// The state of an account that issued one grant.
 fn granted(fresh: AccountState) -> AccountState {
   AccountState { ..fresh, next_slot: 1, outstanding: 1 }
-}
-
-/// A scope over lovelace with a per call cap of 3 ADA, a cap of 5 ADA and
-/// no recipient restriction.
-fn lovelace_scope() -> Scope {
-  Scope {
-    asset: Asset {
-      policy_id: assets.ada_policy_id,
-      asset_name: assets.ada_asset_name,
-    },
-    per_call_cap: 3_000_000,
-    cap: 5_000_000,
-    lovelace_per_call_cap: 0,
-    lovelace_cap: 0,
-    expires_at: expiry,
-    recipients: [],
-  }
 }
 
 /// The grant of `slot` to the stranger under the lovelace scope, issued
@@ -337,13 +298,16 @@ test the_deployed_logic_sweeps_over_the_batch() {
 }
 
 test spend_with_grant_accepts_a_current_grant() {
-  run_second(grant_spend_under(granted(state()), 0))
+  run_second(grant_spend_under(granted(state_under(next_logic_hash)), 0))
 }
 
 test spend_with_grant_rejects_a_grant_issued_before_an_upgrade() {
   !run_second(
     grant_spend_under(
-      AccountState { ..granted(state()), grant_generation: 1 },
+      AccountState {
+        ..granted(state_under(next_logic_hash)),
+        grant_generation: 1,
+      },
       0,
     ),
   )

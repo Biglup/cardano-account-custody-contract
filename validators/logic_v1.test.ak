@@ -30,47 +30,33 @@ use cardano/transaction.{
   DatumHash, InlineDatum, Input, NoDatum, Output, Transaction,
 }
 use cardano_account_custody_contract/account as custody
+use cardano_account_custody_contract/logic
 use cardano_account_custody_contract/test_helpers.{
-  account_address, control_output, control_value, device_key, fund_output,
-  grant_datum, grant_output, grant_token, grant_value, input, logic_hash,
-  next_logic_hash, other_account_address, other_control_output, other_device_key,
-  other_fund_output, other_grant_output, other_stake_script_hash, output,
-  publishing, recipient_address, referencing, registration, script_hash,
-  spending, stake_script_hash, state_datum, state_nft, stranger_key,
-  with_proxy_redeemers, withdrawing,
+  account_address, burn, control_input, control_output, control_reference,
+  control_value, creation, device_key, expiry, fund_input, fund_output,
+  grant_burn, grant_datum, grant_input, grant_output, grant_token, grant_value,
+  granted_state, input, issued_state, logic_hash, logic_transaction,
+  lovelace_grant, lovelace_scope, next_logic_hash, other_account_address,
+  other_control_output, other_device_key, other_fund_output, other_grant_output,
+  other_stake_script_hash, other_token, output, owner_transaction, payout,
+  recipient_address, referencing, script_hash, spending, stake_script_hash,
+  state, state_datum, state_nft, stranger_key, token, token_grant, token_scope,
+  treasury_input, upgrade_into, upgraded_state, with_caps, with_proxy_redeemers,
+  withdrawing,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, Asset, BurnGrants, Device, Grant, IssueGrants, Run, Scope,
+  AccountState, BurnGrants, Device, Grant, IssueGrants, Run, Scope,
   SpendWithGrant, SweepGrant,
 }
 use logic_v1
 
 // CONSTANTS *******************************************************************
 
-/// The POSIX millisecond at which the grants of these fixtures expire. A
-/// spend runs under a validity range ending just before it and a sweep
-/// under one starting just after it, so one number stands for both sides
-/// of the time rules.
-const expiry = 1_800_000_000_000
-
 /// The hash standing in for a third logic version.
 const third_logic_hash =
   #"0000000000000000000000000000000000000000000000000000000a"
 
 // FUNCTIONS *******************************************************************
-
-/// The fresh state of the account under test: the test logic, one device
-/// and zero counters.
-fn state() -> AccountState {
-  AccountState {
-    logic: logic_hash,
-    devices: [device_key],
-    grant_generation: 0,
-    next_slot: 0,
-    revoked: [],
-    outstanding: 0,
-  }
-}
 
 /// The fresh state once a device rewrite adds a second device and bumps
 /// the generation.
@@ -82,98 +68,9 @@ fn rewritten_state() -> AccountState {
   }
 }
 
-/// The state once slots 0 and 1 have been issued.
-fn granted_state() -> AccountState {
-  AccountState { ..state(), next_slot: 2, outstanding: 2 }
-}
-
-/// The fresh state once `count` grants have been issued.
-fn issued_state(count: Int) -> AccountState {
-  AccountState { ..state(), next_slot: count, outstanding: count }
-}
-
-/// One token under a policy that is not the account policy.
-fn other_token() -> Assets {
-  assets.from_asset(
-    #"00000000000000000000000000000000000000000000000000000099",
-    "other",
-    1,
-  )
-}
-
-/// A native asset under a policy that is not the account policy.
-fn token_asset() -> Asset {
-  Asset {
-    policy_id: #"00000000000000000000000000000000000000000000000000000099",
-    asset_name: "token",
-  }
-}
-
-/// `quantity` units of the native asset.
-fn token(quantity: Int) -> Assets {
-  assets.from_asset(token_asset().policy_id, token_asset().asset_name, quantity)
-}
-
-/// A scope over lovelace with a per call cap of 3 ADA, a cap of 5 ADA and
-/// no recipient restriction.
-fn lovelace_scope() -> Scope {
-  Scope {
-    asset: Asset {
-      policy_id: assets.ada_policy_id,
-      asset_name: assets.ada_asset_name,
-    },
-    per_call_cap: 3_000_000,
-    cap: 5_000_000,
-    lovelace_per_call_cap: 0,
-    lovelace_cap: 0,
-    expires_at: expiry,
-    recipients: [],
-  }
-}
-
-/// A scope over the native asset with a per call cap of 10, a cap of 50,
-/// 2 ADA of lovelace caps and the recipient as its only allowed
-/// destination.
-fn token_scope() -> Scope {
-  Scope {
-    asset: token_asset(),
-    per_call_cap: 10,
-    cap: 50,
-    lovelace_per_call_cap: 2_000_000,
-    lovelace_cap: 2_000_000,
-    expires_at: expiry,
-    recipients: [recipient_address()],
-  }
-}
-
-/// The grant of slot 0 to the stranger under the lovelace scope.
-fn lovelace_grant() -> Grant {
-  Grant {
-    slot: 0,
-    grantee: stranger_key,
-    generation: 0,
-    scope: lovelace_scope(),
-  }
-}
-
-/// The grant of slot 1 to the stranger under the token scope.
-fn token_grant() -> Grant {
-  Grant { slot: 1, grantee: stranger_key, generation: 0, scope: token_scope() }
-}
-
-/// The grant with its remaining asset and lovelace caps replaced.
-fn with_caps(grant: Grant, cap: Int, lovelace_cap: Int) -> Grant {
-  Grant { ..grant, scope: Scope { ..grant.scope, cap, lovelace_cap } }
-}
-
 /// The lovelace grant once 2 ADA have been spent through it.
 fn spent_lovelace_grant() -> Grant {
   with_caps(lovelace_grant(), 3_000_000, 0)
-}
-
-/// The control UTxO of the fresh state, spent at index 0.
-fn control_input() -> Input {
-  input(0, control_output(state(), 2_000_000))
 }
 
 /// The control UTxO of the granted state, spent at index 0.
@@ -181,67 +78,9 @@ fn granted_control_input() -> Input {
   input(0, control_output(granted_state(), 2_000_000))
 }
 
-/// The control UTxO of the granted state as a reference input, at an
-/// index no spent input uses.
-fn control_reference() -> Input {
-  input(100, control_output(granted_state(), 2_000_000))
-}
-
-/// The grant UTxO of `grant`, spent at index 0.
-fn grant_input(grant: Grant) -> Input {
-  input(0, grant_output(grant, 2_000_000))
-}
-
-/// A deposit of 10 ADA at the account address, spent at index 1.
-fn fund_input() -> Input {
-  input(1, fund_output(assets.from_lovelace(10_000_000)))
-}
-
-/// A deposit of 10 ADA and 20 tokens at the account address, spent at
-/// index 1.
-fn treasury_input() -> Input {
-  input(
-    1,
-    fund_output(assets.merge(assets.from_lovelace(10_000_000), token(20))),
-  )
-}
-
-/// An output paying `lovelace` to the recipient outside the account.
-fn payout(lovelace: Int) -> Output {
-  output(recipient_address(), assets.from_lovelace(lovelace), NoDatum)
-}
-
 /// A deposit output returning `value` to the account address.
-fn change(value: Assets) -> Output {
+fn change_of(value: Assets) -> Output {
   fund_output(value)
-}
-
-/// A mint burning the state NFT of the account under test.
-fn burn() -> Assets {
-  assets.from_asset(script_hash, stake_script_hash, -1)
-}
-
-/// A mint burning the grant token of `slot` of the account under test.
-fn grant_burn(slot: Int) -> Assets {
-  assets.from_asset(
-    script_hash,
-    custody.grant_token_name(stake_script_hash, slot),
-    -1,
-  )
-}
-
-/// A transaction made of the given parts as a builder submits it: the
-/// proxy redeemers attached and the test logic withdrawing.
-fn transaction(
-  inputs: List<Input>,
-  outputs: List<Output>,
-  minted: Assets,
-  signatories: List<ByteArray>,
-  validity_range: Interval,
-) -> Transaction {
-  test_helpers.transaction(inputs, outputs, minted, signatories, validity_range)
-    |> with_proxy_redeemers()
-    |> withdrawing([logic_hash])
 }
 
 /// Whether the logic, run as `logic` over the test proxy, accepts `tx`.
@@ -254,41 +93,23 @@ fn run(tx: Transaction) -> Bool {
   run_as(logic_hash, tx)
 }
 
+/// Whether the dispatch written out in `logic_v1` and the shared withdraw
+/// handler, each run as the test logic over the test proxy, both give
+/// `verdict` on `tx`.
+fn dispatches_like_the_shared_handler(tx: Transaction, verdict: Bool) -> Bool {
+  and {
+    run(tx) == verdict,
+    logic.validates_withdrawal(logic_hash, script_hash, tx) == verdict,
+  }
+}
+
 /// A transaction creating the account under test with the given control
 /// state, its registration published through the stake script.
-fn creation(next: AccountState) -> Transaction {
-  creation_of([control_output(next, 2_000_000)], state_nft(stake_script_hash))
-}
-
-/// A transaction creating the account under test with the given outputs
-/// and mint, its registration published through the stake script.
-fn creation_of(outputs: List<Output>, minted: Assets) -> Transaction {
-  test_helpers.transaction(
-    [],
-    outputs,
-    minted,
+fn creation_with_state(next: AccountState) -> Transaction {
+  creation(
+    [control_output(next, 2_000_000)],
+    state_nft(stake_script_hash),
     [device_key],
-    interval.everything,
-  )
-    |> publishing(registration(stake_script_hash))
-    |> with_proxy_redeemers()
-    |> withdrawing([logic_hash])
-}
-
-/// The transaction with the control UTxO of `state` spent at index 0, the
-/// given inputs beside it, outputs and mint, signed by the device.
-fn owner_transaction(
-  current: AccountState,
-  inputs: List<Input>,
-  outputs: List<Output>,
-  minted: Assets,
-) -> Transaction {
-  transaction(
-    [input(0, control_output(current, 2_000_000)), ..inputs],
-    outputs,
-    minted,
-    [device_key],
-    interval.everything,
   )
 }
 
@@ -309,7 +130,10 @@ fn sweep_transaction(grant: Grant, next: AccountState) -> Transaction {
   owner_transaction(
     AccountState { ..granted_state(), revoked: [0] },
     [input(1, grant_output(grant, 2_000_000))],
-    [control_output(next, 2_000_000), change(assets.from_lovelace(2_000_000))],
+    [
+      control_output(next, 2_000_000),
+      change_of(assets.from_lovelace(2_000_000)),
+    ],
     grant_burn(grant.slot),
   )
 }
@@ -322,7 +146,7 @@ fn swept_state() -> AccountState {
 /// A sweep of the unrevoked grant of slot 0 over the granted state, valid
 /// within `validity_range`, so that only expiry can make the grant dead.
 fn expired_sweep_transaction(validity_range: Interval) -> Transaction {
-  transaction(
+  logic_transaction(
     [
       granted_control_input(),
       input(1, grant_output(lovelace_grant(), 2_000_000)),
@@ -332,7 +156,7 @@ fn expired_sweep_transaction(validity_range: Interval) -> Transaction {
         AccountState { ..granted_state(), outstanding: 1 },
         2_000_000,
       ),
-      change(assets.from_lovelace(2_000_000)),
+      change_of(assets.from_lovelace(2_000_000)),
     ],
     grant_burn(0),
     [device_key],
@@ -393,7 +217,7 @@ fn lovelace_spend_outputs(lovelace: Int) -> List<Output> {
       with_caps(lovelace_grant(), 5_000_000 - lovelace, 0),
       2_000_000,
     ),
-    change(assets.from_lovelace(10_000_000 - lovelace)),
+    change_of(assets.from_lovelace(10_000_000 - lovelace)),
     payout(lovelace),
   ]
 }
@@ -405,7 +229,7 @@ fn rewritten_spend(after: Grant) -> Bool {
     interval.before(expiry - 1),
     [
       grant_output(after, 2_000_000),
-      change(assets.from_lovelace(8_000_000)),
+      change_of(assets.from_lovelace(8_000_000)),
       payout(2_000_000),
     ],
     [stranger_key],
@@ -439,7 +263,9 @@ fn spend_token(outputs: List<Output>) -> Bool {
 fn token_spend_outputs(lovelace: Int, destination: Address) -> List<Output> {
   [
     grant_output(with_caps(token_grant(), 40, 2_000_000 - lovelace), 2_000_000),
-    change(assets.merge(assets.from_lovelace(10_000_000 - lovelace), token(10))),
+    change_of(
+      assets.merge(assets.from_lovelace(10_000_000 - lovelace), token(10)),
+    ),
     output(
       destination,
       assets.merge(assets.from_lovelace(lovelace), token(10)),
@@ -469,7 +295,7 @@ fn spend_token_lovelace_from(
     grant,
     [
       grant_output(with_caps(grant, 40, lovelace_cap), 2_000_000),
-      change(
+      change_of(
         assets.merge(assets.from_lovelace(10_000_000 - lovelace), token(10)),
       ),
       output(
@@ -492,7 +318,7 @@ fn spend_remaining_lovelace(cap: Int, lovelace: Int) -> Bool {
       [control_reference()],
       [
         grant_output(with_caps(lovelace_grant(), cap - lovelace, 0), 2_000_000),
-        change(assets.from_lovelace(10_000_000 - lovelace)),
+        change_of(assets.from_lovelace(10_000_000 - lovelace)),
         payout(lovelace),
       ],
       assets.zero,
@@ -508,7 +334,7 @@ fn spend_lovelace_with_fee(fee: Int, lovelace: Int, after: Grant) -> Bool {
     interval.before(expiry - 1),
     [
       grant_output(after, 2_000_000),
-      change(assets.from_lovelace(10_000_000 - lovelace - fee)),
+      change_of(assets.from_lovelace(10_000_000 - lovelace - fee)),
       payout(lovelace),
     ],
     [stranger_key],
@@ -525,7 +351,9 @@ fn spend_remaining_tokens(cap: Int, tokens: Int) -> Bool {
     nearly_spent,
     [
       grant_output(with_caps(token_grant(), cap - tokens, 1_000_000), 2_000_000),
-      change(assets.merge(assets.from_lovelace(9_000_000), token(20 - tokens))),
+      change_of(
+        assets.merge(assets.from_lovelace(9_000_000), token(20 - tokens)),
+      ),
       output(
         recipient_address(),
         assets.merge(assets.from_lovelace(1_000_000), token(tokens)),
@@ -545,7 +373,7 @@ fn spend_token_with_fee(fee: Int, lovelace: Int, after: Grant) -> Bool {
     [control_reference()],
     [
       grant_output(after, 2_000_000),
-      change(
+      change_of(
         assets.merge(
           assets.from_lovelace(10_000_000 - lovelace - fee),
           token(10),
@@ -570,7 +398,7 @@ fn spend_token_recapped(cap: Int, lovelace_cap: Int) -> Bool {
   spend_token(
     [
       grant_output(with_caps(token_grant(), cap, lovelace_cap), 2_000_000),
-      change(assets.merge(assets.from_lovelace(9_000_000), token(10))),
+      change_of(assets.merge(assets.from_lovelace(9_000_000), token(10))),
       output(
         recipient_address(),
         assets.merge(assets.from_lovelace(1_000_000), token(10)),
@@ -586,7 +414,7 @@ fn spend_token_recapped(cap: Int, lovelace_cap: Int) -> Bool {
 fn agent_deposit_outputs(after: Grant) -> List<Output> {
   [
     grant_output(after, 2_000_000),
-    change(assets.from_lovelace(14_000_000)),
+    change_of(assets.from_lovelace(14_000_000)),
     payout(1_000_000),
   ]
 }
@@ -609,31 +437,6 @@ fn spend_with_agent_deposit(after: Grant) -> Bool {
       [stranger_key],
     ),
   )
-}
-
-/// The state once the account has moved to the next logic: the generation
-/// bumped so that every grant issued before is dead, everything else as
-/// the granted state.
-fn upgraded_state() -> AccountState {
-  AccountState {
-    ..granted_state(),
-    logic: next_logic_hash,
-    grant_generation: 1,
-  }
-}
-
-/// The upgrade: a device rewrite of the granted control UTxO into `next`,
-/// with the old and the new logic withdrawing.
-fn upgrade_into(next: AccountState) -> Transaction {
-  test_helpers.transaction(
-    [granted_control_input()],
-    [control_output(next, 2_000_000)],
-    assets.zero,
-    [device_key],
-    interval.everything,
-  )
-    |> with_proxy_redeemers()
-    |> withdrawing([logic_hash, next_logic_hash])
 }
 
 /// The upgrade of the granted account to the next logic.
@@ -669,36 +472,37 @@ fn two_account_upgrade_transaction() -> Transaction {
 // TESTS ***********************************************************************
 
 test create_account_validates_the_initial_state() {
-  run(creation(state()))
+  run(creation_with_state(state()))
 }
 
 test create_account_accepts_a_non_zero_grant_generation() {
-  run(creation(AccountState { ..state(), grant_generation: 5 }))
+  run(creation_with_state(AccountState { ..state(), grant_generation: 5 }))
 }
 
 test create_account_accepts_other_outputs_beside_the_control_output() {
   run(
-    creation_of(
+    creation(
       [payout(1), control_output(state(), 2_000_000), payout(2)],
       state_nft(stake_script_hash),
+      [device_key],
     ),
   )
 }
 
 test create_account_rejects_an_ill_formed_state() {
-  !run(creation(AccountState { ..state(), devices: [] }))
+  !run(creation_with_state(AccountState { ..state(), devices: [] }))
 }
 
 test create_account_rejects_a_non_zero_next_slot() {
-  !run(creation(AccountState { ..state(), next_slot: 1 }))
+  !run(creation_with_state(AccountState { ..state(), next_slot: 1 }))
 }
 
 test create_account_rejects_a_non_zero_outstanding_count() {
-  !run(creation(AccountState { ..state(), outstanding: 1 }))
+  !run(creation_with_state(AccountState { ..state(), outstanding: 1 }))
 }
 
 test create_account_rejects_a_revoked_slot() {
-  !run(creation(AccountState { ..state(), revoked: [0] }))
+  !run(creation_with_state(AccountState { ..state(), revoked: [0] }))
 }
 
 test create_account_rejects_extra_tokens_on_the_control_output() {
@@ -707,28 +511,31 @@ test create_account_rejects_extra_tokens_on_the_control_output() {
     assets.merge(control_value(stake_script_hash, 2_000_000), other_token()),
     state_datum(state()),
   )
-  !run(creation_of([parked], state_nft(stake_script_hash)))
+  !run(creation([parked], state_nft(stake_script_hash), [device_key]))
 }
 
 /// Without a control UTxO of the account among the inputs the arrival is
 /// a creation, which mints the state NFT and nothing else under the
 /// policy.
 test create_account_rejects_a_missing_mint() {
-  !run(creation_of([control_output(state(), 2_000_000)], assets.zero))
+  !run(
+    creation([control_output(state(), 2_000_000)], assets.zero, [device_key]),
+  )
 }
 
 test create_account_rejects_a_quantity_of_two() {
   !run(
-    creation_of(
+    creation(
       [control_output(state(), 2_000_000)],
       assets.from_asset(script_hash, stake_script_hash, 2),
+      [device_key],
     ),
   )
 }
 
 test create_account_rejects_a_grant_token_beside_the_state_nft() {
   !run(
-    creation_of(
+    creation(
       [
         control_output(state(), 2_000_000),
         grant_output(lovelace_grant(), 2_000_000),
@@ -737,19 +544,21 @@ test create_account_rejects_a_grant_token_beside_the_state_nft() {
         state_nft(stake_script_hash),
         grant_token(stake_script_hash, 0),
       ),
+      [device_key],
     ),
   )
 }
 
 test create_account_rejects_a_missing_control_output() fail {
-  run(creation_of([payout(1)], state_nft(stake_script_hash)))
+  run(creation([payout(1)], state_nft(stake_script_hash), [device_key]))
 }
 
 test create_account_rejects_two_control_outputs() fail {
   run(
-    creation_of(
+    creation(
       [control_output(state(), 2_000_000), control_output(state(), 2_000_000)],
       state_nft(stake_script_hash),
+      [device_key],
     ),
   )
 }
@@ -758,7 +567,7 @@ test create_account_rejects_two_control_outputs() fail {
 /// it finds nothing to validate and aborts; the proxy requires the named
 /// logic to run instead.
 test create_account_rejects_a_control_output_naming_another_logic() fail {
-  run(creation(AccountState { ..state(), logic: next_logic_hash }))
+  run(creation_with_state(AccountState { ..state(), logic: next_logic_hash }))
 }
 
 test create_account_rejects_a_malformed_state_datum() fail {
@@ -768,7 +577,7 @@ test create_account_rejects_a_malformed_state_datum() fail {
     control_value(stake_script_hash, 2_000_000),
     InlineDatum(data),
   )
-  run(creation_of([malformed], state_nft(stake_script_hash)))
+  run(creation([malformed], state_nft(stake_script_hash), [device_key]))
 }
 
 test create_account_rejects_a_state_datum_given_by_hash() fail {
@@ -777,7 +586,7 @@ test create_account_rejects_a_state_datum_given_by_hash() fail {
     control_value(stake_script_hash, 2_000_000),
     DatumHash(stranger_key),
   )
-  run(creation_of([hashed], state_nft(stake_script_hash)))
+  run(creation([hashed], state_nft(stake_script_hash), [device_key]))
 }
 
 /// A datum whose logic field names this logic but whose remaining fields
@@ -790,7 +599,7 @@ test create_account_rejects_a_state_the_logic_cannot_read() fail {
     control_value(stake_script_hash, 2_000_000),
     InlineDatum(padded),
   )
-  run(creation_of([unreadable], state_nft(stake_script_hash)))
+  run(creation([unreadable], state_nft(stake_script_hash), [device_key]))
 }
 
 test device_spends_funds_and_keeps_the_state() {
@@ -813,7 +622,7 @@ test device_accepts_any_device_signature() {
     ..state(),
     devices: [device_key, other_device_key],
   }
-  let tx = transaction(
+  let tx = logic_transaction(
     [input(0, control_output(two_devices, 2_000_000))],
     [control_output(two_devices, 2_000_000)],
     assets.zero,
@@ -891,7 +700,7 @@ test device_rejects_a_control_input_whose_datum_is_not_an_account_state() fail {
     ),
   )
   run(
-    transaction(
+    logic_transaction(
       [control],
       [control_output(state(), 2_000_000)],
       assets.zero,
@@ -996,7 +805,7 @@ test device_rejects_forging_another_accounts_control_output_from_a_stray_nft() {
   )
   let forged = control_output(other_state, 2_000_000)
   !run(
-    transaction(
+    logic_transaction(
       [input(0, other_control), stray],
       [other_control, forged],
       assets.zero,
@@ -1300,7 +1109,7 @@ test sweep_grant_burns_a_grant_of_an_older_generation() {
       [input(1, grant_output(lovelace_grant(), 2_000_000))],
       [
         control_output(AccountState { ..bumped, outstanding: 1 }, 2_000_000),
-        change(assets.from_lovelace(2_000_000)),
+        change_of(assets.from_lovelace(2_000_000)),
       ],
       grant_burn(0),
     ),
@@ -1331,9 +1140,9 @@ test sweep_grant_rejects_a_missing_device_signature() {
 /// A sweep over a referenced control UTxO is the agent path, which admits
 /// no `SweepGrant`.
 test sweep_grant_rejects_a_referenced_control() {
-  let tx = transaction(
+  let tx = logic_transaction(
     [input(1, grant_output(lovelace_grant(), 2_000_000))],
-    [change(assets.from_lovelace(2_000_000))],
+    [change_of(assets.from_lovelace(2_000_000))],
     grant_burn(0),
     [device_key],
     interval.everything,
@@ -1383,7 +1192,7 @@ test sweep_grant_rejects_extra_tokens_on_the_grant_utxo() {
       [input(1, dusted)],
       [
         control_output(swept_state(), 2_000_000),
-        change(assets.from_lovelace(2_000_000)),
+        change_of(assets.from_lovelace(2_000_000)),
       ],
       grant_burn(0),
     ),
@@ -1402,7 +1211,7 @@ test sweep_grant_rejects_a_datum_whose_slot_differs_from_the_token() {
       [input(1, mislabelled)],
       [
         control_output(swept_state(), 2_000_000),
-        change(assets.from_lovelace(2_000_000)),
+        change_of(assets.from_lovelace(2_000_000)),
       ],
       grant_burn(0),
     ),
@@ -1455,7 +1264,7 @@ test sweep_grant_burns_a_grant_of_another_shape_under_an_older_generation() {
       [input(1, padded_grant_output(0))],
       [
         control_output(AccountState { ..bumped, outstanding: 1 }, 2_000_000),
-        change(assets.from_lovelace(2_000_000)),
+        change_of(assets.from_lovelace(2_000_000)),
       ],
       grant_burn(0),
     ),
@@ -1469,7 +1278,7 @@ test sweep_grant_burns_a_revoked_grant_of_another_shape() {
       [input(1, padded_grant_output(0))],
       [
         control_output(swept_state(), 2_000_000),
-        change(assets.from_lovelace(2_000_000)),
+        change_of(assets.from_lovelace(2_000_000)),
       ],
       grant_burn(0),
     ),
@@ -1481,14 +1290,14 @@ test sweep_grant_burns_a_revoked_grant_of_another_shape() {
 /// until its slot is revoked or its generation passes.
 test sweep_grant_rejects_an_expired_grant_of_another_shape() {
   !run(
-    transaction(
+    logic_transaction(
       [granted_control_input(), input(1, padded_grant_output(0))],
       [
         control_output(
           AccountState { ..granted_state(), outstanding: 1 },
           2_000_000,
         ),
-        change(assets.from_lovelace(2_000_000)),
+        change_of(assets.from_lovelace(2_000_000)),
       ],
       grant_burn(0),
       [device_key],
@@ -1567,11 +1376,11 @@ test issue_grants_rejects_a_missing_device_signature() {
 /// proxy refuses the mint before that.
 test issue_grants_rejects_a_missing_control_input() fail {
   run(
-    transaction(
+    logic_transaction(
       [fund_input()],
       [
         grant_output(lovelace_grant(), 2_000_000),
-        change(assets.from_lovelace(8_000_000)),
+        change_of(assets.from_lovelace(8_000_000)),
       ],
       grant_token(stake_script_hash, 0),
       [device_key],
@@ -1592,11 +1401,11 @@ test issue_grants_rejects_a_missing_control_output() fail {
 /// A mint over a referenced control UTxO is the agent path, which admits
 /// no mint under the policy.
 test issue_grants_rejects_a_referenced_control() {
-  let tx = transaction(
+  let tx = logic_transaction(
     [fund_input()],
     [
       grant_output(lovelace_grant(), 2_000_000),
-      change(assets.from_lovelace(8_000_000)),
+      change_of(assets.from_lovelace(8_000_000)),
     ],
     grant_token(stake_script_hash, 0),
     [device_key],
@@ -1835,7 +1644,7 @@ test burn_grants_burns_two_grant_tokens() {
           },
           2_000_000,
         ),
-        change(assets.from_lovelace(4_000_000)),
+        change_of(assets.from_lovelace(4_000_000)),
       ],
       assets.merge(grant_burn(0), grant_burn(1)),
     ),
@@ -2054,7 +1863,7 @@ test spend_with_grant_rejects_a_foreign_asset_leaving() {
       [control_reference()],
       [
         grant_output(with_caps(lovelace_grant(), 3_000_000, 0), 2_000_000),
-        change(assets.from_lovelace(8_000_000)),
+        change_of(assets.from_lovelace(8_000_000)),
         output(
           recipient_address(),
           assets.merge(assets.from_lovelace(2_000_000), other_token()),
@@ -2081,7 +1890,7 @@ test spend_with_grant_accepts_any_destination_when_recipients_are_empty() {
     interval.before(expiry - 1),
     [
       grant_output(with_caps(lovelace_grant(), 3_000_000, 0), 2_000_000),
-      change(assets.from_lovelace(8_000_000)),
+      change_of(assets.from_lovelace(8_000_000)),
       output(
         address.from_verification_key(other_device_key),
         assets.from_lovelace(2_000_000),
@@ -2174,7 +1983,7 @@ test spend_with_grant_rejects_a_changed_slot_in_the_datum() {
   )
   !spend_lovelace(
     interval.before(expiry - 1),
-    [mislabelled, change(assets.from_lovelace(8_000_000)), payout(2_000_000)],
+    [mislabelled, change_of(assets.from_lovelace(8_000_000)), payout(2_000_000)],
     [stranger_key],
   )
 }
@@ -2434,7 +2243,7 @@ test spend_with_grant_rejects_the_control_utxo() {
 test spend_with_grant_rejects_a_missing_grant_output() fail {
   spend_lovelace(
     interval.before(expiry - 1),
-    [change(assets.from_lovelace(10_000_000)), payout(2_000_000)],
+    [change_of(assets.from_lovelace(10_000_000)), payout(2_000_000)],
     [stranger_key],
   )
 }
@@ -2445,7 +2254,7 @@ test spend_with_grant_rejects_two_grant_outputs() fail {
     [
       grant_output(spent_lovelace_grant(), 1_000_000),
       grant_output(spent_lovelace_grant(), 1_000_000),
-      change(assets.from_lovelace(8_000_000)),
+      change_of(assets.from_lovelace(8_000_000)),
       payout(2_000_000),
     ],
     [stranger_key],
@@ -2463,7 +2272,7 @@ test spend_with_grant_rejects_extra_tokens_on_the_grant_output() {
       interval.before(expiry - 1),
       [grant_input(lovelace_grant()), treasury_input()],
       [control_reference()],
-      [parked, change(assets.from_lovelace(8_000_000)), payout(2_000_000)],
+      [parked, change_of(assets.from_lovelace(8_000_000)), payout(2_000_000)],
       assets.zero,
       [stranger_key],
     ),
@@ -2489,7 +2298,7 @@ test spend_with_grant_rejects_extra_tokens_on_the_grant_input() {
       interval.before(expiry - 1),
       [dusted, fund_input()],
       [control_reference()],
-      [parked, change(assets.from_lovelace(8_000_000)), payout(2_000_000)],
+      [parked, change_of(assets.from_lovelace(8_000_000)), payout(2_000_000)],
       assets.zero,
       [stranger_key],
     ),
@@ -2501,7 +2310,7 @@ test spend_with_grant_rejects_lovelace_drained_from_the_grant_output() {
     interval.before(expiry - 1),
     [
       grant_output(spent_lovelace_grant(), 1_000_000),
-      change(assets.from_lovelace(9_000_000)),
+      change_of(assets.from_lovelace(9_000_000)),
       payout(2_000_000),
     ],
     [stranger_key],
@@ -2513,7 +2322,7 @@ test spend_with_grant_rejects_lovelace_added_to_the_grant_output() {
     interval.before(expiry - 1),
     [
       grant_output(spent_lovelace_grant(), 3_000_000),
-      change(assets.from_lovelace(7_000_000)),
+      change_of(assets.from_lovelace(7_000_000)),
       payout(2_000_000),
     ],
     [stranger_key],
@@ -2528,7 +2337,7 @@ test spend_with_grant_rejects_the_grant_output_at_another_accounts_address() {
   )
   !spend_lovelace(
     interval.before(expiry - 1),
-    [relocated, change(assets.from_lovelace(8_000_000)), payout(2_000_000)],
+    [relocated, change_of(assets.from_lovelace(8_000_000)), payout(2_000_000)],
     [stranger_key],
   )
 }
@@ -2541,7 +2350,7 @@ test spend_with_grant_rejects_a_grant_datum_given_by_hash() {
   )
   !spend_lovelace(
     interval.before(expiry - 1),
-    [hashed, change(assets.from_lovelace(8_000_000)), payout(2_000_000)],
+    [hashed, change_of(assets.from_lovelace(8_000_000)), payout(2_000_000)],
     [stranger_key],
   )
 }
@@ -2553,7 +2362,7 @@ test spend_with_grant_rejects_a_reference_script_on_the_grant_output() {
   }
   !spend_lovelace(
     interval.before(expiry - 1),
-    [weighted, change(assets.from_lovelace(8_000_000)), payout(2_000_000)],
+    [weighted, change_of(assets.from_lovelace(8_000_000)), payout(2_000_000)],
     [stranger_key],
   )
 }
@@ -2576,7 +2385,7 @@ test spend_with_grant_rejects_a_deposit_under_a_datum_hash() {
 
 test spend_with_grant_rejects_a_deposit_with_a_reference_script() {
   let weighted = Output {
-    ..change(assets.from_lovelace(8_000_000)),
+    ..change_of(assets.from_lovelace(8_000_000)),
     reference_script: Some(script_hash),
   }
   !spend_lovelace(
@@ -2600,7 +2409,7 @@ test spend_with_grant_rejects_a_state_nft_sent_outside_the_account() {
     interval.before(expiry - 1),
     [
       grant_output(with_caps(lovelace_grant(), 2_000_000, 0), 2_000_000),
-      change(assets.from_lovelace(7_000_000)),
+      change_of(assets.from_lovelace(7_000_000)),
       payout(2_000_000),
       stray,
     ],
@@ -2624,7 +2433,7 @@ test spend_with_grant_rejects_a_stray_state_nft_among_the_inputs() {
       [control_reference()],
       [
         grant_output(spent_lovelace_grant(), 2_000_000),
-        change(assets.from_lovelace(8_000_000)),
+        change_of(assets.from_lovelace(8_000_000)),
         payout(2_000_000),
         output(
           other_account_address(),
@@ -2647,7 +2456,7 @@ test spend_with_grant_rejects_a_grant_token_minted() {
       [
         grant_output(spent_lovelace_grant(), 2_000_000),
         grant_output(Grant { ..lovelace_grant(), slot: 2 }, 2_000_000),
-        change(assets.from_lovelace(6_000_000)),
+        change_of(assets.from_lovelace(6_000_000)),
         payout(2_000_000),
       ],
       grant_token(stake_script_hash, 2),
@@ -2665,7 +2474,7 @@ test spend_with_grant_rejects_another_accounts_token_minted() {
       [
         grant_output(spent_lovelace_grant(), 2_000_000),
         other_control_output(state(), 2_000_000),
-        change(assets.from_lovelace(6_000_000)),
+        change_of(assets.from_lovelace(6_000_000)),
         payout(2_000_000),
       ],
       state_nft(other_stake_script_hash),
@@ -2693,7 +2502,7 @@ test spend_with_grant_rejects_two_accounts_under_one_logic_in_one_transaction() 
       [control_reference(), input(101, other_control_output(other, 2_000_000))],
       [
         grant_output(spent_lovelace_grant(), 2_000_000),
-        change(assets.from_lovelace(8_000_000)),
+        change_of(assets.from_lovelace(8_000_000)),
         payout(2_000_000),
         other_grant_output(spent_lovelace_grant(), 2_000_000),
         other_fund_output(assets.from_lovelace(8_000_000)),
@@ -2724,7 +2533,7 @@ test spend_with_grant_accepts_two_accounts_under_different_logics() {
     [control_reference(), input(101, other_control_output(other, 2_000_000))],
     [
       grant_output(spent_lovelace_grant(), 2_000_000),
-      change(assets.from_lovelace(8_000_000)),
+      change_of(assets.from_lovelace(8_000_000)),
       payout(2_000_000),
       other_grant_output(spent_lovelace_grant(), 2_000_000),
       other_fund_output(assets.from_lovelace(8_000_000)),
@@ -2763,7 +2572,7 @@ test sweep_grant_burns_a_grant_issued_before_an_upgrade() {
         AccountState { ..upgraded_state(), outstanding: 1 },
         2_000_000,
       ),
-      change(assets.from_lovelace(2_000_000)),
+      change_of(assets.from_lovelace(2_000_000)),
     ],
     grant_burn(0),
     [device_key],
@@ -2974,7 +2783,7 @@ test upgrade_rejects_a_burn_under_the_policy() {
         AccountState { ..upgraded_state(), outstanding: 1 },
         2_000_000,
       ),
-      change(assets.from_lovelace(2_000_000)),
+      change_of(assets.from_lovelace(2_000_000)),
     ],
     grant_burn(0),
     [device_key],
@@ -3166,7 +2975,7 @@ test withdraw_rejects_the_control_spent_and_referenced() {
 
 test withdraw_rejects_two_accounts_under_the_same_logic_spent() {
   !run(
-    transaction(
+    logic_transaction(
       [control_input(), input(1, other_control_output(state(), 2_000_000))],
       [
         control_output(state(), 2_000_000),
@@ -3192,6 +3001,77 @@ test withdraw_rejects_two_accounts_under_the_same_logic_referenced() {
             input(101, other_control_output(granted_state(), 2_000_000)),
           ],
         ),
+  )
+}
+
+/// The control UTxO spent and no other naming the logic: both handlers
+/// take the owner path and accept the device rewrite.
+test withdraw_dispatches_a_spent_control_like_the_shared_handler() {
+  dispatches_like_the_shared_handler(rewrite(state()), True)
+}
+
+/// The control UTxO referenced and no other naming the logic: both
+/// handlers take the agent path and accept the grant spend.
+test withdraw_dispatches_a_referenced_control_like_the_shared_handler() {
+  dispatches_like_the_shared_handler(
+    lovelace_spend(
+      interval.before(expiry - 1),
+      lovelace_spend_outputs(2_000_000),
+      [stranger_key],
+    ),
+    True,
+  )
+}
+
+/// The control UTxO spent and referenced at once: both handlers refuse
+/// before any path runs.
+test withdraw_dispatches_the_control_spent_and_referenced_like_the_shared_handler() {
+  dispatches_like_the_shared_handler(
+    rewrite(state()) |> referencing([control_input()]),
+    False,
+  )
+}
+
+/// No control UTxO naming the logic among the inputs or the reference
+/// inputs: both handlers take the arrival path and accept the creation.
+test withdraw_dispatches_no_control_like_the_shared_handler() {
+  dispatches_like_the_shared_handler(creation_with_state(state()), True)
+}
+
+/// The control UTxOs of two accounts naming the logic spent in one
+/// transaction: both handlers refuse before any path runs.
+test withdraw_dispatches_two_accounts_spent_like_the_shared_handler() {
+  dispatches_like_the_shared_handler(
+    logic_transaction(
+      [control_input(), input(1, other_control_output(state(), 2_000_000))],
+      [
+        control_output(state(), 2_000_000),
+        other_control_output(state(), 2_000_000),
+      ],
+      assets.zero,
+      [device_key],
+      interval.everything,
+    ),
+    False,
+  )
+}
+
+/// The control UTxOs of two accounts naming the logic referenced in one
+/// transaction: both handlers refuse before any path runs.
+test withdraw_dispatches_two_accounts_referenced_like_the_shared_handler() {
+  dispatches_like_the_shared_handler(
+    lovelace_spend(
+      interval.before(expiry - 1),
+      lovelace_spend_outputs(2_000_000),
+      [stranger_key],
+    )
+      |> referencing(
+          [
+            control_reference(),
+            input(101, other_control_output(granted_state(), 2_000_000)),
+          ],
+        ),
+    False,
   )
 }
 
