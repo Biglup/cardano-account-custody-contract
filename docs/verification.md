@@ -121,12 +121,19 @@ proves it between the deployed rules and a script whose code differs,
 each under its own credential, in both directions. The devnet run proves
 it on a chain.
 
-An adversarial or scenario test, one that builds a whole transaction and
-runs a handler or a shared rule over it, carries a `///` narration of the
-transaction it mounts and of the rule that refuses it. A plain unit or
-property test of a library function carries none: its name states the
-claim. The `budget_` tests follow the scenario rule, since their fixtures
-are scenarios.
+An `attack_` test, and any test declared `fail` that runs a handler or a
+shared rule over a transaction it builds or over the outputs of one,
+carries a `///` narration of the transaction it mounts and of the rule
+that refuses it.
+Every other scenario test, one the handler accepts or refuses with a
+returned False, carries one sentence on what the transaction proves, or
+none when its name says it. A plain unit or property test of a library
+function carries none, whether it passes or is declared `fail`: its name
+states the claim. A `budget_` test carries none either: the builder of
+the fixture it runs documents the path and the largest state. It carries
+one only where its name does not say what it measures: the input a
+handler scans to, the cost a baseline subtracts, or the bound a size
+test holds.
 
 Every `attack_` narration ends with the invariants of
 [invariants.md](security/invariants.md) the refusing rules enforce, as

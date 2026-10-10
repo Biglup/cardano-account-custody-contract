@@ -1,3 +1,10 @@
+//// Builders and fixtures for the hand made transactions the validator
+//// and library tests exercise. Every builder works against one
+//// fictitious account proxy, one logic and one account owner, and the
+//// fixtures are the states, grants, inputs, outputs and transactions
+//// several suites share, so tests only spell out what differs between
+//// cases.
+
 //
 // Copyright 2026 IOG.
 //
@@ -12,12 +19,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-// Builders and fixtures for the hand made transactions the validator
-// tests exercise. Every builder works against one fictitious account
-// proxy, one logic and one account owner, and the fixtures are the
-// states, grants, inputs, outputs and transactions several suites share,
-// so tests only spell out what differs between cases.
 
 // USINGS **********************************************************************
 
@@ -71,7 +72,9 @@ pub const device_key: VerificationKeyHash =
 pub const other_device_key: VerificationKeyHash =
   #"00000000000000000000000000000000000000000000000000000005"
 
-/// A verification key hash that is neither a device nor the owner.
+/// A verification key hash that is neither a device nor the owner. It is
+/// the grantee of both fixture grants, the key of `recipient_address` and
+/// the pool of `delegation`.
 pub const stranger_key: VerificationKeyHash =
   #"00000000000000000000000000000000000000000000000000000006"
 
@@ -97,7 +100,8 @@ pub fn other_account_address() -> Address {
   account.account_address(script_hash, other_stake_script_hash)
 }
 
-/// A plain key address, used as a destination outside the account.
+/// A plain key address under `stranger_key`, used as a destination
+/// outside the account and as the only recipient of `token_scope`.
 pub fn recipient_address() -> Address {
   address.from_verification_key(stranger_key)
 }
@@ -121,20 +125,20 @@ pub fn output(address: Address, value: Assets, datum: Datum) -> Output {
   Output { address, value, datum, reference_script: None }
 }
 
-/// One state NFT of the account identified by `stake_script_hash` under
-/// the test proxy.
+/// One state NFT, under the test proxy, of the account whose stake
+/// script hash is the argument.
 pub fn state_nft(stake_script_hash: ScriptHash) -> Assets {
   assets.from_asset(script_hash, stake_script_hash, 1)
 }
 
-/// A value holding some lovelace and the state NFT of the account
-/// identified by `stake_script_hash`.
+/// A value holding `lovelace` and the state NFT of the account whose
+/// stake script hash is the argument.
 pub fn control_value(stake_script_hash: ScriptHash, lovelace: Int) -> Assets {
   assets.merge(assets.from_lovelace(lovelace), state_nft(stake_script_hash))
 }
 
-/// One grant token of the account identified by `stake_script_hash` for
-/// `slot`, under the test proxy.
+/// One grant token, under the test proxy, of `slot` of the account whose
+/// stake script hash is the argument.
 pub fn grant_token(stake_script_hash: ScriptHash, slot: Int) -> Assets {
   assets.from_asset(
     script_hash,
@@ -143,8 +147,8 @@ pub fn grant_token(stake_script_hash: ScriptHash, slot: Int) -> Assets {
   )
 }
 
-/// A value holding some lovelace and the grant token of the account
-/// identified by `stake_script_hash` for `slot`.
+/// A value holding `lovelace` and the grant token of `slot` of the
+/// account whose stake script hash is the argument.
 pub fn grant_value(
   stake_script_hash: ScriptHash,
   slot: Int,
@@ -218,8 +222,9 @@ pub fn other_fund_output(value: Assets) -> Output {
   output(other_account_address(), value, NoDatum)
 }
 
-/// A transaction made of the given parts, with every other field left at
-/// its placeholder value.
+/// A transaction made of the given parts; every other field is empty or
+/// zero, as `transaction.placeholder` has it: no reference inputs,
+/// certificates, withdrawals or redeemers.
 pub fn transaction(
   inputs: List<Input>,
   outputs: List<Output>,
@@ -237,7 +242,7 @@ pub fn transaction(
   }
 }
 
-/// The transaction with the given reference inputs.
+/// The transaction with `reference_inputs` in place of any it carried.
 pub fn referencing(
   self: Transaction,
   reference_inputs: List<Input>,
@@ -245,8 +250,8 @@ pub fn referencing(
   Transaction { ..self, reference_inputs }
 }
 
-/// A certificate registering the stake credential of the account
-/// identified by `stake_script_hash`.
+/// A certificate registering, as a script credential, the stake script
+/// hash given as the argument.
 pub fn registration(stake_script_hash: ScriptHash) -> Certificate {
   RegisterCredential { credential: Script(stake_script_hash), deposit: Never }
 }
@@ -429,13 +434,14 @@ pub fn issued_state(count: Int) -> AccountState {
   AccountState { ..state(), next_slot: count, outstanding: count }
 }
 
-/// The state once slots 0 and 1 have been issued.
+/// The state once slots 0 and 1 have been issued, the same as
+/// `issued_state(2)`.
 pub fn granted_state() -> AccountState {
   AccountState { ..state(), next_slot: 2, outstanding: 2 }
 }
 
 /// The state once the account has moved to the next logic: the generation
-/// bumped so that every grant issued before is dead, everything else as
+/// raised so that every grant issued before is dead, everything else as
 /// the granted state.
 pub fn upgraded_state() -> AccountState {
   AccountState {
@@ -450,7 +456,7 @@ pub fn lovelace_asset() -> Asset {
   Asset { policy_id: assets.ada_policy_id, asset_name: assets.ada_asset_name }
 }
 
-/// A native asset under a policy that is not the account policy.
+/// A native asset under a policy that is not the proxy policy.
 pub fn token_asset() -> Asset {
   Asset {
     policy_id: #"00000000000000000000000000000000000000000000000000000099",
@@ -463,7 +469,8 @@ pub fn token(quantity: Int) -> Assets {
   assets.from_asset(token_asset().policy_id, token_asset().asset_name, quantity)
 }
 
-/// One token under a policy that is not the account policy.
+/// One token under the policy of `token_asset` with another asset name,
+/// `"other"`: a second asset class a token scope does not cover.
 pub fn other_token() -> Assets {
   assets.from_asset(token_asset().policy_id, "other", 1)
 }
@@ -617,7 +624,7 @@ pub fn without_withdrawals(self: Transaction) -> Transaction {
 
 /// A transaction creating the account under test with the given outputs
 /// and mint, its registration published through the stake script and the
-/// test logic withdrawing.
+/// test logic withdrawing. It has no inputs and an open validity range.
 pub fn creation(
   outputs: List<Output>,
   minted: Assets,
@@ -647,8 +654,8 @@ pub fn owner_transaction(
 }
 
 /// The upgrade of the granted account to the next logic: a device rewrite
-/// of its control UTxO into `next`, with the old and the new logic
-/// withdrawing.
+/// of its control UTxO into `next`, with `Device` on the control input
+/// and the old and the new logic withdrawing.
 pub fn upgrade_into(next: AccountState) -> Transaction {
   transaction(
     [input(0, control_output(granted_state(), 2_000_000))],

@@ -39,6 +39,14 @@ off-chain code loads it directly. Continuous integration runs the three
 commands above and fails when the built `plutus.json` differs from the
 committed one.
 
+`aiken docs -o build/docs` renders the `///` and `////` comments of the
+library modules as an HTML reference under `build/docs`, which
+`.gitignore` covers. Always pass `-o`: without it the command writes the
+same files into the hand written `docs/` tree, where nothing ignores
+them. Validators do not render; their headers live in the source only.
+Continuous integration renders the reference, so a comment that breaks
+rendering fails the build.
+
 Continuous integration also runs `aiken check -D -t silent`, which
 compiles the traces out as `aiken build` does, and holds the execution
 units of every `budget_` test against `offchain/budgets.json`. The gate

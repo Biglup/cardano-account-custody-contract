@@ -58,7 +58,7 @@ const third_logic_hash =
 
 // FUNCTIONS *******************************************************************
 
-/// The fresh state once a device rewrite adds a second device and bumps
+/// The fresh state once a device rewrite adds a second device and raises
 /// the generation.
 fn rewritten_state() -> AccountState {
   AccountState {
@@ -549,10 +549,14 @@ test create_account_rejects_a_grant_token_beside_the_state_nft() {
   )
 }
 
+/// A creation minting the state NFT with a payout as its only output: the
+/// arrival path finds no control output naming this logic and aborts.
 test create_account_rejects_a_missing_control_output() fail {
   run(creation([payout(1)], state_nft(stake_script_hash), [device_key]))
 }
 
+/// A creation with two control outputs naming this logic: the arrival path
+/// finds two where it expects one and aborts.
 test create_account_rejects_two_control_outputs() fail {
   run(
     creation(
@@ -570,6 +574,9 @@ test create_account_rejects_a_control_output_naming_another_logic() fail {
   run(creation_with_state(AccountState { ..state(), logic: next_logic_hash }))
 }
 
+/// A creation whose control datum is an integer: the arrival path reads the
+/// logic field of the output holding the state NFT, finds no constructor
+/// and aborts.
 test create_account_rejects_a_malformed_state_datum() fail {
   let data: Data = 42
   let malformed = output(
@@ -580,6 +587,9 @@ test create_account_rejects_a_malformed_state_datum() fail {
   run(creation([malformed], state_nft(stake_script_hash), [device_key]))
 }
 
+/// A creation whose control output carries its state by datum hash: an
+/// output without an inline datum names no logic, so the arrival path finds
+/// no control output and aborts.
 test create_account_rejects_a_state_datum_given_by_hash() fail {
   let hashed = output(
     account_address(),
@@ -666,6 +676,9 @@ test device_rejects_an_ill_formed_new_state() {
   !run(rewrite(AccountState { ..state(), devices: [] }))
 }
 
+/// A device spend recreating the control output under an inline datum that
+/// is an integer: the `Device` rule reads the logic field of the control
+/// output, finds no constructor and aborts.
 test device_rejects_a_malformed_state_datum() fail {
   let data: Data = 42
   let malformed = output(
@@ -824,10 +837,14 @@ test device_rejects_a_control_output_at_another_stake_credential() {
   !run(owner_transaction(state(), [], [misplaced], assets.zero))
 }
 
+/// A device spend of the control UTxO with a payout as its only output: the
+/// `Device` rule finds no control output of the account and aborts.
 test device_rejects_a_missing_control_output() fail {
   run(owner_transaction(state(), [], [payout(2_000_000)], assets.zero))
 }
 
+/// A device spend recreating the control UTxO twice: the `Device` rule
+/// finds no single control output and aborts.
 test device_rejects_two_control_outputs() fail {
   run(
     owner_transaction(
@@ -1014,6 +1031,9 @@ test device_rejects_another_accounts_grant_token_minted() {
   )
 }
 
+/// An issuance minting the grant token of slot 0 in quantity two with no
+/// grant output: the issue rule finds no output holding the token and
+/// aborts.
 test device_rejects_a_grant_token_minted_in_quantity_two() fail {
   run(
     issue_transaction(
@@ -1218,6 +1238,9 @@ test sweep_grant_rejects_a_datum_whose_slot_differs_from_the_token() {
   )
 }
 
+/// A device spend in which the deposit carries the `SweepGrant` redeemer:
+/// the sweep rule reads the inline datum of a UTxO that carries none and
+/// aborts.
 test sweep_grant_rejects_a_fund_input() fail {
   let tx = owner_transaction(
     state(),
@@ -1389,6 +1412,8 @@ test issue_grants_rejects_a_missing_control_input() fail {
   )
 }
 
+/// An issuance of slot 0 whose only output is the grant UTxO: the issue
+/// rule finds no control output of the account and aborts.
 test issue_grants_rejects_a_missing_control_output() fail {
   run(
     issue_transaction(
@@ -1561,6 +1586,8 @@ test issue_grants_rejects_an_ill_formed_scope() {
   )
 }
 
+/// An issuance of slot 0 whose grant token lands in no output: the issue
+/// rule finds no output holding the token and aborts.
 test issue_grants_rejects_a_grant_token_in_no_output() fail {
   run(
     issue_transaction(
@@ -1570,6 +1597,8 @@ test issue_grants_rejects_a_grant_token_in_no_output() fail {
   )
 }
 
+/// An issuance of slot 0 whose grant token lands in two outputs: the issue
+/// rule finds no single output holding the token and aborts.
 test issue_grants_rejects_a_grant_token_in_two_outputs() fail {
   run(
     issue_transaction(
@@ -1583,6 +1612,9 @@ test issue_grants_rejects_a_grant_token_in_two_outputs() fail {
   )
 }
 
+/// An issuance of slot 0 whose grant output carries its grant by datum
+/// hash: the issue rule reads the grant of an output without an inline
+/// datum and aborts.
 test issue_grants_rejects_a_grant_datum_given_by_hash() fail {
   let hashed = output(
     account_address(),
@@ -1597,6 +1629,8 @@ test issue_grants_rejects_a_grant_datum_given_by_hash() fail {
   )
 }
 
+/// An issuance of slot 0 whose grant output carries an integer inline: the
+/// issue rule reads it as a grant and aborts.
 test issue_grants_rejects_a_malformed_grant_datum() fail {
   let data: Data = 42
   let malformed = output(
@@ -2215,6 +2249,9 @@ test spend_with_grant_rejects_a_grantee_that_did_not_sign() {
   )
 }
 
+/// A grant spend in which the deposit carries the `SpendWithGrant`
+/// redeemer: the grant spend rule reads the grant of a UTxO without an
+/// inline datum and aborts.
 test spend_with_grant_rejects_a_fund_input() fail {
   run(
     lovelace_spend(
@@ -2240,6 +2277,9 @@ test spend_with_grant_rejects_the_control_utxo() {
   )
 }
 
+/// A grant spend whose outputs hold the change and the payout and no grant
+/// output: the grant spend rule finds no output holding the grant token and
+/// aborts.
 test spend_with_grant_rejects_a_missing_grant_output() fail {
   spend_lovelace(
     interval.before(expiry - 1),
@@ -2248,6 +2288,9 @@ test spend_with_grant_rejects_a_missing_grant_output() fail {
   )
 }
 
+/// A grant spend handing back two grant outputs of the spent slot: the
+/// grant spend rule finds no single output holding the grant token and
+/// aborts.
 test spend_with_grant_rejects_two_grant_outputs() fail {
   spend_lovelace(
     interval.before(expiry - 1),
@@ -2551,7 +2594,7 @@ test upgrade_is_accepted_by_a_device() {
 }
 
 /// The upgrade carries the counters the owner writes: the outstanding
-/// grants, dead under the bumped generation, stay counted so that they
+/// grants, dead under the raised generation, stay counted so that they
 /// can be swept under the new logic.
 test upgrade_keeps_the_counters_the_owner_writes() {
   upgrades(
@@ -3120,6 +3163,8 @@ test withdraw_accepts_a_referenced_control_with_nothing_to_validate() {
   )
 }
 
+/// The logic run under a key credential: the withdraw handler reads its
+/// credential as a script and aborts.
 test withdraw_rejects_a_key_credential() fail {
   logic_v1.logic_v1.withdraw(
     script_hash,
@@ -3172,6 +3217,8 @@ test publish_rejects_a_registration_with_a_delegation() {
   )
 }
 
+/// The logic run under a voting purpose: the `else` handler aborts on every
+/// purpose but withdraw and publish.
 test else_fails_for_any_other_purpose() fail {
   let redeemer: Data = Run
   let context = ScriptContext {

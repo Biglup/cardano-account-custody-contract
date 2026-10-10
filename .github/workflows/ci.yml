@@ -18,6 +18,7 @@ jobs:
       - run: mkdir -p build && aiken check -D > build/check.json
       - run: aiken build
       - run: git diff --exit-code plutus.json
+      - run: aiken docs -o build/docs
       - uses: actions/setup-node@v4
         with:
           node-version: 22

@@ -236,7 +236,7 @@ fn creation_under(logic: ByteArray) -> Transaction {
 
 /// The move of an account holding one grant from `from` to `to`: a
 /// rewrite of the control UTxO with `to` in its first field and the
-/// generation bumped, both logics withdrawing, signed by `signer`.
+/// generation raised, both logics withdrawing, signed by `signer`.
 fn move(from: ByteArray, to: ByteArray, signer: ByteArray) -> Transaction {
   let current = granted(state_under(from))
   test_helpers.transaction(
@@ -340,6 +340,8 @@ test downgrade_to_the_deployed_logic_rejects_a_grantee() {
   !run_second(tx) && run_deployed(tx)
 }
 
+/// The second logic run under a key credential: the withdraw handler reads
+/// its credential as a script and aborts.
 test withdraw_rejects_a_key_credential() fail {
   logic_v2.logic_v2.withdraw(
     script_hash,
@@ -367,6 +369,8 @@ test publish_rejects_a_deregistration() {
   )
 }
 
+/// The second logic run under a voting purpose: the `else` handler aborts
+/// on every purpose but withdraw and publish.
 test else_fails_for_any_other_purpose() fail {
   let redeemer: Data = Run
   let context = ScriptContext {

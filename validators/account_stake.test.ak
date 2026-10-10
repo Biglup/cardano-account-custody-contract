@@ -317,6 +317,9 @@ test publish_rejects_a_registration_with_a_delegation_with_the_owner_outside_the
   )
 }
 
+/// A registration over a creation with no outputs: the owner signs and the
+/// state NFT is minted, so the stake script looks for the control output
+/// listing the owner, finds none and aborts.
 test publish_rejects_a_registration_without_a_control_output() fail {
   let tx = Transaction {
     ..creation_publishing(
@@ -329,6 +332,9 @@ test publish_rejects_a_registration_without_a_control_output() fail {
   register(tx)
 }
 
+/// A registration whose control output sits at the other account's address:
+/// no output is a control output of the account, so the stake script
+/// aborts.
 test publish_rejects_a_registration_with_the_control_output_at_another_account() fail {
   register(
     creation_with_control(
@@ -341,6 +347,9 @@ test publish_rejects_a_registration_with_the_control_output_at_another_account()
   )
 }
 
+/// A registration whose control output carries no datum: an output without
+/// an inline datum is no control output, so the stake script finds none and
+/// aborts.
 test publish_rejects_a_registration_with_a_control_output_without_an_inline_state() fail {
   register(
     creation_with_control(
@@ -353,6 +362,9 @@ test publish_rejects_a_registration_with_a_control_output_without_an_inline_stat
   )
 }
 
+/// A registration whose control output carries its state by datum hash: an
+/// output without an inline datum is no control output, so the stake script
+/// finds none and aborts.
 test publish_rejects_a_registration_with_a_control_output_under_a_datum_hash() fail {
   register(
     creation_with_control(
@@ -365,6 +377,9 @@ test publish_rejects_a_registration_with_a_control_output_under_a_datum_hash() f
   )
 }
 
+/// A registration whose control output carries a grant inline: the stake
+/// script reads the second field of the datum as the device list, finds the
+/// grantee key instead and aborts.
 test publish_rejects_a_registration_with_a_control_output_carrying_a_grant() fail {
   register(
     creation_with_control(
@@ -426,10 +441,16 @@ test publish_rejects_a_delegation_without_a_device_signature() {
   )
 }
 
+/// A delegation signed by the owner with no control UTxO spent or
+/// referenced: the stake script finds no control UTxO to read the devices
+/// from and aborts.
 test publish_rejects_a_delegation_signed_by_the_owner_alone_without_the_control() fail {
   publish(delegation(), publication(delegation(), [], [device_key]))
 }
 
+/// A delegation signed by a device over the other account's control UTxO
+/// referenced: it is no control UTxO of this account, so the stake script
+/// finds none and aborts.
 test publish_rejects_a_delegation_over_another_accounts_control() fail {
   let other = input(
     0,
@@ -490,10 +511,16 @@ test withdraw_rejects_a_missing_device_signature() {
   )
 }
 
+/// A withdrawal signed by the owner with no control UTxO spent or
+/// referenced: the stake script finds no control UTxO to read the devices
+/// from and aborts.
 test withdraw_rejects_the_owner_signature_alone_without_the_control() fail {
   withdraw(withdrawal(1_000_000, [], [], [device_key]))
 }
 
+/// A withdrawal signed by a device over the other account's control UTxO
+/// referenced: it is no control UTxO of this account, so the stake script
+/// finds none and aborts.
 test withdraw_rejects_another_accounts_control() fail {
   let other = input(
     0,
@@ -506,6 +533,9 @@ test withdraw_rejects_another_accounts_control() fail {
   withdraw(withdrawal(1_000_000, [], [other], [device_key]))
 }
 
+/// A withdrawal over a referenced UTxO at the account address that carries
+/// a state inline but no state NFT: it is no control UTxO, so the stake
+/// script finds none and aborts.
 test withdraw_rejects_a_control_that_lacks_the_state_nft() fail {
   let forged = input(
     0,
@@ -518,6 +548,9 @@ test withdraw_rejects_a_control_that_lacks_the_state_nft() fail {
   withdraw(withdrawal(1_000_000, [], [forged], [device_key]))
 }
 
+/// A withdrawal over a referenced UTxO holding the state NFT under no
+/// datum: an output without an inline datum is no control UTxO, so the
+/// stake script finds none and aborts.
 test withdraw_rejects_a_control_without_an_inline_state() fail {
   let bare = input(
     0,
@@ -530,10 +563,16 @@ test withdraw_rejects_a_control_without_an_inline_state() fail {
   withdraw(withdrawal(1_000_000, [], [bare], [device_key]))
 }
 
+/// A withdrawal over a referenced grant UTxO whose grantee is the signing
+/// device: it holds no state NFT, so the stake script finds no control UTxO
+/// and aborts.
 test withdraw_rejects_a_grant_utxo_posing_as_the_control() fail {
   withdraw(withdrawal(1_000_000, [], [device_grant_input()], [device_key]))
 }
 
+/// A delegation over a referenced grant UTxO whose grantee is the signing
+/// device: it holds no state NFT, so the stake script finds no control UTxO
+/// and aborts.
 test publish_rejects_a_delegation_over_a_grant_utxo() fail {
   publish(
     delegation(),
@@ -541,11 +580,15 @@ test publish_rejects_a_delegation_over_a_grant_utxo() fail {
   )
 }
 
+/// A withdrawal over a spent deposit and no control UTxO: a deposit is no
+/// control UTxO, so the stake script finds none and aborts.
 test withdraw_rejects_a_deposit_posing_as_the_control() fail {
   let deposit = input(1, fund_output(assets.from_lovelace(5_000_000)))
   withdraw(withdrawal(1_000_000, [deposit], [], [device_key]))
 }
 
+/// The stake script run under a key credential: the withdraw handler reads
+/// its credential as a script and aborts.
 test withdraw_rejects_a_key_credential() fail {
   account_stake.account_stake.withdraw(
     device_key,
@@ -556,6 +599,8 @@ test withdraw_rejects_a_key_credential() fail {
   )
 }
 
+/// The stake script run under a voting purpose: the `else` handler aborts
+/// on every purpose but withdraw and publish.
 test else_fails_for_any_other_purpose() fail {
   let redeemer: Data = Operate
   let context = ScriptContext {

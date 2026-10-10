@@ -199,10 +199,15 @@ test recreates_control_output_rejects_extra_tokens_on_the_control() {
   !recreates(device_transaction([parked], assets.zero))
 }
 
+/// A device spend of the granted control UTxO into no outputs: the rule
+/// finds no control output of the account and aborts.
 test recreates_control_output_fails_without_a_control_output() fail {
   recreates(device_transaction([], assets.zero))
 }
 
+/// A device spend recreating the control output under an inline datum that
+/// is an integer: the rule reads the logic field of a datum that is no
+/// constructor and aborts.
 test recreates_control_output_fails_for_a_datum_without_a_logic_field() fail {
   let data: Data = 42
   recreates(
@@ -284,6 +289,9 @@ test recreates_control_output_rejects_a_mint_during_an_upgrade() {
   )
 }
 
+/// An upgrade whose control output carries the account's state NFT at the
+/// other account's address, the next logic withdrawing: no output is a
+/// control output of the account, so the rule aborts.
 test recreates_control_output_rejects_an_upgrade_output_at_another_address() fail {
   recreates(
     device_transaction(
@@ -395,12 +403,16 @@ test issues_grant_rejects_a_reference_script_on_the_output() {
   )
 }
 
+/// An issuance of slot 2 whose only output is a payout holding no grant
+/// token: the rule finds no output holding the token and aborts.
 test issues_grant_fails_without_an_output_holding_the_token() fail {
   issues(
     [output(recipient_address(), assets.from_lovelace(1), transaction.NoDatum)],
   )
 }
 
+/// An issuance of slot 2 whose grant output carries no datum: the rule
+/// reads the grant of an output without an inline datum and aborts.
 test issues_grant_fails_for_an_output_without_a_grant_datum() fail {
   issues(
     [

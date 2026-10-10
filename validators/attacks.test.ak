@@ -714,7 +714,7 @@ test attack_datum_hijacking_grant_spend_raises_its_own_cap() {
 }
 
 /// The grantee rewrites its grant with a later generation, so that a
-/// revoke all by generation bump would not reach it.
+/// revoke all that raises the generation would not reach it.
 /// Proves INV-39.
 test attack_datum_hijacking_grant_spend_advances_its_own_generation() {
   !spend_lovelace_grant(
@@ -2352,7 +2352,7 @@ test attack_utxo_contention_grant_spend_after_a_revoke() {
   !run(tx)
 }
 
-/// The same after a revoke all, which bumps the generation instead.
+/// The same after a revoke all, which raises the generation instead.
 /// Proves INV-32.
 test attack_utxo_contention_grant_spend_after_a_generation_bump() {
   let bumped = AccountState {
@@ -2370,7 +2370,7 @@ test attack_utxo_contention_grant_spend_after_a_generation_bump() {
   !run(tx)
 }
 
-/// The same after an upgrade, which bumps the generation under the new
+/// The same after an upgrade, which raises the generation under the new
 /// logic: the grant issued before is dead whichever logic the agent
 /// attaches.
 /// Proves INV-10 and INV-32.
@@ -2956,7 +2956,7 @@ test budget_proxy_largest_state_fund_spend_among_eight_deposits() {
 }
 
 /// A revoke of the largest lovelace grant over the full revoked list: the
-/// oldest slot is dropped to make room, as the owner would before bumping
+/// oldest slot is dropped to make room, as the owner would before raising
 /// the generation.
 fn largest_state_device_revoke_transaction() -> Transaction {
   let next = AccountState {
@@ -2984,7 +2984,7 @@ test budget_logic_largest_state_device_revoke() {
 }
 
 /// A device rewrite over the largest state: the last device replaced by
-/// the owner, the full revoked list kept and the generation bumped.
+/// the owner, the full revoked list kept and the generation raised.
 fn largest_state_rewrite_transaction() -> Transaction {
   let next = AccountState {
     ..largest_state(),
@@ -3009,7 +3009,7 @@ test budget_logic_largest_state_device_rewrite() {
 }
 
 /// The upgrade of the largest state to the next logic: the full revoked
-/// list and the outstanding count kept, the generation bumped, both logics
+/// list and the outstanding count kept, the generation raised, both logics
 /// withdrawing.
 fn largest_state_upgrade_transaction() -> Transaction {
   let next = AccountState {

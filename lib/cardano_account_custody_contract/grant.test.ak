@@ -81,7 +81,7 @@ fn empty_scope() -> Scope {
   }
 }
 
-/// The granted state with its generation bumped to 1.
+/// The granted state with its generation raised to 1.
 fn bumped_state() -> AccountState {
   AccountState { ..granted_state(), grant_generation: 1 }
 }

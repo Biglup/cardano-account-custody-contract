@@ -294,6 +294,8 @@ test create_account_rejects_a_logic_pointer_shorter_than_a_script_hash() {
   !proxy_mint(CreateAccount, tx)
 }
 
+/// A creation whose control datum carries an integer where the logic hash
+/// belongs: the proxy reads the first field as bytes and aborts.
 test create_account_rejects_a_logic_pointer_that_is_not_a_byte_string() fail {
   let logic: Data = 8
   let devices: Data = state().devices
@@ -315,6 +317,8 @@ test create_account_rejects_a_logic_pointer_that_is_not_a_byte_string() fail {
   )
 }
 
+/// A creation whose control datum is a constructor with no fields: the
+/// proxy finds no logic field and aborts.
 test create_account_rejects_a_datum_without_fields() fail {
   let bare: Data = builtin.constr_data(0, [])
   proxy_mint(
@@ -438,10 +442,14 @@ test create_account_rejects_a_name_shorter_than_a_stake_script_hash() {
   !proxy_mint(CreateAccount, tx)
 }
 
+/// A creation minting the state NFT with a payout as its only output: the
+/// proxy finds no control output of the account and aborts.
 test create_account_rejects_a_missing_control_output() fail {
   create([payout(1)], state_nft(stake_script_hash), [device_key])
 }
 
+/// A creation with two control outputs holding the state NFT: the proxy
+/// finds no single control output and aborts.
 test create_account_rejects_two_control_outputs() fail {
   create(
     [control_output(state(), 2_000_000), control_output(state(), 2_000_000)],
@@ -450,6 +458,9 @@ test create_account_rejects_two_control_outputs() fail {
   )
 }
 
+/// A creation placing the state NFT at the other account's address: no
+/// output is a control output of the account the NFT names, so the proxy
+/// aborts.
 test create_account_rejects_a_control_output_at_another_stake_credential() fail {
   proxy_mint(
     CreateAccount,
@@ -463,6 +474,9 @@ test create_account_rejects_a_control_output_at_another_stake_credential() fail 
   )
 }
 
+/// A creation placing the state NFT at the proxy address with no stake
+/// credential: no output is a control output of the account, so the proxy
+/// aborts.
 test create_account_rejects_a_control_output_without_a_stake_credential() fail {
   proxy_mint(
     CreateAccount,
@@ -476,6 +490,8 @@ test create_account_rejects_a_control_output_without_a_stake_credential() fail {
   )
 }
 
+/// A creation whose control datum is an integer: the proxy reads the logic
+/// field of a datum that is no constructor and aborts.
 test create_account_rejects_a_malformed_state_datum() fail {
   let data: Data = 42
   proxy_mint(
@@ -490,6 +506,9 @@ test create_account_rejects_a_malformed_state_datum() fail {
   )
 }
 
+/// A creation whose control output carries its state by datum hash: an
+/// output without an inline datum is no control output, so the proxy finds
+/// none and aborts.
 test create_account_rejects_a_state_datum_given_by_hash() fail {
   proxy_mint(
     CreateAccount,
@@ -606,6 +625,9 @@ test issue_grants_rejects_a_mint_without_the_control_utxo() {
   !proxy_mint(IssueGrants, tx)
 }
 
+/// An `IssueGrants` redeemer over a transaction that mints nothing under
+/// the proxy policy: the proxy reads the first minted name and aborts on
+/// the empty mint.
 test issue_grants_rejects_an_empty_mint() fail {
   proxy_mint(
     IssueGrants,
@@ -1021,6 +1043,9 @@ test fund_rejects_a_grant_utxo_itself() {
   !proxy_spend(grant_data(lovelace_grant()), Fund, 0, grant_transaction())
 }
 
+/// A `Fund` spend of a UTxO at the proxy address with no stake credential,
+/// beside the control UTxO: the proxy reads the stake script hash of its
+/// own input and aborts.
 test spend_rejects_an_input_without_a_stake_credential() fail {
   let stray = input(
     1,
@@ -1313,6 +1338,9 @@ test spend_rejects_a_control_whose_datum_is_given_by_hash() {
   !proxy_spend(None, Device, 1, tx)
 }
 
+/// A `Device` spend of a deposit beside a control UTxO whose inline datum
+/// is an integer: the proxy reads the logic field of the control datum to
+/// find the logic to require and aborts.
 test spend_rejects_a_control_whose_datum_has_no_logic_field() fail {
   let data: Data = 42
   let bare = input(
