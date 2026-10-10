@@ -40,7 +40,7 @@ use cardano_account_custody_contract/types.{LogicRedeemer}
 /// logic leaves to the execution budget. Eight grants with eight
 /// recipients each issue or sweep within half of the memory limit and
 /// sixteen exceed it, so the bound is the batch the off-chain builders
-/// already apply; see the security review, Resource exhaustion.
+/// apply.
 pub const max_grant_batch = 8
 
 // VALIDATORS ******************************************************************

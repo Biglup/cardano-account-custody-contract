@@ -32,25 +32,11 @@ use cardano_account_custody_contract/types.{StakeRedeemer}
 /// The account's stake validator, applied to the account's initial device
 /// key as `owner` and the account proxy's hash as `proxy_hash`. Its
 /// script hash is the account's stake credential, the name of its state
-/// NFT and the prefix of its grant token names, so every user has their
-/// own stake script, address and reward account. The script reads the
-/// devices from the second field of the control datum and nothing else of
-/// the state, so it answers to no logic version and keeps rewards and
-/// delegation under the devices whatever logic the account runs. See
-/// README, Stake script.
-///
-/// Publish: registering the credential, alone or with a delegation, is the
-/// act that creates the account and needs the owner's signature, exactly
-/// one state NFT of the credential minted under the account policy and the
-/// owner among the devices of the control output that holds it, so a
-/// registration can neither strand the credential without an account nor
-/// create one the owner is locked out of; a delegation change needs a
-/// device of the account, read from the control UTxO spent or referenced;
-/// deregistration and every other certificate are refused, so the
-/// credential stays registered for the life of the account.
-///
-/// Withdraw: any withdrawal from the reward account, including zero, needs
-/// a device of the account.
+/// NFT and the prefix of its grant token names. It reads only the devices
+/// from the control datum, so it answers to no logic version. Publish:
+/// registering the credential creates the account and needs the owner;
+/// delegating needs a device; every other certificate is refused.
+/// Withdraw needs a device.
 validator account_stake(owner: VerificationKeyHash, proxy_hash: ScriptHash) {
   withdraw(_redeemer: StakeRedeemer, credential: Credential, self: Transaction) {
     expect Script(stake_script_hash) = credential
@@ -97,8 +83,7 @@ fn is_authorised_by_a_device(
 /// Whether the transaction creates the account named by `stake_script_hash`
 /// with the owner in it: the owner signs, the account policy mints exactly
 /// one token named after the credential, and the control output holding
-/// that token lists the owner among its devices. See README, Registration
-/// gated creation.
+/// that token lists the owner among its devices.
 fn creates_the_account(
   self: Transaction,
   owner: VerificationKeyHash,

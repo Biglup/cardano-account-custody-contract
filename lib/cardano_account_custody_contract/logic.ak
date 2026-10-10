@@ -39,9 +39,9 @@ use cardano_account_custody_contract/types.{
 /// exactly one, referenced, is the agent path; none is an arrival, which
 /// creates the account or receives it from another logic; two, spent and
 /// referenced at once or of two accounts, are refused: one account per
-/// logic version per transaction. A later version adds its own rules
-/// beside this one; the first version writes this dispatch out in its
-/// handler, since a call in its place would change its compiled code.
+/// logic version per transaction. `validators/logic_v1.ak` holds the
+/// frozen dispatch of the deployed logic; this function is the source for
+/// later logic versions.
 pub fn validates_withdrawal(
   own_hash: ScriptHash,
   proxy_hash: ScriptHash,

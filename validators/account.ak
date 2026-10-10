@@ -26,62 +26,14 @@ use cardano_account_custody_contract/types.{
 
 // VALIDATORS ******************************************************************
 
-/// The account proxy, the permanent part of every account. Its script hash
-/// is the policy id of every account token and the payment credential of
-/// every account address; the stake part of an address is the account's
-/// own `account_stake` script hash, which names the account's state NFT
-/// and prefixes its grant token names. No redeemer burns a state NFT, so
-/// an account is permanent and holds exactly one control UTxO from
-/// creation on. The proxy owns the naming, the quantity and the placement
-/// of every account token, permanent on every path, and no rule about
-/// the account's state beyond the first field of the control datum, the
-/// hash of the logic script that governs the account: every spend except
-/// a plain `Fund` and every
-/// mint except `CreateAccount` requires exactly one control UTxO of the
-/// account, spent or referenced, and a withdrawal from the logic it
-/// names, which makes the ledger run that logic once over the whole
-/// transaction. The logic reads the proxy redeemers from the script
-/// context and applies the rules of its version. The withdrawal's amount
-/// is not read: a non zero amount is accepted and harmless, since the
-/// logic runs either way and the reward account is the logic's own. Any
-/// registered script credential may be named as a logic; the proxy admits
-/// every 28 byte hash and the signer's list of known logic hashes is the
-/// gate against an unknown one. See README, Design.
-///
-/// Mint, `CreateAccount`: mints exactly one state NFT named after a stake
-/// credential; the account stake script runs on a certificate registering
-/// that credential; the NFT lands in a single control output at its own
-/// account address holding only lovelace and the NFT, with no reference
-/// script; every account token in the outputs sits at its own account
-/// address; the control datum is inline and names a script hash in its
-/// first field, and the transaction
-/// withdraws from that hash, so the initial logic validates the state.
-/// `IssueGrants` and `BurnGrants`: every minted entry is a grant token
-/// name prefixed by one account's stake script hash, in quantity one
-/// under `IssueGrants` and minus one under `BurnGrants`; the control UTxO
-/// of that account is present and its logic runs; under `IssueGrants`
-/// every account token in the outputs sits at its own account address.
-/// A state NFT name is 28 bytes and never a grant name, so only
-/// `CreateAccount` ever mints one, and no mint touches another account's
-/// tokens whatever the logic allows. Under logic v1 two accounts under
-/// different logics cannot share a transaction when either mints, since
-/// each logic validates the mint as its own account's.
-///
-/// Spend, `Fund`: the UTxO holds no account token; with no datum some input
-/// at the address holds an account token, with any datum the control UTxO
-/// is spent. `Device`, `SpendWithGrant` and `SweepGrant`: the control UTxO
-/// of the UTxO's own account is present and its logic runs; when the UTxO
-/// holds any account token, every account token in the outputs sits in
-/// quantity one at the address its name denotes, so a grant token of one
-/// account never lands among another account's UTxOs, where no path
-/// spends it; when the UTxO holds the state NFT, exactly one output holds
-/// that NFT, at the same address, under an inline datum, with nothing but
-/// lovelace beside it and no reference script. Both hold whatever the
-/// logic says, so no logic version can relocate, duplicate or encumber
-/// the control UTxO or misplace a grant token. These arms run once per
-/// input, so they read nothing of the transaction but the inputs, the
-/// reference inputs, the outputs and the withdrawals; every other check
-/// belongs to the logic, which runs once.
+/// The account proxy, the permanent part of every account. Its script
+/// hash is the policy id of every account token and the payment
+/// credential of every account address. It pins the naming, quantity and
+/// placement of every account token and keeps the control UTxO in place;
+/// every other rule belongs to the logic the control datum names, which
+/// every path but a plain `Fund` runs through a withdrawal. Mint takes
+/// `CreateAccount`, `IssueGrants` and `BurnGrants`; spend takes `Fund`,
+/// `Device`, `SpendWithGrant` and `SweepGrant`.
 validator account {
   mint(redeemer: MintRedeemer, policy_id: PolicyId, self: Transaction) {
     let minted = assets.tokens(self.mint, policy_id) |> dict.to_pairs

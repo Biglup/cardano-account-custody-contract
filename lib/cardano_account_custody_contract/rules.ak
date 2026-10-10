@@ -38,7 +38,7 @@ use cardano_account_custody_contract/types.{AccountState}
 /// and outputs sits at its own account address; a single valid control
 /// output recreates the NFT, under this logic with a non decreasing
 /// generation and counters that follow the grant tokens minted and
-/// burned, or under another logic as an upgrade. See README, Owner path.
+/// burned, or under another logic as an upgrade.
 pub fn device_rule(
   own: Output,
   old: AccountState,
@@ -72,8 +72,7 @@ pub fn device_rule(
 /// spent but its remaining caps, each reduced by at least what left and
 /// never below zero, and no reference script; nothing is minted under the
 /// policy. Placement already pins the grant output to the account
-/// address, so the address rule on it is defence in depth. See README,
-/// Agent path.
+/// address, so the address rule on it is defence in depth.
 pub fn grant_spend_rule(
   own: Output,
   control_state: AccountState,

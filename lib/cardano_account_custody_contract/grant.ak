@@ -180,8 +180,7 @@ pub fn pays_only_recipients(
 }
 
 /// Whether every output paid back to the account that holds no account
-/// token is a plain deposit: no datum and no reference script. See README,
-/// Agent spend checks.
+/// token is a plain deposit: no datum and no reference script.
 pub fn deposits_are_plain(
   outputs: List<Output>,
   account_address: Address,
@@ -269,8 +268,7 @@ fn is_grant_within(actual: Grant, expected: Grant) -> Bool {
   }
 }
 
-/// Whether the output carries no reference script. See README, Agent spend
-/// checks.
+/// Whether the output carries no reference script.
 pub fn carries_no_reference_script(output: Output) -> Bool {
   output.reference_script == None
 }

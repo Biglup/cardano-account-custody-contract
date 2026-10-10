@@ -333,7 +333,7 @@ pub fn has_control_input(
 /// Whether every token of the account policy among the outputs is held in
 /// quantity one by an output at the account address its name denotes: a
 /// state NFT at the address of its name, a grant token at the address of
-/// its prefix. See README, State NFT placement.
+/// its prefix.
 pub fn tokens_sit_at_their_own_addresses(
   outputs: List<Output>,
   script_hash: ScriptHash,
@@ -384,7 +384,7 @@ pub fn mints_grants_of(
 /// one output holds the state NFT, at the account address, under an
 /// inline datum, with nothing but lovelace beside the NFT and no reference
 /// script. The datum is not decoded, so the rule holds whatever state
-/// shape the account's logic writes. See README, State NFT placement.
+/// shape the account's logic writes.
 pub fn keeps_control_output(
   outputs: List<Output>,
   script_hash: ScriptHash,
@@ -624,8 +624,8 @@ pub fn registers_credential(
 
 /// Whether a publish redeemer exists for a certificate registering the
 /// account's stake credential, which proves the stake script ran on it.
-/// Checked through the redeemers, not the certificate list; see README,
-/// Registration gated creation.
+/// The certificate list proves nothing on its own, since a registration
+/// in the legacy format carries no witness and runs no script.
 pub fn registers_stake_credential(
   redeemers: Pairs<ScriptPurpose, Redeemer>,
   stake_script_hash: ScriptHash,
