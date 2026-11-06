@@ -321,13 +321,72 @@ UTxO parked there cannot make an owner transaction unsubmittable.
 
 Issue. A grant with an empty recipient list lets the grantee send up to
 its caps to any address, unspendable ones included (INV-36). A recipient
-that is a script address makes the funds subject to that script.
+that is a script address makes the funds subject to that script. The
+recipient check compares only the address of each output, stake part
+included. It never reads a datum. For a script recipient such as a DEX
+order address, the datum of the order, which names the receiver, the
+canceller, the pool, the minimum to receive and the fees, decides where
+the funds end up, and the grantee writes it.
 
 Consequence. The loss through an open grant is bounded by its caps, not
-by its destinations.
+by its destinations. The loss through a script recipient is bounded by
+the caps alone: the contract does not constrain the datum, so a grantee
+who trades through an order address can direct the order to itself or
+accept any price, up to the caps (INV-35).
 
 What to do. List recipients whenever the destinations are known. Prefer
-key addresses as recipients.
+key addresses as recipients, where the destination is the address itself.
+A grantee that must trade through a script lists the script address, and
+the caps size the loss. The grantee's signer can bound the datums of the
+orders it signs by its own off-chain policy; the contract does not.
+
+## Grant spends that call a contract
+
+Issue. A grant spend checks the grant itself, its caps against the net
+value leaving the account address, the recipients, the deposits paid back
+and the account's own tokens (INV-30 to INV-40). It constrains nothing else
+in the transaction. A grant spend may spend the script UTxOs of other
+contracts, mint under other policies, and use reference inputs and
+reference scripts.
+
+Consequence. When a grant lists recipients, every output away from the
+account address must go to a listed recipient (INV-36). A grant whose
+spends call a contract must therefore list every address the call pays,
+the contract's own address included when the call leaves a continuing
+output there. A grant that lists recipients but not that address refuses
+the call. The caps are charged on the net value leaving the account
+address (INV-35), so value that a contract pays back to the account is
+not charged. Value a contract pays back to the account address must be a
+plain deposit with no datum and no reference script (INV-37), or the spend is
+refused, so a contract that returns change to the account under a datum
+cannot be called through a grant.
+
+What to do. List the contract's address among the recipients of a grant
+meant to call it, with any other address the call pays, and size the caps
+to the loss that contract can cause, since the contract decides what the
+call does with the funds.
+
+## Renewing a grant takes two transactions
+
+Issue. A sweep and an issuance cannot share a transaction. The proxy's
+mint handler runs once per policy with one redeemer, which is either
+`IssueGrants` or `BurnGrants`, and the sweep burns where the issuance
+mints. A sweep is also judged against the spent control state
+(INV-28), so a grant that the same transaction would kill is not yet dead
+when it is swept.
+
+Consequence. A grant cannot be renewed and swept in one transaction. The
+old grant stays live until it expires or a revoke has landed, and its
+sweep is a later transaction.
+
+What to do. An owner transaction can revoke the old grant and issue the
+new one together, since both only rewrite the account state, but the
+off-chain library builds them as separate transactions (`revokeGrant` and
+`issueGrant`). Revoke and issue in either order, then sweep the old grant
+in a later transaction, as in [Sweep](../guides/grants.md#sweep). When
+the agent must not be left without a grant, issue first; both grants are
+then live until the revoke lands, so the exposure is the sum of their
+caps.
 
 ## No rolling period caps
 
