@@ -78,8 +78,6 @@ pub type OrderDatum {
 pub type Settings {
   /// The only canceller an order may name.
   canceller: Canceller,
-  /// The address both receivers must be.
-  receiver: Address,
   /// The LP asset naming the only pool an order may target.
   lp_asset: Asset,
   /// The only direction an order may swap.

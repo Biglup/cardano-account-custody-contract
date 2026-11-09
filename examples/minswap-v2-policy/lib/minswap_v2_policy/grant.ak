@@ -78,36 +78,42 @@ fn is_grant_output(output: Output, proxy_hash: ScriptHash) -> Bool {
   }
 }
 
-/// The recipient entries naming `own_hash`, read from the one grant input
-/// of the transaction, as pairs of address and settings. Aborts unless
-/// exactly one input is a grant UTxO, when its datum is not shaped like a
-/// grant, or when no entry names `own_hash`.
+/// The one grant UTxO among `inputs`, the input whose datum this policy
+/// reads and whose address the account proceeds must return to. Aborts
+/// unless exactly one input is a grant UTxO.
+pub fn grant_input(proxy_hash: ScriptHash, inputs: List<Input>) -> Output {
+  expect [grant] = list.filter(
+    inputs,
+    fn(input) { is_grant_output(input.output, proxy_hash) },
+  )
+  grant.output
+}
+
+/// The recipient entries of `grant` naming `own_hash`, as pairs of address
+/// and settings. Aborts when its datum is not shaped like a grant or when
+/// no entry names `own_hash`.
 pub fn own_entries(
-  proxy_hash: ScriptHash,
+  grant: Output,
   own_hash: ScriptHash,
-  inputs: List<Input>,
 ) -> List<Pair<Address, Data>> {
-  expect [grant] =
-    list.filter(inputs, fn(input) { is_grant_output(input.output, proxy_hash) })
-  expect InlineDatum(data) = grant.output.datum
+  expect InlineDatum(data) = grant.datum
   expect Some(scope) = list.at(builtin.un_constr_data(data).2nd, 3)
   expect Some(field) = list.at(builtin.un_constr_data(scope).2nd, 6)
   expect recipients: List<Recipient> = field
-  let entries =
-    list.filter_map(
-      recipients,
-      fn(recipient) {
-        when recipient.policy is {
-          Some(policy) ->
-            if policy.script == own_hash {
-              Some(Pair(recipient.address, policy.settings))
-            } else {
-              None
-            }
-          None -> None
-        }
-      },
-    )
+  let entries = list.filter_map(
+    recipients,
+    fn(recipient) {
+      when recipient.policy is {
+        Some(policy) ->
+          if policy.script == own_hash {
+            Some(Pair(recipient.address, policy.settings))
+          } else {
+            None
+          }
+        None -> None
+      }
+    },
+  )
   expect [_, ..] = entries
   entries
 }

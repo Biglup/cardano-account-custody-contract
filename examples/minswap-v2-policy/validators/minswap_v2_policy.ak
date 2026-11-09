@@ -17,7 +17,7 @@
 
 use aiken/collection/list
 use aiken/crypto.{ScriptHash}
-use cardano/address.{Credential, Script}
+use cardano/address.{Address, Credential, Script}
 use cardano/certificate.{Certificate, RegisterCredential}
 use cardano/transaction.{InlineDatum, Output, Transaction}
 use minswap_v2_policy/grant
@@ -52,22 +52,28 @@ validator minswap_v2_policy(proxy_hash: ScriptHash) {
 // FUNCTIONS *******************************************************************
 
 /// Whether every output at each recipient naming `own_hash` is an order
-/// `settings` allows. Aborts on anything `own_entries` refuses and on an
+/// `settings` allows, with both receivers the account the grant belongs
+/// to. Aborts on anything `grant_input` or `own_entries` refuses and on an
 /// order that does not decode.
 pub fn check(
   proxy_hash: ScriptHash,
   own_hash: ScriptHash,
   self: Transaction,
 ) -> Bool {
+  let grant_output = grant.grant_input(proxy_hash, self.inputs)
   list.all(
-    grant.own_entries(proxy_hash, own_hash, self.inputs),
+    grant.own_entries(grant_output, own_hash),
     fn(entry) {
       let Pair(address, data) = entry
       expect settings: Settings = data
       list.all(
         self.outputs,
         fn(output) {
-          output.address != address || is_allowed_order(output, settings)
+          output.address != address || is_allowed_order(
+            output,
+            settings,
+            grant_output.address,
+          )
         },
       )
     },
@@ -75,23 +81,26 @@ pub fn check(
 }
 
 /// Whether `output` is a SwapExactIn order of a specific amount within
-/// `settings`. Aborts on an order without an inline datum, one that does
-/// not decode, another step or `AllExcept`.
-fn is_allowed_order(output: Output, s: Settings) -> Bool {
+/// `s`, with no reference script and both receivers at `account`. Aborts
+/// on an order without an inline datum, one that does not decode, another
+/// step or `AllExcept`.
+fn is_allowed_order(output: Output, s: Settings, account: Address) -> Bool {
   expect InlineDatum(data) = output.datum
   expect order: OrderDatum = data
   expect step: SwapExactInStep = order.step
   expect SpecificAmount(sold) = step.amount
   and {
+    output.reference_script == None,
     order.canceller == s.canceller,
-    order.refund_receiver == s.receiver,
+    order.refund_receiver == account,
     order.refund_receiver_datum == NoReceiverDatum,
-    order.success_receiver == s.receiver,
+    order.success_receiver == account,
     order.success_receiver_datum == NoReceiverDatum,
     order.lp_asset == s.lp_asset,
     step.direction_a_to_b == s.direction_a_to_b,
     sold > 0,
-    step.minimum_receive > 0,
+    s.price_numerator > 0,
+    s.price_denominator > 0,
     step.minimum_receive * s.price_denominator >= sold * s.price_numerator,
     order.max_batcher_fee >= 0,
     order.max_batcher_fee <= s.max_batcher_fee,

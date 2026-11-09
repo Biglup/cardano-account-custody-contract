@@ -38,7 +38,6 @@ The `settings` a recipient entry carries, in order:
 | Field | Meaning |
 | --- | --- |
 | `canceller` | The only order canceller allowed, compared whole |
-| `receiver` | The address both the refund and the success receiver must be, normally the account address |
 | `lp_asset` | The LP asset of the only pool an order may target |
 | `direction_a_to_b` | The only swap direction allowed |
 | `price_numerator`, `price_denominator` | The bound `minimum_receive * price_denominator >= sold * price_numerator` |
@@ -52,11 +51,17 @@ datum, and:
 
 - The step is constructor 0, `SwapExactIn`, with `SAOSpecificAmount`. Any
   other step, or `SAOAll`, does not decode and is refused.
-- `canceller`, both receivers and `lp_asset` are exactly as set.
+- `canceller` and `lp_asset` are exactly as set.
+- Both receivers are the address of the grant input the script read, the
+  account the grant belongs to, so a mistaken settings value cannot send
+  proceeds elsewhere.
 - Both receiver datums are the empty receiver datum, since the account
   refuses returned value under a datum (INV-37).
-- The direction is as set, the sold amount and `minimum_receive` are
-  positive, and `minimum_receive` is at least the sold amount at the price.
+- The direction is as set, the sold amount is positive, the price terms
+  in the settings are positive, and `minimum_receive` is at least the sold
+  amount at the price. A settings value with a zero or negative term could
+  otherwise make the price bound vacuous.
+- The order output carries no reference script.
 - `max_batcher_fee` is at most the cap, and the expiry option's tip, when
   set, is at most the cap. A tip and a fee are the ways an order can spend
   its own value with everything else pinned: anyone can cancel an expired
@@ -68,7 +73,9 @@ datum, and:
   it.
 - One pool and one direction per recipient entry.
 - It cannot see the live pool price. `minimum_receive` is the only price
-  bound, and the sold amount is the order's own declaration.
+  bound, and the sold amount is the order's own declaration: the value
+  locked in the order is not tied to it, since any surplus returns to the
+  receivers.
 - The caps of the grant stay the backstop. A grantee can place many orders,
   each costing up to the batcher fee cap, and pay expired tips, up to the
   caps.
