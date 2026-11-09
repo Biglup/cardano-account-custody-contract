@@ -76,8 +76,6 @@ pub type Settings {
   pool_ident: ByteArray,
   /// The only owner an order may name, compared whole.
   owner: Owner,
-  /// The address the destination must be, with no datum.
-  receiver: Address,
   /// The only asset an order may offer.
   offer_asset: AssetClass,
   /// The only asset an order may require.

@@ -39,7 +39,6 @@ The `settings` a recipient entry carries, in order:
 | --- | --- |
 | `pool_ident` | The only pool an order may target |
 | `owner` | The only owner allowed, compared whole, so a nested `AnyOf` or `AtLeast` cannot add a signer |
-| `receiver` | The address the destination must be, normally the account address |
 | `offer_asset`, `receive_asset` | The asset classes of the swap |
 | `price_numerator`, `price_denominator` | The bound `min_received * price_denominator >= offer * price_numerator` |
 | `max_protocol_fee` | The largest `max_protocol_fee` an order may name |
@@ -52,16 +51,20 @@ datum, and:
 
 - `pool_ident` is `Some` of exactly the pinned pool. `None` means any pool
   with the right assets.
-- `destination` is `Fixed`, with exactly the configured address and no
-  datum. `Self` is refused.
+- `destination` is `Fixed`, at the address of the grant input the script
+  read, the account the grant belongs to, with no datum. `Self` is refused.
+  A mistaken settings value cannot send proceeds elsewhere.
 - `details` is `Swap`. `Strategy` is late-bound: its authorised signer picks
   the real order details off-chain after placement, which defeats every
   check here. The other order kinds do not decode and are refused.
 - `owner` equals the configured value, compared as a whole
   `MultisigScript`.
 - `max_protocol_fee` is at most the cap.
-- `offer` and `min_received` name the pinned asset classes, their amounts
-  are positive, and `min_received` is at least the offer at the price.
+- `offer` and `min_received` name the pinned asset classes, the offer is
+  positive, the price terms in the settings are positive, and
+  `min_received` is at least the offer at the price. A settings value with
+  a zero or negative term could otherwise make the price bound vacuous.
+- The order output carries no reference script.
 - `extension` equals the pinned value. At the commit below, neither the
   order validator nor the pool reads `extension`, so a pinned value costs
   nothing today and closes the field against any later order script that
@@ -73,7 +76,8 @@ datum, and:
   it.
 - One pool, one pair and one direction per recipient entry.
 - It cannot see the live pool price. `min_received` is the only price bound,
-  and the offer is the order's own declaration.
+  and the offer is the order's own declaration: the value locked in the
+  order is not tied to it, since any surplus returns to the destination.
 - The caps of the grant stay the backstop. A grantee can place many orders,
   each costing up to the protocol fee cap, up to the caps.
 - It does not restrict other outputs of the transaction: the recipient list

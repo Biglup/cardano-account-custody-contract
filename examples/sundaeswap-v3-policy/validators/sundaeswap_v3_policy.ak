@@ -17,13 +17,11 @@
 
 use aiken/collection/list
 use aiken/crypto.{ScriptHash}
-use cardano/address.{Credential, Script}
+use cardano/address.{Address, Credential, Script}
 use cardano/certificate.{Certificate, RegisterCredential}
 use cardano/transaction.{InlineDatum, NoDatum, Output, Transaction}
 use sundaeswap_v3_policy/grant
-use sundaeswap_v3_policy/types.{
-  FixedDestination, OrderDatum, Settings, Swap,
-}
+use sundaeswap_v3_policy/types.{FixedDestination, OrderDatum, Settings, Swap}
 
 // VALIDATORS ******************************************************************
 
@@ -52,48 +50,57 @@ validator sundaeswap_v3_policy(proxy_hash: ScriptHash) {
 // FUNCTIONS *******************************************************************
 
 /// Whether every output at each recipient naming `own_hash` is an order
-/// `settings` allows. Aborts on anything `own_entries` refuses and on an
+/// `settings` allows, with the destination the account the grant belongs
+/// to. Aborts on anything `grant_input` or `own_entries` refuses and on an
 /// order that does not decode.
 pub fn check(
   proxy_hash: ScriptHash,
   own_hash: ScriptHash,
   self: Transaction,
 ) -> Bool {
+  let grant_output = grant.grant_input(proxy_hash, self.inputs)
   list.all(
-    grant.own_entries(proxy_hash, own_hash, self.inputs),
+    grant.own_entries(grant_output, own_hash),
     fn(entry) {
       let Pair(address, data) = entry
       expect settings: Settings = data
       list.all(
         self.outputs,
         fn(output) {
-          output.address != address || is_allowed_order(output, settings)
+          output.address != address || is_allowed_order(
+            output,
+            settings,
+            grant_output.address,
+          )
         },
       )
     },
   )
 }
 
-/// Whether `output` is a swap order within `settings`. Aborts on an order
+/// Whether `output` is a swap order within `s`, with no reference script
+/// and the destination at `account` with no datum. Aborts on an order
 /// without an inline datum, one that does not decode, or details other
 /// than a swap.
-fn is_allowed_order(output: Output, s: Settings) -> Bool {
+fn is_allowed_order(output: Output, s: Settings, account: Address) -> Bool {
   expect InlineDatum(data) = output.datum
   expect order: OrderDatum = data
   expect Swap { offer, min_received } = order.details
   let (offer_policy, offer_name, offer_amount) = offer
   let (receive_policy, receive_name, receive_amount) = min_received
   and {
+    output.reference_script == None,
     order.pool_ident == Some(s.pool_ident),
     order.owner == s.owner,
     order.max_protocol_fee >= 0,
     order.max_protocol_fee <= s.max_protocol_fee,
-    order.destination == FixedDestination { address: s.receiver, datum: NoDatum },
+    order.destination == FixedDestination { address: account, datum: NoDatum },
     order.extension == s.extension,
     (offer_policy, offer_name) == s.offer_asset,
     (receive_policy, receive_name) == s.receive_asset,
     offer_amount > 0,
-    receive_amount > 0,
+    s.price_numerator > 0,
+    s.price_denominator > 0,
     receive_amount * s.price_denominator >= offer_amount * s.price_numerator,
   }
 }
