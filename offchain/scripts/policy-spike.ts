@@ -61,6 +61,10 @@ const GRANT_LIFETIME_MS = 2n * 60n * 60n * 1000n;
 const PER_CALL_CAP = 500n * ADA;
 const CAP = 100_000n * ADA;
 
+/** What a run needs from the funding wallet and what it deposits into account A. */
+const MINIMUM_FUNDING = 460n * ADA;
+const ACCOUNT_A_DEPOSIT = 200n * ADA;
+
 /** The lovelace of one small order, and the price bound of the examples. */
 const ORDER_LOVELACE = 3n * ADA;
 const SOLD_LOVELACE = 2n * ADA;
@@ -285,8 +289,8 @@ const freshOwner = async (): Promise<Keyed & { index: number }> => {
   for (let candidate = 0; candidate < OWNER_ACCOUNT_CANDIDATES; candidate += 1) {
     const index = FIRST_OWNER_ACCOUNT + candidate * OWNER_ACCOUNT_STRIDE;
     const key = await keyed(index);
-    const { rewardAddress: reward } = accountByOwner(key.keyHash);
-    if (!(await isRegistered(reward))) {
+    const { rewardAddress: reward, address } = accountByOwner(key.keyHash);
+    if (!(await isRegistered(reward)) && (await provider.getUnspentOutputs(address)).length === 0) {
       return { ...key, index };
     }
   }
@@ -324,10 +328,18 @@ const ensureRegistered = async (name: string, script: PlutusScript): Promise<voi
     console.log(`setup: ${name} credential already registered`);
     return;
   }
-  const { txId } = await submitAndConfirm([funding.wallet], async () =>
-    (await funding.wallet.createTransactionBuilder()).registerStakeAddress({ rewardAddress: rewardAddress(logicScriptHash(script)), redeemer: encodeLogicRedeemer() }).addScript(script).build(),
-  );
-  setupRow(`register ${name}`, txId);
+  try {
+    const { txId } = await submitAndConfirm([funding.wallet], async () =>
+      (await funding.wallet.createTransactionBuilder()).registerStakeAddress({ rewardAddress: rewardAddress(logicScriptHash(script)), redeemer: encodeLogicRedeemer() }).addScript(script).build(),
+    );
+    setupRow(`register ${name}`, txId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('StakeKeyRegisteredDELEG')) {
+      throw error;
+    }
+    console.log(`setup: ${name} already registered, the indexer did not report it`);
+  }
 };
 
 /** Parks a script at the always fail address, returning its record. */
@@ -454,8 +466,8 @@ const minswapCanceller = (key: string): PlutusData => constr(0, [bytes(key)]);
 const minswapLp = (name: string = MINSWAP_LP_NAME): PlutusData => constr(0, [bytes(MINSWAP_LP_POLICY), bytes(name)]);
 
 /** The settings of a Minswap recipient. */
-const minswapSettings = (canceller: string, receiver: string): PlutusData =>
-  constr(0, [minswapCanceller(canceller), encodeAddress(receiver), minswapLp(), bool(true), PRICE_NUMERATOR, PRICE_DENOMINATOR, MAX_BATCHER_FEE, MAX_TIP]);
+const minswapSettings = (canceller: string): PlutusData =>
+  constr(0, [minswapCanceller(canceller), minswapLp(), bool(true), PRICE_NUMERATOR, PRICE_DENOMINATOR, MAX_BATCHER_FEE, MAX_TIP]);
 
 /** The fields of a Minswap order, with defaults that the settings allow. */
 interface MinswapOrderFields {
@@ -502,11 +514,10 @@ const orderOutput = (address: string, datum: PlutusData | undefined, kind: 'inli
 const sundaeOwner = (key: string): PlutusData => constr(0, [bytes(key)]);
 
 /** The Sundae offer asset data. */
-const sundaeSettings = (ownerKey: string, receiver: string): PlutusData =>
+const sundaeSettings = (ownerKey: string): PlutusData =>
   constr(0, [
     bytes(SUNDAE_POOL),
     sundaeOwner(ownerKey),
-    encodeAddress(receiver),
     dataList([bytes(''), bytes('')]),
     dataList([bytes(SUNDAE_TOKEN_POLICY), bytes(SUNDAE_TOKEN_NAME)]),
     PRICE_NUMERATOR,
@@ -738,8 +749,8 @@ const main = async (): Promise<void> => {
   funding = await keyed(0);
   const balance = (await funding.wallet.getBalance()).coins;
   console.log(`funding wallet balance ${balance}`);
-  if (balance < 2_000n * ADA) {
-    throw new Error('The funding wallet needs at least 2000 tADA: run npm run devnet:bootstrap');
+  if (balance < MINIMUM_FUNDING) {
+    throw new Error(`The funding wallet needs at least ${MINIMUM_FUNDING / ADA} tADA: run npm run devnet:bootstrap`);
   }
 
   const deployment = await deploy();
@@ -754,15 +765,15 @@ const main = async (): Promise<void> => {
     await fund(agent.address, AGENT_WALLET_LOVELACE);
   }
 
-  const minswapPolicy = (ownerKey: string, receiver: string): GrantPolicy => ({ script: deployment.minswapHash, settings: minswapSettings(ownerKey, receiver) });
-  const sundaePolicy = (ownerKey: string, receiver: string): GrantPolicy => ({ script: deployment.sundaeHash, settings: sundaeSettings(ownerKey, receiver) });
+  const minswapPolicy = (ownerKey: string): GrantPolicy => ({ script: deployment.minswapHash, settings: minswapSettings(ownerKey) });
+  const sundaePolicy = (ownerKey: string): GrantPolicy => ({ script: deployment.sundaeHash, settings: sundaeSettings(ownerKey) });
   const minswapOrderAddress = Cometa.EnterpriseAddress.fromCredentials(Cometa.NetworkId.Testnet, { hash: MINSWAP_ORDER_SCRIPT, type: Cometa.CredentialType.ScriptHash }).toAddress().toString();
   const sundaeOrderAddress = Cometa.EnterpriseAddress.fromCredentials(Cometa.NetworkId.Testnet, { hash: SUNDAE_ORDER_SCRIPT, type: Cometa.CredentialType.ScriptHash }).toAddress().toString();
 
-  const main = await createFundedAccount(deployment, 'A', [2_000n * ADA]);
+  const main = await createFundedAccount(deployment, 'A', [ACCOUNT_A_DEPOSIT]);
   const receiver = main.record.address;
   const context: SpendContext = { account: main, slot: 0n, policies: [deployment.minswap, deployment.sundae], network: deployment.network };
-  const recipients = [entry(minswapOrderAddress, minswapPolicy(main.owner.keyHash, receiver)), entry(sundaeOrderAddress, sundaePolicy(main.owner.keyHash, receiver)), entry(recipient.address)];
+  const recipients = [entry(minswapOrderAddress, minswapPolicy(main.owner.keyHash)), entry(sundaeOrderAddress, sundaePolicy(main.owner.keyHash)), entry(recipient.address)];
   const policiedSlot = await issue(main, deployment.network, agent.keyHash, recipients);
   const plainSlot = await issue(main, deployment.network, agent.keyHash, [entry(recipient.address)]);
 
@@ -786,7 +797,7 @@ const main = async (): Promise<void> => {
 
   const twelve = await createFundedAccount(deployment, 'B', [30n * ADA]);
   const twelveContext: SpendContext = { account: twelve, slot: 0n, policies: [deployment.minswap, deployment.sundae], network: deployment.network };
-  const twelveSlot = await issue(twelve, deployment.network, agent.keyHash, [entry(minswapOrderAddress, minswapPolicy(twelve.owner.keyHash, twelve.record.address))]);
+  const twelveSlot = await issue(twelve, deployment.network, agent.keyHash, [entry(minswapOrderAddress, minswapPolicy(twelve.owner.keyHash))]);
   const fundedTwelve = await submitAndConfirm([funding.wallet], async () => {
     const builder = await funding.wallet.createTransactionBuilder();
     for (let index = 0; index < MAX_FUND_INPUTS; index += 1) {
