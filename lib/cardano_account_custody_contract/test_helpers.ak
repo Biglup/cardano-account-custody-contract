@@ -40,8 +40,7 @@ use cardano_account_custody_contract/account
 use cardano_account_custody_contract/types.{
   AccountRedeemer, AccountState, Asset, BurnGrants, CreateAccount, Device, Fund,
   Grant, IssueGrants, MintRedeemer, Operate, Recipient, Run, Scope,
-  SpendWithGrant,
-  SweepGrant,
+  SpendWithGrant, SweepGrant,
 }
 
 // CONSTANTS *******************************************************************

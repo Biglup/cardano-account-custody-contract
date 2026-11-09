@@ -42,7 +42,12 @@ fn devices(count: Int) -> List<ByteArray> {
 fn recipients(count: Int) -> List<Recipient> {
   list.range(1, count)
     |> list.map(
-        fn(n) { Recipient { address: address.from_verification_key(key(100 + n)), policy: None } },
+        fn(n) {
+          Recipient {
+            address: address.from_verification_key(key(100 + n)),
+            policy: None,
+          }
+        },
       )
 }
 
@@ -302,7 +307,12 @@ test is_scope_well_formed_accepts_a_recipient_with_a_policy() {
       recipients: [
         Recipient {
           address: address.from_verification_key(key(200)),
-          policy: Some(GrantPolicy { script: #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", settings }),
+          policy: Some(
+            GrantPolicy {
+              script: #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              settings,
+            },
+          ),
         },
       ],
     },

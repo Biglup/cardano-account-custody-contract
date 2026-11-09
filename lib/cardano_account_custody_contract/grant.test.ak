@@ -26,18 +26,17 @@ use cardano_account_custody_contract/grant.{
   carries_grant_within, carries_no_reference_script, deposits_are_plain,
   ends_before_expiry, grant_after_spend, is_authorised_by_grantee, is_current,
   is_dead, leaving_value, pays_only_recipients, quantity_of_asset,
-  runs_recipient_policies,
-  spends_one_account_token, starts_after_expiry, stays_within_scope,
+  runs_recipient_policies, spends_one_account_token, starts_after_expiry,
+  stays_within_scope,
 }
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/test_helpers.{
-  plain_recipient,
   account_address, control_output, control_value, device_key, fund_output,
   grant_output, grant_value, granted_state, input, lovelace_asset,
   lovelace_grant, lovelace_scope, other_account_address, other_fund_output,
-  other_stake_script_hash, output, recipient_address, script_hash,
-  stake_script_hash, state_datum, stranger_key, token, token_asset, token_grant,
-  token_scope,
+  other_stake_script_hash, output, plain_recipient, recipient_address,
+  script_hash, stake_script_hash, state_datum, stranger_key, token, token_asset,
+  token_grant, token_scope,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, Grant, GrantPolicy, Recipient, Scope,

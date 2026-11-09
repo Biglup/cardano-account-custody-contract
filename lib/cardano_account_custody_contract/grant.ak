@@ -222,10 +222,10 @@ pub fn runs_recipient_policies(
       when recipient.policy is {
         None -> True
         Some(policy) ->
-          !list.any(
-            outputs,
-            fn(output) { output.address == recipient.address },
-          ) || account.withdraws_from(withdrawals, policy.script)
+          !list.any(outputs, fn(output) { output.address == recipient.address }) || account.withdraws_from(
+            withdrawals,
+            policy.script,
+          )
       }
     },
   )

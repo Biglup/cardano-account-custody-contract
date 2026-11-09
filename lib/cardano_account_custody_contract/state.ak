@@ -72,9 +72,9 @@ pub fn is_scope_well_formed(scope: Scope) -> Bool {
   }
   let expiry_ok = scope.expires_at > 0
   let recipients_ok = and {
-      list.length(scope.recipients) <= max_recipients,
-      are_recipients_well_formed(scope.recipients),
-    }
+    list.length(scope.recipients) <= max_recipients,
+    are_recipients_well_formed(scope.recipients),
+  }
   let lovelace_caps_ok = if is_lovelace(scope.asset) {
     scope.lovelace_per_call_cap == 0 && scope.lovelace_cap == 0
   } else {

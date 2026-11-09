@@ -32,7 +32,6 @@ use cardano/transaction.{
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/logic
 use cardano_account_custody_contract/test_helpers.{
-  plain_recipient,
   account_address, burn, control_input, control_output, control_reference,
   control_value, creation, device_key, expiry, fund_input, fund_output,
   grant_burn, grant_datum, grant_input, grant_output, grant_token, grant_value,
@@ -40,10 +39,10 @@ use cardano_account_custody_contract/test_helpers.{
   lovelace_grant, lovelace_scope, next_logic_hash, other_account_address,
   other_control_output, other_device_key, other_fund_output, other_grant_output,
   other_stake_script_hash, other_token, output, owner_transaction, payout,
-  recipient_address, referencing, script_hash, spending, stake_script_hash,
-  state, state_datum, state_nft, stranger_key, token, token_grant, token_scope,
-  treasury_input, upgrade_into, upgraded_state, with_caps, with_proxy_redeemers,
-  withdrawing,
+  plain_recipient, recipient_address, referencing, script_hash, spending,
+  stake_script_hash, state, state_datum, state_nft, stranger_key, token,
+  token_grant, token_scope, treasury_input, upgrade_into, upgraded_state,
+  with_caps, with_proxy_redeemers, withdrawing,
 }
 use cardano_account_custody_contract/types.{
   AccountState, BurnGrants, Device, Grant, GrantPolicy, IssueGrants, Recipient,
@@ -3391,9 +3390,6 @@ test recreated_grant_output_changing_policy_settings_is_refused() {
 
 test recreated_grant_output_dropping_a_policy_is_refused() {
   !recreated_with_recipients(
-    [
-      plain_recipient(recipient_address()),
-      plain_recipient(plain_address()),
-    ],
+    [plain_recipient(recipient_address()), plain_recipient(plain_address())],
   )
 }
