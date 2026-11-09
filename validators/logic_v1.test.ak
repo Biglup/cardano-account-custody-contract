@@ -857,8 +857,9 @@ test device_rejects_two_control_outputs() fail {
 }
 
 /// `Device` on a plain deposit beside the control UTxO: the deposit holds
-/// no state NFT, so the owner rule refuses it.
-test device_rejects_an_input_without_the_state_nft() {
+/// no state NFT, so the rewrite rule reads it as a grant UTxO and aborts on
+/// its missing datum.
+test device_rejects_an_input_without_the_state_nft() fail {
   let tx = owner_transaction(
     state(),
     [fund_input()],
@@ -866,10 +867,12 @@ test device_rejects_an_input_without_the_state_nft() {
     assets.zero,
   )
     |> spending(1, Device)
-  !run(tx)
+  run(tx)
 }
 
-test device_rejects_a_grant_utxo_as_the_control() {
+/// `Device` on a grant UTxO whose token comes back in no output: the rewrite
+/// rule aborts, so a grant UTxO cannot be emptied under `Device`.
+test device_rejects_a_grant_utxo_as_the_control() fail {
   let tx = owner_transaction(
     granted_state(),
     [input(1, grant_output(lovelace_grant(), 2_000_000))],
@@ -877,13 +880,13 @@ test device_rejects_a_grant_utxo_as_the_control() {
     assets.zero,
   )
     |> spending(1, Device)
-  !run(tx)
+  run(tx)
 }
 
 /// A grant UTxO spent on the agent path beside the control UTxO, with a
 /// device signing and its cap raised in place: the owner path admits no
-/// `SpendWithGrant`, so a grant is never edited, only revoked and
-/// reissued.
+/// `SpendWithGrant`, so a grant is edited only under `Device`, by
+/// `rewrite_grant_rule`.
 test device_rejects_a_grant_rewritten_on_the_agent_path_beside_the_control() {
   let tx = owner_transaction(
     granted_state(),
@@ -3391,5 +3394,209 @@ test recreated_grant_output_changing_policy_settings_is_refused() {
 test recreated_grant_output_dropping_a_policy_is_refused() {
   !recreated_with_recipients(
     [plain_recipient(recipient_address()), plain_recipient(plain_address())],
+  )
+}
+
+// GRANT REWRITE ***************************************************************
+
+/// A renewal of the lovelace grant of slot 0 over `current`: the grant UTxO
+/// carries `Device` and comes back as `outputs`.
+fn rewrite_over(current: AccountState, spent: Grant, outputs: List<Output>) {
+  owner_transaction(
+    current,
+    [input(1, grant_output(spent, 2_000_000))],
+    [control_output(current, 2_000_000), ..outputs],
+    assets.zero,
+  )
+    |> spending(1, Device)
+}
+
+/// A renewal of the lovelace grant of slot 0 into `after`.
+fn rewrite_into(after: Grant) -> Transaction {
+  rewrite_over(
+    granted_state(),
+    lovelace_grant(),
+    [grant_output(after, 2_000_000)],
+  )
+}
+
+/// The lovelace grant of slot 0 with higher caps and a later expiry.
+fn renewed_grant() -> Grant {
+  let grant = lovelace_grant()
+  Grant {
+    ..grant,
+    scope: Scope {
+      ..grant.scope,
+      cap: grant.scope.cap + 1_000_000,
+      expires_at: grant.scope.expires_at + 1_000_000,
+    },
+  }
+}
+
+test rewrite_renews_a_grant_in_place() {
+  run(rewrite_into(renewed_grant()))
+}
+
+test rewrite_may_change_the_grantee_and_the_recipients() {
+  let grant = renewed_grant()
+  run(
+    rewrite_into(
+      Grant {
+        ..grant,
+        grantee: stranger_key,
+        scope: Scope {
+          ..grant.scope,
+          recipients: [plain_recipient(plain_address())],
+        },
+      },
+    ),
+  )
+}
+
+test rewrite_renews_an_expired_grant() {
+  let tx = Transaction {
+    ..rewrite_into(renewed_grant()),
+    validity_range: interval.after(expiry + 1),
+  }
+  run(tx)
+}
+
+test rewrite_may_change_the_lovelace_held() {
+  run(
+    rewrite_over(
+      granted_state(),
+      lovelace_grant(),
+      [
+        grant_output(renewed_grant(), 3_000_000),
+        change_of(assets.from_lovelace(1)),
+      ],
+    ),
+  )
+}
+
+test rewrite_rejects_a_missing_device_signature() {
+  !run(
+    Transaction {
+      ..rewrite_into(renewed_grant()),
+      extra_signatories: [stranger_key],
+    },
+  )
+}
+
+test rewrite_rejects_a_revoked_grant() {
+  let revoked = AccountState { ..granted_state(), revoked: [0] }
+  !run(
+    rewrite_over(
+      revoked,
+      lovelace_grant(),
+      [grant_output(renewed_grant(), 2_000_000)],
+    ),
+  )
+}
+
+test rewrite_rejects_a_grant_of_an_older_generation() {
+  let bumped = AccountState { ..granted_state(), grant_generation: 1 }
+  !run(
+    rewrite_over(
+      bumped,
+      lovelace_grant(),
+      [grant_output(renewed_grant(), 2_000_000)],
+    ),
+  )
+}
+
+test rewrite_rejects_a_changed_generation() {
+  !run(rewrite_into(Grant { ..renewed_grant(), generation: 1 }))
+}
+
+test rewrite_rejects_a_changed_slot() {
+  let moved = Grant { ..renewed_grant(), slot: 1 }
+  !run(
+    rewrite_over(
+      granted_state(),
+      lovelace_grant(),
+      [
+        Output {
+          ..grant_output(moved, 2_000_000),
+          value: grant_value(stake_script_hash, 0, 2_000_000),
+        },
+      ],
+    ),
+  )
+}
+
+test rewrite_rejects_a_malformed_scope() {
+  let grant = renewed_grant()
+  !run(rewrite_into(Grant { ..grant, scope: Scope { ..grant.scope, cap: -1 } }))
+}
+
+test rewrite_rejects_a_reference_script_on_the_output() {
+  !run(
+    rewrite_over(
+      granted_state(),
+      lovelace_grant(),
+      [
+        Output {
+          ..grant_output(renewed_grant(), 2_000_000),
+          reference_script: Some(logic_hash),
+        },
+      ],
+    ),
+  )
+}
+
+test rewrite_rejects_another_token_on_the_output() {
+  let renewed = grant_output(renewed_grant(), 2_000_000)
+  !run(
+    rewrite_over(
+      granted_state(),
+      lovelace_grant(),
+      [Output { ..renewed, value: assets.merge(renewed.value, token(1)) }],
+    ),
+  )
+}
+
+test rewrite_rejects_a_grant_output_at_another_address() {
+  !run(
+    rewrite_over(
+      granted_state(),
+      lovelace_grant(),
+      [
+        Output {
+          ..grant_output(renewed_grant(), 2_000_000),
+          address: recipient_address(),
+        },
+      ],
+    ),
+  )
+}
+
+test rewrite_rejects_a_missing_grant_output() fail {
+  run(rewrite_over(granted_state(), lovelace_grant(), [payout(2_000_000)]))
+}
+
+test rewrite_rejects_a_fund_input_under_device() fail {
+  run(
+    owner_transaction(
+      granted_state(),
+      [fund_input()],
+      [control_output(granted_state(), 2_000_000), payout(10_000_000)],
+      assets.zero,
+    )
+      |> spending(1, Device),
+  )
+}
+
+test rewrite_is_not_open_to_the_agent_path() {
+  !run(
+    logic_transaction(
+      [input(1, grant_output(lovelace_grant(), 2_000_000))],
+      [grant_output(renewed_grant(), 2_000_000)],
+      assets.zero,
+      [device_key],
+      interval.everything,
+    )
+      |> referencing([control_reference()])
+      |> spending(1, Device),
   )
 }
