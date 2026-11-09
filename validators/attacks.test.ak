@@ -30,9 +30,10 @@ use account_stake
 use aiken/builtin
 use aiken/cbor
 use aiken/collection/list
+use aiken/fuzz
 use aiken/interval.{Interval, IntervalBound, NegativeInfinity}
 use aiken/primitive/bytearray
-use cardano/address.{Address, Script}
+use cardano/address.{Address, Pointer, Script, VerificationKey}
 use cardano/assets.{Assets}
 use cardano/certificate.{UnregisterCredential}
 use cardano/transaction.{
@@ -41,23 +42,23 @@ use cardano/transaction.{
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/state as account_state
 use cardano_account_custody_contract/test_helpers.{
-  plain_recipient,
   account_address, burn, change, control_output, control_reference,
   control_value, creation, delegation, device_key, expiry, fund_output,
   grant_burn, grant_data, grant_datum, grant_output, grant_token, grant_value,
-  granted_state, input, logic_hash, logic_transaction, lovelace_grant,
-  lovelace_scope, next_logic_hash, other_account_address, other_control_output,
-  other_device_key, other_fund_output, other_grant_output,
+  granted_state, input, issued_state, logic_hash, logic_transaction,
+  lovelace_grant, lovelace_scope, next_logic_hash, other_account_address,
+  other_control_output, other_device_key, other_fund_output, other_grant_output,
   other_stake_script_hash, output, output_reference, owner_transaction, payout,
-  publishing, recipient_address, referencing, registration, script_hash,
-  spending, stake_script_hash, state, state_data, state_datum, state_nft,
-  stranger_key, token, token_asset, token_grant, token_scope, treasury_input,
-  upgrade_into, upgraded_state, with_caps, with_proxy_redeemers, withdrawing,
-  without_withdrawals,
+  plain_recipient, publishing, recipient_address, referencing, registration,
+  script_hash, spending, stake_script_hash, state, state_data, state_datum,
+  state_nft, stranger_key, token, token_asset, token_grant, token_scope,
+  treasury_input, upgrade_into, upgraded_state, with_caps, with_proxy_redeemers,
+  withdrawing, without_withdrawals,
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, BurnGrants, CreateAccount, Device, Fund, Grant,
-  IssueGrants, Operate, Recipient, Run, Scope, SpendWithGrant, SweepGrant,
+  GrantPolicy, IssueGrants, Operate, Recipient, Run, Scope, SpendWithGrant,
+  SweepGrant,
 }
 use logic_v1
 
@@ -179,7 +180,10 @@ fn attacker_issued_state() -> AccountState {
 
 /// The lovelace scope restricted to the recipient.
 fn restricted_scope() -> Scope {
-  Scope { ..lovelace_scope(), recipients: [plain_recipient(recipient_address())] }
+  Scope {
+    ..lovelace_scope(),
+    recipients: [plain_recipient(recipient_address())],
+  }
 }
 
 /// The granted state of the other account, under the next logic and the
@@ -2809,7 +2813,10 @@ fn largest_state() -> AccountState {
 fn largest_scope(scope: Scope) -> Scope {
   Scope {
     ..scope,
-    recipients: list.concat(recipients(7), [plain_recipient(recipient_address())]),
+    recipients: list.concat(
+      recipients(7),
+      [plain_recipient(recipient_address())],
+    ),
   }
 }
 
@@ -3404,4 +3411,1481 @@ test budget_logic_grant_spend_over_forty_deposits() {
 
 test budget_proxy_fund_spend_among_forty_deposits() {
   proxy_spend(None, Fund, 40, forty_deposit_transaction())
+}
+
+// RECIPIENT POLICY ATTACKS ****************************************************
+
+/// The hash standing in for the first recipient policy script.
+const first_policy_hash =
+  #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+
+/// The hash standing in for the second recipient policy script.
+const second_policy_hash =
+  #"a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+
+/// The hash standing in for the third recipient policy script.
+const third_policy_hash =
+  #"a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+
+/// The hash of a key whose 28 bytes equal the first policy script's hash.
+const first_policy_as_key = first_policy_hash
+
+/// The key address of a policied recipient, `n` of up to 8.
+fn policied_address(n: Int) -> Address {
+  address.from_verification_key(key(120 + n))
+}
+
+/// A policy entry at `address` running `script`, with `settings`.
+fn policied_entry(
+  address: Address,
+  script: ByteArray,
+  settings: Int,
+) -> Recipient {
+  let data: Data = settings
+  Recipient { address, policy: Some(GrantPolicy { script, settings: data }) }
+}
+
+/// A plain entry at the recipient address.
+fn plain_entry() -> Recipient {
+  plain_recipient(recipient_address())
+}
+
+/// The lovelace grant with its scope listing `recipients`.
+fn grant_listing(recipients: List<Recipient>) -> Grant {
+  Grant { ..lovelace_grant(), scope: Scope { ..lovelace_scope(), recipients } }
+}
+
+/// The lovelace grant whose only recipient is the recipient address under
+/// the first policy, with settings 1.
+fn single_policied_grant() -> Grant {
+  grant_listing([policied_entry(recipient_address(), first_policy_hash, 1)])
+}
+
+/// The outputs of a spend of `grant` paying `lovelace` to `at`: the
+/// recreated grant, the change of the 10 ADA deposit and the payment.
+fn outputs_paying(grant: Grant, lovelace: Int, at: Address) -> List<Output> {
+  [
+    grant_output(with_caps(grant, 5_000_000 - lovelace, 0), 2_000_000),
+    change(10_000_000 - lovelace),
+    output(at, assets.from_lovelace(lovelace), NoDatum),
+  ]
+}
+
+/// A spend of `grant` from the 10 ADA deposit into `outputs`, the logic
+/// and `scripts` withdrawing.
+fn policied_spend_tx(
+  grant: Grant,
+  outputs: List<Output>,
+  scripts: List<ByteArray>,
+) -> Transaction {
+  grant_transaction(grant, outputs) |> withdrawing(scripts)
+}
+
+/// Whether the logic accepts a spend of `grant` into `outputs` with
+/// `scripts` withdrawing.
+fn policied_spend(
+  grant: Grant,
+  outputs: List<Output>,
+  scripts: List<ByteArray>,
+) -> Bool {
+  run(policied_spend_tx(grant, outputs, scripts))
+}
+
+/// Whether the logic accepts the issuance of the lovelace grant listing
+/// `recipients` as slot 0 of the fresh account, signed by the device.
+fn issue_listing(recipients: List<Recipient>) -> Bool {
+  run(
+    owner_transaction(
+      state(),
+      [],
+      [
+        control_output(issued_state(1), 2_000_000),
+        grant_output(grant_listing(recipients), 2_000_000),
+      ],
+      grant_token(stake_script_hash, 0),
+    ),
+  )
+}
+
+/// A control state at generation `generation` with slot 0 outstanding and
+/// `revoked` as its revoked slots.
+fn sweep_state(generation: Int, revoked: List<Int>) -> AccountState {
+  AccountState {
+    ..issued_state(1),
+    grant_generation: generation,
+    revoked,
+    next_slot: 1,
+    outstanding: 1,
+  }
+}
+
+/// A sweep of the grant UTxO of `grant`, by the device, under `state`
+/// and `range`.
+fn sweep_transaction(
+  grant_utxo: Output,
+  state: AccountState,
+  range: Interval,
+) -> Transaction {
+  logic_transaction(
+    [input(0, control_output(state, 2_000_000)), input(1, grant_utxo)],
+    [
+      control_output(AccountState { ..state, outstanding: 0 }, 2_000_000),
+      change(2_000_000),
+    ],
+    grant_burn(0),
+    [device_key],
+    range,
+  )
+}
+
+/// An old shape grant: its recipients are a list of addresses, as issued
+/// before a recipient could name a policy.
+fn old_shape_grant_data() -> Data {
+  let old_recipient: Data = recipient_address()
+  let scope = builtin.constr_data(
+    0,
+    [
+      {
+        let asset: Data = lovelace_asset_data()
+        asset
+      },
+      builtin.i_data(3_000_000),
+      builtin.i_data(5_000_000),
+      builtin.i_data(0),
+      builtin.i_data(0),
+      builtin.i_data(expiry),
+      builtin.list_data([old_recipient]),
+    ],
+  )
+  builtin.constr_data(
+    0,
+    [builtin.i_data(0), builtin.b_data(stranger_key), builtin.i_data(0), scope],
+  )
+}
+
+/// The lovelace asset as data.
+fn lovelace_asset_data() -> Data {
+  let asset: Data = Asset { policy_id: #"", asset_name: #"" }
+  asset
+}
+
+/// The grant UTxO of slot 0 carrying the old shape grant inline.
+fn old_shape_grant_output() -> Output {
+  output(
+    account_address(),
+    grant_value(stake_script_hash, 0, 2_000_000),
+    InlineDatum(old_shape_grant_data()),
+  )
+}
+
+// Dodging the check
+
+/// The grantee pays the policied recipient's payment credential under a
+/// stake part the grant does not list, hoping the logic matches on the
+/// payment credential alone and asks for no policy. The whole address
+/// is compared, the output reaches no recipient and pays_only_recipients
+/// returns False.
+/// Proves INV-36.
+test attack_recipient_policy_dodging_same_payment_credential_with_another_stake_part() {
+  let grant = single_policied_grant()
+  !policied_spend(
+    grant,
+    outputs_paying(
+      grant,
+      2_000_000,
+      recipient_address() |> address.with_delegation_key(key(99)),
+    ),
+    [first_policy_hash],
+  )
+}
+
+/// The grantee pays the policied recipient's payment credential with a
+/// pointer stake part. A pointer is a distinct address and is not listed.
+/// Proves INV-36.
+test attack_recipient_policy_dodging_a_pointer_stake_part() {
+  let grant = single_policied_grant()
+  !policied_spend(
+    grant,
+    outputs_paying(
+      grant,
+      2_000_000,
+      Address {
+        ..recipient_address(),
+        stake_credential: Some(
+          Pointer { slot_number: 1, transaction_index: 2, certificate_index: 3 },
+        ),
+      },
+    ),
+    [first_policy_hash],
+  )
+}
+
+/// The grant lists the recipient with a stake part; the grantee pays its
+/// enterprise form, the same payment credential with no stake part. That
+/// is another address and is not listed.
+/// Proves INV-36.
+test attack_recipient_policy_dodging_the_enterprise_form_of_a_staked_recipient() {
+  let staked = recipient_address() |> address.with_delegation_key(key(98))
+  let grant = grant_listing([policied_entry(staked, first_policy_hash, 1)])
+  !policied_spend(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [first_policy_hash],
+  )
+}
+
+/// The grant lists the policied recipient without a stake part and the
+/// grantee pays the staked form. Same payment credential, listed nowhere.
+/// Proves INV-36.
+test attack_recipient_policy_dodging_a_staked_form_of_an_enterprise_recipient() {
+  let grant = single_policied_grant()
+  !policied_spend(
+    grant,
+    outputs_paying(
+      grant,
+      2_000_000,
+      recipient_address() |> address.with_delegation_key(key(98)),
+    ),
+    [first_policy_hash],
+  )
+}
+
+/// The grantee hides one payment to the policied recipient in the middle
+/// of a run of payments to a plain recipient and attaches no policy
+/// withdrawal, hoping only the first outputs are read. Every output is
+/// checked, so the hidden one still requires the script.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_dodging_an_output_hidden_among_many() {
+  let grant = grant_listing(
+    [plain_entry(), policied_entry(policied_address(1), first_policy_hash, 1)],
+  )
+  let padding = list.map(
+    list.range(1, 12),
+    fn(_) {
+      output(recipient_address(), assets.from_lovelace(100_000), NoDatum)
+    },
+  )
+  let outputs = list.concat(
+    list.concat(
+      [grant_output(with_caps(grant, 2_750_000, 0), 2_000_000)],
+      padding,
+    ),
+    [
+      output(policied_address(1), assets.from_lovelace(1_050_000), NoDatum),
+      change(7_750_000),
+      ..padding
+    ],
+  )
+  !policied_spend(grant, outputs, [])
+}
+
+/// The same hidden payment accompanied by the withdrawal is accepted, so
+/// the check above refuses for the missing run and not for the padding.
+test recipient_policy_output_hidden_among_many_runs_the_named_policy() {
+  let grant = grant_listing(
+    [plain_entry(), policied_entry(policied_address(1), first_policy_hash, 1)],
+  )
+  let padding = list.map(
+    list.range(1, 12),
+    fn(_) {
+      output(recipient_address(), assets.from_lovelace(100_000), NoDatum)
+    },
+  )
+  let outputs = list.concat(
+    list.concat(
+      [grant_output(with_caps(grant, 2_750_000, 0), 2_000_000)],
+      padding,
+    ),
+    [
+      output(policied_address(1), assets.from_lovelace(1_050_000), NoDatum),
+      change(7_750_000),
+      ..padding
+    ],
+  )
+  policied_spend(grant, outputs, [first_policy_hash])
+}
+
+/// A device lists two recipients with the same payment credential and
+/// different stake parts, one plain and one policied. They are distinct
+/// recipients; paying the plain one runs no policy, as listed.
+test recipient_policy_same_payment_credential_under_another_stake_part_is_another_recipient() {
+  let staked = recipient_address() |> address.with_delegation_key(key(97))
+  let grant = grant_listing(
+    [
+      plain_recipient(recipient_address()),
+      policied_entry(staked, first_policy_hash, 1),
+    ],
+  )
+  policied_spend(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [],
+  )
+}
+
+/// A device lists the account address itself under a policy. The grant
+/// UTxO written back and the change are outputs at the account address, so
+/// every spend pays that recipient and must run the policy, with or
+/// without an outflow. The grantee cannot dodge by paying only the account.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_on_the_account_address_runs_on_every_spend() {
+  let grant = grant_listing(
+    [policied_entry(account_address(), first_policy_hash, 1)],
+  )
+  !policied_spend(
+    grant,
+    [
+      grant_output(with_caps(grant, 5_000_000, 0), 2_000_000),
+      change(10_000_000),
+    ],
+    [],
+  )
+}
+
+/// A recipient at the account address under a policy accepts a spend
+/// once the policy runs, the logic asking only for the run.
+test recipient_policy_on_the_account_address_is_satisfied_by_its_run() {
+  let grant = grant_listing(
+    [policied_entry(account_address(), first_policy_hash, 1)],
+  )
+  policied_spend(
+    grant,
+    [
+      grant_output(with_caps(grant, 5_000_000, 0), 2_000_000),
+      change(10_000_000),
+    ],
+    [first_policy_hash],
+  )
+}
+
+// Wrong script
+
+/// The grantee attaches a zero withdrawal from another script, one it
+/// controls, instead of the script the recipient names. `withdraws_from`
+/// looks for exactly the named credential.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_wrong_script_withdrawal_from_another_script() {
+  let grant = single_policied_grant()
+  !policied_spend(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [second_policy_hash],
+  )
+}
+
+/// The grantee withdraws from a key credential carrying the same 28 bytes
+/// as the policy script. A reward account of a key hash runs no script.
+/// `withdraws_from` compares the credential as `Script(hash)`, so the
+/// key form does not count and the policy never ran.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_wrong_script_key_credential_with_the_policy_hash() {
+  let grant = single_policied_grant()
+  let tx = policied_spend_tx(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [],
+  )
+  !run(
+    Transaction {
+      ..tx,
+      withdrawals: [
+        Pair(VerificationKey(first_policy_as_key), 0),
+        ..tx.withdrawals
+      ],
+    },
+  )
+}
+
+/// The same spend with the `Script` credential is accepted, so the
+/// refusal above comes from the credential kind alone.
+test recipient_policy_a_script_withdrawal_with_the_policy_hash_is_accepted() {
+  let grant = single_policied_grant()
+  policied_spend(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [first_policy_hash],
+  )
+}
+
+/// A nonzero withdrawal from the policy script. The logic does not read
+/// the amount: the ledger runs the script for any withdrawal and rejects
+/// an amount other than the reward balance, which is zero since the
+/// script refuses delegation certificates.
+test recipient_policy_a_nonzero_withdrawal_runs_the_script_like_a_zero_one() {
+  let grant = single_policied_grant()
+  let tx = policied_spend_tx(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [],
+  )
+  run(
+    Transaction {
+      ..tx,
+      withdrawals: [
+        Pair(Script(first_policy_hash), 5_000_000),
+        ..tx.withdrawals
+      ],
+    },
+  )
+}
+
+/// Three recipients name three scripts and all three are paid. Each
+/// subset that leaves one script out must be refused, whichever is left
+/// out: every paid policied recipient is checked.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_wrong_script_only_some_scripts_run() {
+  let grant = grant_listing(
+    [
+      policied_entry(policied_address(1), first_policy_hash, 1),
+      policied_entry(policied_address(2), second_policy_hash, 2),
+      policied_entry(policied_address(3), third_policy_hash, 3),
+    ],
+  )
+  let outputs = [
+    grant_output(with_caps(grant, 2_000_000, 0), 2_000_000),
+    change(7_000_000),
+    output(policied_address(1), assets.from_lovelace(1_000_000), NoDatum),
+    output(policied_address(2), assets.from_lovelace(1_000_000), NoDatum),
+    output(policied_address(3), assets.from_lovelace(1_000_000), NoDatum),
+  ]
+  and {
+    !policied_spend(grant, outputs, [first_policy_hash, second_policy_hash]),
+    !policied_spend(grant, outputs, [first_policy_hash, third_policy_hash]),
+    !policied_spend(grant, outputs, [second_policy_hash, third_policy_hash]),
+    !policied_spend(grant, outputs, [first_policy_hash]),
+    !policied_spend(grant, outputs, []),
+    policied_spend(
+      grant,
+      outputs,
+      [first_policy_hash, second_policy_hash, third_policy_hash],
+    ),
+  }
+}
+
+/// Two recipients share one policy script. One run of the script, one
+/// withdrawal, is enough for both, the script reads both entries; the
+/// logic does not demand a run per recipient.
+test recipient_policy_one_run_covers_two_recipients_naming_the_same_script() {
+  let grant = grant_listing(
+    [
+      policied_entry(policied_address(1), first_policy_hash, 1),
+      policied_entry(policied_address(2), first_policy_hash, 2),
+    ],
+  )
+  policied_spend(
+    grant,
+    [
+      grant_output(with_caps(grant, 3_000_000, 0), 2_000_000),
+      change(8_000_000),
+      output(policied_address(1), assets.from_lovelace(1_000_000), NoDatum),
+      output(policied_address(2), assets.from_lovelace(1_000_000), NoDatum),
+    ],
+    [first_policy_hash],
+  )
+}
+
+/// A recipient that is listed and not paid requires no run, even with a
+/// policy, so the other recipient's script alone is enough.
+test recipient_policy_unpaid_policied_recipient_requires_no_run() {
+  let grant = grant_listing(
+    [
+      policied_entry(policied_address(1), first_policy_hash, 1),
+      policied_entry(policied_address(2), second_policy_hash, 2),
+    ],
+  )
+  policied_spend(
+    grant,
+    outputs_paying(grant, 2_000_000, policied_address(2)),
+    [second_policy_hash],
+  )
+}
+
+// Tampering
+
+/// The three recipients a spend's recreated grant must carry unchanged
+/// in every tamper test.
+fn tamper_recipients() -> List<Recipient> {
+  [
+    policied_entry(policied_address(1), first_policy_hash, 1),
+    plain_recipient(policied_address(2)),
+    policied_entry(policied_address(3), second_policy_hash, 3),
+  ]
+}
+
+/// Whether the logic accepts a spend of the grant listing
+/// `tamper_recipients` into a recreated grant listing `recreated`.
+fn accepts_recreated_recipients(recreated: List<Recipient>) -> Bool {
+  let grant = grant_listing(tamper_recipients())
+  policied_spend(
+    grant,
+    [
+      grant_output(
+        with_caps(
+          Grant {
+            ..grant,
+            scope: Scope { ..grant.scope, recipients: recreated },
+          },
+          3_000_000,
+          0,
+        ),
+        2_000_000,
+      ),
+      change(8_000_000),
+      output(policied_address(1), assets.from_lovelace(2_000_000), NoDatum),
+    ],
+    [first_policy_hash],
+  )
+}
+
+test recipient_policy_recreated_grant_keeping_every_recipient_is_accepted() {
+  accepts_recreated_recipients(tamper_recipients())
+}
+
+/// A spend that changes the address of one recipient in the recreated
+/// grant, at each of three positions, would let a later spend pay
+/// the new address. `is_grant_within` compares the whole recipient list,
+/// so every position is covered.
+/// Proves INV-39.
+test attack_recipient_policy_tamper_a_recipient_address_at_each_position() {
+  expect [a, b, c] = tamper_recipients()
+  let moved = fn(entry: Recipient) {
+    Recipient { ..entry, address: address.from_verification_key(key(77)) }
+  }
+  and {
+    !accepts_recreated_recipients([moved(a), b, c]),
+    !accepts_recreated_recipients([a, moved(b), c]),
+    !accepts_recreated_recipients([a, b, moved(c)]),
+  }
+}
+
+/// The recreated grant swaps a policy script for one the attacker runs,
+/// at each policied position.
+/// Proves INV-39.
+test attack_recipient_policy_tamper_a_policy_script_at_each_position() {
+  expect [a, b, c] = tamper_recipients()
+  let rescripted = fn(entry: Recipient, n: Int) {
+    Recipient {
+      ..entry,
+      policy: Some(
+        GrantPolicy {
+          script: second_policy_hash,
+          settings: {
+            let d: Data = n
+            d
+          },
+        },
+      ),
+    }
+  }
+  and {
+    !accepts_recreated_recipients([rescripted(a, 1), b, c]),
+    !accepts_recreated_recipients(
+      [a, b, policied_entry(policied_address(3), first_policy_hash, 3)],
+    ),
+  }
+}
+
+/// The recreated grant changes the settings a policy script reads, at
+/// each policied position.
+/// Proves INV-39.
+test attack_recipient_policy_tamper_settings_at_each_position() {
+  expect [a, b, c] = tamper_recipients()
+  and {
+    !accepts_recreated_recipients(
+      [policied_entry(policied_address(1), first_policy_hash, 9), b, c],
+    ),
+    !accepts_recreated_recipients(
+      [a, b, policied_entry(policied_address(3), second_policy_hash, 9)],
+    ),
+  }
+}
+
+/// The recreated grant drops a policy, at each policied position, or
+/// adds one to the plain recipient.
+/// Proves INV-39.
+test attack_recipient_policy_tamper_dropping_or_adding_a_policy() {
+  expect [a, b, c] = tamper_recipients()
+  and {
+    !accepts_recreated_recipients([plain_recipient(policied_address(1)), b, c]),
+    !accepts_recreated_recipients(
+      [a, policied_entry(policied_address(2), first_policy_hash, 1), c],
+    ),
+    !accepts_recreated_recipients([a, b, plain_recipient(policied_address(3))]),
+  }
+}
+
+/// The recreated grant reorders the recipients, adds one or removes one.
+/// Proves INV-39.
+test attack_recipient_policy_tamper_reordering_adding_or_removing_recipients() {
+  expect [a, b, c] = tamper_recipients()
+  and {
+    !accepts_recreated_recipients([b, a, c]),
+    !accepts_recreated_recipients([c, b, a]),
+    !accepts_recreated_recipients([a, c, b]),
+    !accepts_recreated_recipients([a, b]),
+    !accepts_recreated_recipients([a, c]),
+    !accepts_recreated_recipients([b, c]),
+    !accepts_recreated_recipients(
+      [a, b, c, plain_recipient(address.from_verification_key(key(66)))],
+    ),
+  }
+}
+
+/// A tamper of the given kind at the given position of an 8 entry
+/// recipient list. Kinds: 0 rewrites the address, 1 the script, 2 the
+/// settings, 3 clears the policy, 4 sets one on a plain entry, 5 removes
+/// the entry, 6 swaps it with the next, 7 inserts a duplicate entry.
+fn tampered_at(
+  recipients: List<Recipient>,
+  position: Int,
+  kind: Int,
+) -> List<Recipient> {
+  let index = position % list.length(recipients)
+  let entry = when list.at(recipients, index) is {
+    Some(entry) -> entry
+    None -> fail
+  }
+  let rebuild = fn(replacement: List<Recipient>) {
+    list.concat(
+      list.take(recipients, index),
+      list.concat(replacement, list.drop(recipients, index + 1)),
+    )
+  }
+  when kind is {
+    0 -> rebuild([Recipient { ..entry, address: policied_address(50) }])
+    1 -> rebuild([policied_entry(entry.address, third_policy_hash, 1)])
+    2 -> rebuild([policied_entry(entry.address, first_policy_hash, 777)])
+    3 -> rebuild([plain_recipient(entry.address)])
+    4 -> rebuild([policied_entry(entry.address, second_policy_hash, 42)])
+    5 -> rebuild([])
+    6 ->
+      if index + 1 < list.length(recipients) {
+        let next = when list.at(recipients, index + 1) is {
+          Some(n) -> n
+          None -> fail
+        }
+        list.concat(
+          list.take(recipients, index),
+          [next, entry, ..list.drop(recipients, index + 2)],
+        )
+      } else {
+        rebuild([Recipient { ..entry, address: policied_address(60) }])
+      }
+    _ -> rebuild([entry, entry])
+  }
+}
+
+/// A shape of 8 entries, alternating policied and plain, whose tampers
+/// are all observable at every position.
+fn eight_tamper_recipients() -> List<Recipient> {
+  list.map(
+    list.range(0, 7),
+    fn(n) {
+      if n % 2 == 0 {
+        policied_entry(policied_address(n + 1), first_policy_hash, n)
+      } else {
+        plain_recipient(policied_address(n + 1))
+      }
+    },
+  )
+}
+
+/// Whether the two lists differ at any position, the precondition for the
+/// tamper below: a tamper that lands on an entry equal to its replacement
+/// is the same list, not a tamper.
+fn differs(left: List<Recipient>, right: List<Recipient>) -> Bool {
+  list.length(left) != list.length(right) || list.any(
+    list.zip(left, right),
+    fn(pair) { pair.1st != pair.2nd },
+  )
+}
+
+/// For any position in the list and any kind of change that actually
+/// alters it, a recreated grant whose recipients differ from the spent
+/// grant's is refused.
+/// Proves INV-39.
+test prop_recipient_policy_tamper_at_any_position_is_refused(
+  picked via fuzz.tuple(fuzz.int_between(0, 7), fuzz.int_between(0, 7)),
+) {
+  let (position, kind) = picked
+  let recipients = eight_tamper_recipients()
+  let tampered = tampered_at(recipients, position, kind)
+  let grant = grant_listing(recipients)
+  let recreated = Grant {
+    ..with_caps(grant, 3_000_000, 0),
+    scope: Scope {
+      ..with_caps(grant, 3_000_000, 0).scope,
+      recipients: tampered,
+    },
+  }
+  if differs(recipients, tampered) {
+    !policied_spend(
+      grant,
+      [
+        grant_output(recreated, 2_000_000),
+        change(8_000_000),
+        output(policied_address(1), assets.from_lovelace(2_000_000), NoDatum),
+      ],
+      [first_policy_hash],
+    )
+  } else {
+    True
+  }
+}
+
+/// For any address a grantee can name, an output there is refused unless
+/// the address equals a listed recipient or the account, and the grant
+/// accepts it when it does, whole address compared.
+/// Proves INV-36.
+test prop_recipient_policy_recipient_matching_compares_whole_addresses(
+  key_index via fuzz.int_between(0, 255),
+) {
+  let listed = policied_address(1)
+  let destination = address.from_verification_key(key(key_index))
+  let grant = grant_listing([policied_entry(listed, first_policy_hash, 1)])
+  let accepted = policied_spend(
+    grant,
+    outputs_paying(grant, 1_000_000, destination),
+    [first_policy_hash],
+  )
+  accepted == ( destination == listed )
+}
+
+/// For any subset of 8 policied recipients being paid and any subset of
+/// their scripts withdrawn, the spend is accepted exactly when every paid
+/// recipient's own script is among the withdrawals.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test prop_recipient_policy_runs_exactly_the_named_scripts(
+  picked via fuzz.tuple(
+    fuzz.set_between(fuzz.int_between(1, 8), 0, 8),
+    fuzz.set_between(fuzz.int_between(1, 8), 0, 8),
+  ),
+) {
+  let (paid, withdrawn) = picked
+  let hash_of = fn(n: Int) {
+    bytearray.push(#"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", n)
+  }
+  let grant = grant_listing(
+    list.map(
+      list.range(1, 8),
+      fn(n) { policied_entry(policied_address(n), hash_of(n), n) },
+    ),
+  )
+  let total = list.length(paid) * 100_000
+  let outputs = list.concat(
+    [
+      grant_output(with_caps(grant, 5_000_000 - total, 0), 2_000_000),
+      change(10_000_000 - total),
+    ],
+    list.map(
+      paid,
+      fn(n) {
+        output(policied_address(n), assets.from_lovelace(100_000), NoDatum)
+      },
+    ),
+  )
+  let scripts = list.map(withdrawn, hash_of)
+  let should_pass = list.all(paid, fn(n) { list.has(withdrawn, n) })
+  policied_spend(grant, outputs, scripts) == should_pass
+}
+
+// Multiple accounts and grants
+
+/// Two accounts both grant the agent. The first account's grant names a
+/// policy on the recipient, the second names another policy on the same
+/// recipient, and the transaction runs only the second's. The first
+/// account's logic reads only its own grant's entries, so the other
+/// account's policy run cannot satisfy it.
+/// Proves the recipient policy rule of `grant_spend_rule` and INV-31.
+test attack_recipient_policy_one_run_of_another_accounts_policy_does_not_satisfy_this_account() {
+  let tx = test_helpers.transaction(
+    [
+      input(0, grant_output(single_policied_grant(), 2_000_000)),
+      input(1, fund_output(assets.from_lovelace(10_000_000))),
+      input(
+        2,
+        other_grant_output(
+          grant_listing(
+            [policied_entry(recipient_address(), second_policy_hash, 1)],
+          ),
+          2_000_000,
+        ),
+      ),
+      input(3, other_fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    [
+      grant_output(with_caps(single_policied_grant(), 3_000_000, 0), 2_000_000),
+      change(8_000_000),
+      other_grant_output(
+        with_caps(
+          grant_listing(
+            [policied_entry(recipient_address(), second_policy_hash, 1)],
+          ),
+          3_000_000,
+          0,
+        ),
+        2_000_000,
+      ),
+      other_fund_output(assets.from_lovelace(8_000_000)),
+      output(recipient_address(), assets.from_lovelace(4_000_000), NoDatum),
+    ],
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing(
+        [
+          control_reference(),
+          input(101, other_control_output(other_state(), 2_000_000)),
+        ],
+      )
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash, next_logic_hash, second_policy_hash])
+  !run(tx)
+}
+
+/// Two accounts each grant the agent the policied recipient under the
+/// same script. The agent pays one 2 ADA output there as the supposed
+/// payment of both grants and sends the other 2 ADA to itself, relying on
+/// the single policy run to approve both. Each logic nets its own
+/// account's address, and the second 2 ADA reaches no listed recipient,
+/// so `pays_only_recipients` refuses both spends; the policy itself
+/// additionally refuses two grant inputs.
+/// Proves INV-36.
+test attack_recipient_policy_two_grants_paying_one_output_is_netted_per_account() {
+  let policied_a = single_policied_grant()
+  let policied_b = grant_listing(
+    [policied_entry(recipient_address(), first_policy_hash, 2)],
+  )
+  let tx = test_helpers.transaction(
+    [
+      input(0, grant_output(policied_a, 2_000_000)),
+      input(1, fund_output(assets.from_lovelace(10_000_000))),
+      input(2, other_grant_output(policied_b, 2_000_000)),
+      input(3, other_fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    [
+      grant_output(with_caps(policied_a, 3_000_000, 0), 2_000_000),
+      change(8_000_000),
+      other_grant_output(with_caps(policied_b, 3_000_000, 0), 2_000_000),
+      other_fund_output(assets.from_lovelace(8_000_000)),
+      output(recipient_address(), assets.from_lovelace(2_000_000), NoDatum),
+      output(attacker_address(), assets.from_lovelace(2_000_000), NoDatum),
+    ],
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing(
+        [
+          control_reference(),
+          input(101, other_control_output(other_state(), 2_000_000)),
+        ],
+      )
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash, next_logic_hash, first_policy_hash])
+  and {
+    !run(tx),
+    !run_as(next_logic_hash, tx),
+  }
+}
+
+/// Two grants of one account spent together. The logic allows one
+/// account token input per transaction, whichever recipients they name.
+/// Proves INV-31.
+test attack_recipient_policy_two_grants_of_one_account_in_one_transaction() {
+  let a = single_policied_grant()
+  let b = Grant {
+    ..token_grant(),
+    slot: 1,
+    scope: Scope { ..lovelace_scope(), recipients: [plain_entry()] },
+  }
+  let tx = test_helpers.transaction(
+    [
+      input(0, grant_output(a, 2_000_000)),
+      input(1, grant_output(b, 2_000_000)),
+      input(2, fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    [grant_output(a, 2_000_000), grant_output(b, 2_000_000), change(10_000_000)],
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing([control_reference()])
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash, first_policy_hash])
+  !run(tx)
+}
+
+// Other exits
+
+/// A foreign token is minted by the transaction and paid to the policied
+/// recipient without the policy. The mint brings its value from outside
+/// the account, but the payment still names the recipient, so the script
+/// must run on every output there.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_other_exit_foreign_mint_paid_to_the_policied_recipient() {
+  let grant = single_policied_grant()
+  let tx = test_helpers.transaction(
+    [
+      input(0, grant_output(grant, 2_000_000)),
+      input(1, fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    [
+      grant_output(with_caps(grant, 5_000_000, 0), 2_000_000),
+      change(10_000_000),
+      output(recipient_address(), token(5), NoDatum),
+    ],
+    token(5),
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing([control_reference()])
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash])
+  !run(tx)
+}
+
+/// An account token minted beside a policied spend. Issuance needs the
+/// control UTxO spent, and the agent path admits no mint under the policy.
+/// Proves INV-30.
+test attack_recipient_policy_other_exit_account_token_minted_on_the_agent_path() {
+  let grant = single_policied_grant()
+  let tx = test_helpers.transaction(
+    [
+      input(0, grant_output(grant, 2_000_000)),
+      input(1, fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    [
+      grant_output(with_caps(grant, 5_000_000, 0), 2_000_000),
+      change(10_000_000),
+      output(account_address(), grant_token(stake_script_hash, 5), NoDatum),
+    ],
+    grant_token(stake_script_hash, 5),
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing([control_reference()])
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash, first_policy_hash])
+  !run(tx)
+}
+
+/// The grantee attaches a certificate instead of the withdrawal, hoping
+/// that some other credential's script runs in its place. A certificate
+/// is no withdrawal, so the check still fails.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_other_exit_a_certificate_does_not_stand_in_for_the_withdrawal() {
+  let grant = single_policied_grant()
+  let tx = policied_spend_tx(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [],
+  )
+  !run(tx |> publishing(registration(first_policy_hash)))
+}
+
+/// A withdrawal from the account's own stake script instead of the
+/// policy's. That credential is not the one the recipient names, whether
+/// or not the stake script approves it.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_other_exit_a_withdrawal_from_another_credential() {
+  let grant = single_policied_grant()
+  !policied_spend(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [stake_script_hash],
+  )
+}
+
+/// A reference script parked on the output to the policied recipient
+/// still requires the script to run. The value of the script is
+/// not visible as an exit; the policy decides what may be parked there.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_other_exit_a_reference_script_on_the_policied_output() {
+  let grant = single_policied_grant()
+  let tx = policied_spend_tx(
+    grant,
+    [
+      grant_output(with_caps(grant, 3_000_000, 0), 2_000_000),
+      change(8_000_000),
+      Output {
+        address: recipient_address(),
+        value: assets.from_lovelace(2_000_000),
+        datum: NoDatum,
+        reference_script: Some(first_policy_hash),
+      },
+    ],
+    [],
+  )
+  !run(tx)
+}
+
+/// A contract call beside the policied spend: an input at a foreign
+/// script carrying a redeemer that decodes as `SpendWithGrant`. The foreign
+/// input is not at the account address, so the logic leaves it to its
+/// own script, and the payment to the policied recipient still needs
+/// the policy.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_other_exit_foreign_script_input_in_a_contract_call() {
+  let grant = single_policied_grant()
+  let foreign = Input {
+    output_reference: output_reference(50),
+    output: output(
+      address.from_script(second_policy_hash),
+      assets.from_lovelace(4_000_000),
+      NoDatum,
+    ),
+  }
+  let tx = policied_spend_tx(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [],
+  )
+  let redeemer: Data = SpendWithGrant
+  let with_foreign = Transaction {
+    ..tx,
+    inputs: list.concat(tx.inputs, [foreign]),
+    redeemers: list.concat(
+      tx.redeemers,
+      [Pair(transaction.Spend(output_reference(50)), redeemer)],
+    ),
+  }
+  !run(with_foreign)
+}
+
+// Interactions with the rest of the contract
+
+/// A device sweeps a policied grant dead by generation. The sweep reads
+/// the stable prefix, so the policy on the recipient is not in the way.
+test recipient_policy_grant_sweeps_when_dead_by_generation() {
+  let grant = single_policied_grant()
+  run(
+    sweep_transaction(
+      grant_output(grant, 2_000_000),
+      sweep_state(1, []),
+      interval.everything,
+    ),
+  )
+}
+
+/// A device sweeps a policied grant dead by revocation.
+test recipient_policy_grant_sweeps_when_dead_by_revocation() {
+  let grant = single_policied_grant()
+  run(
+    sweep_transaction(
+      grant_output(grant, 2_000_000),
+      sweep_state(0, [0]),
+      interval.everything,
+    ),
+  )
+}
+
+/// A device sweeps a policied grant dead by expiry. Expiry is read through
+/// a full decode, so the `Recipient` list must decode there too.
+test recipient_policy_grant_sweeps_when_dead_by_expiry() {
+  let grant = single_policied_grant()
+  run(
+    sweep_transaction(
+      grant_output(grant, 2_000_000),
+      sweep_state(0, []),
+      interval.after(expiry + 1),
+    ),
+  )
+}
+
+/// The agent cannot spend a policied grant once it is dead by revocation,
+/// whatever policies it runs.
+/// Proves INV-32.
+test attack_recipient_policy_revoked_grant_spend_is_refused_with_its_policy_running() {
+  let grant = single_policied_grant()
+  let tx = policied_spend_tx(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [first_policy_hash],
+  )
+  !run(
+    Transaction {
+      ..tx,
+      reference_inputs: [control_reference_of(sweep_state(0, [0]))],
+    },
+  )
+}
+
+/// A grant datum in the old shape, recipients as bare addresses, is
+/// swept by generation: the sweep reads only the stable prefix.
+test recipient_policy_old_shape_grant_sweeps_by_generation() {
+  run(
+    sweep_transaction(
+      old_shape_grant_output(),
+      sweep_state(1, []),
+      interval.everything,
+    ),
+  )
+}
+
+/// An old shape grant cannot be swept by expiry. Expiry needs a full
+/// decode, the old shape does not decode as `Grant`, and it is not dead
+/// by generation or slot, so the sweep falls to the `else` and refuses.
+/// Proves INV-29.
+test attack_recipient_policy_old_shape_grant_is_not_swept_by_expiry() {
+  !run(
+    sweep_transaction(
+      old_shape_grant_output(),
+      sweep_state(0, []),
+      interval.after(expiry + 1),
+    ),
+  )
+}
+
+/// An old shape grant cannot be spent: `grant_datum` decodes the grant
+/// strictly and aborts on the bare address list.
+/// Proves INV-46.
+test attack_recipient_policy_old_shape_grant_spend_aborts() fail {
+  let tx = test_helpers.transaction(
+    [
+      input(0, old_shape_grant_output()),
+      input(1, fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    [old_shape_grant_output(), change(10_000_000)],
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing([control_reference()])
+    |> with_proxy_redeemers()
+    |> withdrawing([logic_hash])
+  run(tx)
+}
+
+/// An upgrade raises the generation while a policied grant is live. The
+/// old grant is dead under the new generation, whatever the new logic
+/// is and whatever policy runs: the spend is refused and the sweep by
+/// the new logic is accepted.
+/// Proves INV-32 and INV-43.
+test attack_recipient_policy_upgrade_kills_live_policied_grants() {
+  let grant = single_policied_grant()
+  let spend = test_helpers.transaction(
+    [
+      input(0, grant_output(grant, 2_000_000)),
+      input(1, fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing([control_reference_of(upgraded_state())])
+    |> with_proxy_redeemers()
+    |> withdrawing([next_logic_hash, first_policy_hash])
+  !run_as(next_logic_hash, spend)
+}
+
+/// A device upgrades the account while a policied grant is live. The
+/// proxy and the logic never read the recipient policies on that path,
+/// so a live policy cannot hold the owner hostage.
+test recipient_policy_upgrade_is_not_blocked_by_a_live_policied_grant() {
+  let next = AccountState { ..upgraded_state(), grant_generation: 1 }
+  run(upgrade_into(next))
+}
+
+/// `Fund` beside a policied spend. The deposits pay in as usual; the
+/// grant accounting nets the account and the withdrawal runs the policy.
+test recipient_policy_a_fund_input_beside_a_policied_spend_is_accepted() {
+  let grant = single_policied_grant()
+  policied_spend(
+    grant,
+    outputs_paying(grant, 2_000_000, recipient_address()),
+    [first_policy_hash],
+  )
+}
+
+/// A deposit spent under `Device` beside a policied grant spend on the
+/// agent path. Only `SpendWithGrant` and `Fund` may ride on the agent
+/// path, whatever policy runs.
+/// Proves INV-30.
+test attack_recipient_policy_device_redeemer_beside_a_policied_spend() {
+  let grant = single_policied_grant()
+  !run(
+    policied_spend_tx(
+      grant,
+      outputs_paying(grant, 2_000_000, recipient_address()),
+      [first_policy_hash],
+    )
+      |> spending(1, Device),
+  )
+}
+
+/// A `SweepGrant` on the deposit beside a policied spend on the agent path
+/// fails the same way.
+/// Proves INV-30.
+test attack_recipient_policy_sweep_redeemer_beside_a_policied_spend() {
+  let grant = single_policied_grant()
+  !run(
+    policied_spend_tx(
+      grant,
+      outputs_paying(grant, 2_000_000, recipient_address()),
+      [first_policy_hash],
+    )
+      |> spending(1, SweepGrant),
+  )
+}
+
+// Issuance
+
+/// Issuing a grant whose two recipients share an address, the first
+/// policied and the second plain: if a duplicate slipped in, a payment
+/// could match the plain entry and dodge the policy.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_issuance_duplicate_address_with_and_without_a_policy() {
+  !issue_listing(
+    [
+      policied_entry(policied_address(1), first_policy_hash, 1),
+      plain_recipient(policied_address(1)),
+    ],
+  )
+}
+
+/// Issuing a grant whose two policied entries share an address under
+/// different scripts: the first entry would satisfy the check and the
+/// second would be meaningless.
+/// Proves the recipient policy rule of `grant_spend_rule`.
+test attack_recipient_policy_issuance_duplicate_address_under_two_scripts() {
+  !issue_listing(
+    [
+      policied_entry(policied_address(1), first_policy_hash, 1),
+      policied_entry(policied_address(1), second_policy_hash, 1),
+    ],
+  )
+}
+
+/// Issuing a policy whose script hash is not 28 bytes names no script a
+/// withdrawal could run, so the grant would be unspendable toward that
+/// recipient. Too short, too long and empty are all refused.
+/// Proves INV-45.
+test attack_recipient_policy_issuance_malformed_policy_hash() {
+  and {
+    !issue_listing([policied_entry(policied_address(1), #"a1a1a1", 1)]),
+    !issue_listing([policied_entry(policied_address(1), #"", 1)]),
+    !issue_listing(
+      [
+        policied_entry(
+          policied_address(1),
+          #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          1,
+        ),
+      ],
+    ),
+  }
+}
+
+/// `count` recipients, each policied, each naming its own script and an
+/// address of its own.
+fn fully_policied_recipients(count: Int, settings: Int) -> List<Recipient> {
+  list.map(
+    list.range(1, count),
+    fn(n) {
+      policied_entry(
+        policied_address(n),
+        bytearray.push(
+          #"c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+          n,
+        ),
+        settings,
+      )
+    },
+  )
+}
+
+/// A grant may list 8 policied recipients, the most a scope may hold.
+test recipient_policy_issuance_of_eight_policied_recipients_is_accepted() {
+  issue_listing(fully_policied_recipients(8, 1))
+}
+
+/// A ninth policied recipient breaks the recipient bound, whatever its
+/// policy says.
+/// Proves INV-45.
+test attack_recipient_policy_issuance_nine_policied_recipients() {
+  !issue_listing(fully_policied_recipients(9, 1))
+}
+
+/// The settings a policy reads are opaque Data of any size: a very long
+/// settings value is well formed for the logic. Bounding its size would
+/// have to serialise it on chain, and its only cost falls on the issuing
+/// device's own grant.
+test recipient_policy_issuance_with_large_opaque_settings_is_accepted() {
+  let big: Data = builtin.b_data(#"aa")
+  let wrapped: Data = builtin.list_data(
+    list.map(list.range(1, 64), fn(_) { big }),
+  )
+  let entry = Recipient {
+    address: policied_address(1),
+    policy: Some(GrantPolicy { script: first_policy_hash, settings: wrapped }),
+  }
+  issue_listing([entry])
+}
+
+// RECIPIENT POLICY BUDGETS ****************************************************
+
+/// A 28 byte policy script hash ending in `n`.
+fn policy_hash(n: Int) -> ByteArray {
+  bytearray.push(#"c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0", n)
+}
+
+/// A settings value shaped like the example policies' settings: eleven
+/// fields, about 200 bytes of CBOR, with a key and two script hashes, two
+/// pinned asset classes, a price and three caps.
+fn realistic_settings() -> Data {
+  builtin.constr_data(
+    0,
+    [
+      builtin.constr_data(0, [builtin.b_data(key(55))]),
+      builtin.constr_data(0, [builtin.b_data(key(56))]),
+      builtin.constr_data(
+        0,
+        [builtin.b_data(key(57)), builtin.b_data(#"aabbccddeeff")],
+      ),
+      builtin.constr_data(1, []),
+      builtin.i_data(3),
+      builtin.i_data(1),
+      builtin.i_data(2_000_000),
+      builtin.i_data(1_000_000),
+      builtin.constr_data(0, [builtin.b_data(key(58))]),
+      builtin.b_data(#"aabbcc"),
+      builtin.i_data(1_900_000_000_000),
+    ],
+  )
+}
+
+/// `count` recipients at key addresses of their own, each under a policy
+/// of its own carrying `settings`.
+fn recipients_with_settings(count: Int, settings: Data) -> List<Recipient> {
+  list.map(
+    list.range(1, count),
+    fn(n) {
+      Recipient {
+        address: address.from_verification_key(key(180 + n)),
+        policy: Some(GrantPolicy { script: policy_hash(n), settings }),
+      }
+    },
+  )
+}
+
+/// The largest lovelace grant, listing `recipients`.
+fn largest_grant_listing(recipients: List<Recipient>) -> Grant {
+  Grant {
+    ..largest_lovelace_grant(),
+    scope: Scope { ..largest_lovelace_grant().scope, recipients },
+  }
+}
+
+/// A spend of `grant` over the largest state paying each of `paid`
+/// recipients, with every named script withdrawing, as the heaviest
+/// policied spend has it.
+fn largest_state_policied_spend_transaction(
+  grant: Grant,
+  paid: List<Recipient>,
+) -> Transaction {
+  logic_transaction(
+    [
+      input(0, grant_output(grant, 2_000_000)),
+      input(1, fund_output(assets.from_lovelace(10_000_000))),
+    ],
+    list.concat(
+      [
+        grant_output(with_caps(grant, 3_000_000, 0), 2_000_000),
+        change(10_000_000 - list.length(paid) * 100_000),
+      ],
+      list.map(
+        paid,
+        fn(recipient) {
+          output(recipient.address, assets.from_lovelace(100_000), NoDatum)
+        },
+      ),
+    ),
+    assets.zero,
+    [stranger_key],
+    interval.before(expiry - 1),
+  )
+    |> referencing([control_reference_of(largest_state())])
+    |> withdrawing(
+        list.filter_map(
+          paid,
+          fn(recipient) {
+            when recipient.policy is {
+              Some(policy) -> Some(policy.script)
+              None -> None
+            }
+          },
+        ),
+      )
+}
+
+/// The issuance over the largest state of `grant` as its next slot.
+fn largest_state_policied_issue_transaction(grant: Grant) -> Transaction {
+  let current = AccountState { ..largest_state(), outstanding: 0 }
+  let issued = Grant { ..grant, slot: largest_next_slot }
+  let next = AccountState {
+    ..current,
+    next_slot: largest_next_slot + 1,
+    outstanding: 1,
+  }
+  logic_transaction(
+    [input(0, control_output(current, 2_000_000))],
+    [control_output(next, 2_000_000), grant_output(issued, 2_000_000)],
+    grant_token(stake_script_hash, largest_next_slot),
+    [key(8)],
+    interval.everything,
+  )
+}
+
+/// A settings value of about 1 kilobyte, far beyond what a real policy
+/// reads, to bound how settings size scales the spend.
+fn oversized_settings() -> Data {
+  builtin.list_data(
+    list.map(
+      list.range(1, 32),
+      fn(_) {
+        builtin.b_data(
+          #"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+        )
+      },
+    ),
+  )
+}
+
+test budget_logic_largest_state_issue_eight_policied_recipients() {
+  let grant = largest_grant_listing(
+    recipients_with_settings(8, realistic_settings()),
+  )
+  run(largest_state_policied_issue_transaction(grant))
+}
+
+test budget_logic_largest_state_spend_eight_policied_recipients() {
+  let recipients = recipients_with_settings(8, realistic_settings())
+  let grant = largest_grant_listing(recipients)
+  run(largest_state_policied_spend_transaction(grant, recipients))
+}
+
+test budget_logic_largest_state_spend_one_of_eight_policied_recipients() {
+  let recipients = recipients_with_settings(8, realistic_settings())
+  let grant = largest_grant_listing(recipients)
+  expect [first, ..] = recipients
+  run(largest_state_policied_spend_transaction(grant, [first]))
+}
+
+test budget_logic_largest_state_spend_eight_policied_with_oversized_settings() {
+  let recipients = recipients_with_settings(8, oversized_settings())
+  let grant = largest_grant_listing(recipients)
+  run(largest_state_policied_spend_transaction(grant, recipients))
+}
+
+/// The datum of a grant with 8 policied recipients at a realistic size:
+/// a spend writes the grant back inline, so it counts against the 16 KB
+/// transaction limit alongside the witnesses and other outputs.
+test budget_eight_policied_grant_datum_is_within_the_transaction_size_limit() {
+  let grant: Data = largest_grant_listing(
+    recipients_with_settings(8, realistic_settings()),
+  )
+  bytearray.length(cbor.serialise(grant)) <= 4_096
 }
