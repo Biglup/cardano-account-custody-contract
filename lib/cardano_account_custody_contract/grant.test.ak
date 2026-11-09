@@ -26,10 +26,12 @@ use cardano_account_custody_contract/grant.{
   carries_grant_within, carries_no_reference_script, deposits_are_plain,
   ends_before_expiry, grant_after_spend, is_authorised_by_grantee, is_current,
   is_dead, leaving_value, pays_only_recipients, quantity_of_asset,
+  runs_recipient_policies,
   spends_one_account_token, starts_after_expiry, stays_within_scope,
 }
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/test_helpers.{
+  plain_recipient,
   account_address, control_output, control_value, device_key, fund_output,
   grant_output, grant_value, granted_state, input, lovelace_asset,
   lovelace_grant, lovelace_scope, other_account_address, other_fund_output,
@@ -37,7 +39,9 @@ use cardano_account_custody_contract/test_helpers.{
   stake_script_hash, state_datum, stranger_key, token, token_asset, token_grant,
   token_scope,
 }
-use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
+use cardano_account_custody_contract/types.{
+  AccountState, Asset, Grant, GrantPolicy, Recipient, Scope,
+}
 
 // CONSTANTS *******************************************************************
 
@@ -674,7 +678,7 @@ test pays_only_recipients_accepts_listed_destinations_and_the_account() {
       fund_output(assets.from_lovelace(1)),
     ],
     account_address(),
-    [recipient_address()],
+    [plain_recipient(recipient_address())],
   )
 }
 
@@ -688,7 +692,7 @@ test pays_only_recipients_rejects_an_unlisted_destination() {
       ),
     ],
     account_address(),
-    [recipient_address()],
+    [plain_recipient(recipient_address())],
   )
 }
 
@@ -697,7 +701,7 @@ test pays_only_recipients_compares_the_full_address() {
   !pays_only_recipients(
     [output(staked, assets.from_lovelace(1), NoDatum)],
     account_address(),
-    [recipient_address()],
+    [plain_recipient(recipient_address())],
   )
 }
 
@@ -1049,4 +1053,32 @@ test carries_no_reference_script_rejects_a_reference_script() {
     reference_script: Some(script_hash),
   }
   !carries_no_reference_script(weighted)
+}
+
+test runs_recipient_policies_ignores_a_recipient_that_is_not_paid() {
+  let settings: Data = 1
+  runs_recipient_policies(
+    [output(recipient_address(), assets.from_lovelace(1), NoDatum)],
+    [
+      Recipient {
+        address: address.from_verification_key(device_key),
+        policy: Some(GrantPolicy { script: device_key, settings }),
+      },
+    ],
+    [],
+  )
+}
+
+test runs_recipient_policies_requires_the_named_script_when_paid() {
+  let settings: Data = 1
+  !runs_recipient_policies(
+    [output(recipient_address(), assets.from_lovelace(1), NoDatum)],
+    [
+      Recipient {
+        address: recipient_address(),
+        policy: Some(GrantPolicy { script: device_key, settings }),
+      },
+    ],
+    [],
+  )
 }

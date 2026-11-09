@@ -32,6 +32,7 @@ use cardano/transaction.{
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/logic
 use cardano_account_custody_contract/test_helpers.{
+  plain_recipient,
   account_address, burn, control_input, control_output, control_reference,
   control_value, creation, device_key, expiry, fund_input, fund_output,
   grant_burn, grant_datum, grant_input, grant_output, grant_token, grant_value,
@@ -45,8 +46,8 @@ use cardano_account_custody_contract/test_helpers.{
   withdrawing,
 }
 use cardano_account_custody_contract/types.{
-  AccountState, BurnGrants, Device, Grant, IssueGrants, Run, Scope,
-  SpendWithGrant, SweepGrant,
+  AccountState, BurnGrants, Device, Grant, GrantPolicy, IssueGrants, Recipient,
+  Run, Scope, SpendWithGrant, SweepGrant,
 }
 use logic_v1
 
@@ -2046,7 +2047,7 @@ test spend_with_grant_rejects_changed_recipients() {
       ..spent_lovelace_grant(),
       scope: Scope {
         ..spent_lovelace_grant().scope,
-        recipients: [recipient_address()],
+        recipients: [plain_recipient(recipient_address())],
       },
     },
   )
@@ -3227,4 +3228,172 @@ test else_fails_for_any_other_purpose() fail {
     info: Voting(StakePool(stranger_key)),
   }
   logic_v1.logic_v1.else(script_hash, context)
+}
+
+// RECIPIENT POLICY TESTS ******************************************************
+
+const policy_hash = #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+
+const other_policy_hash =
+  #"a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+
+/// An address outside the recipients of the policied grant unless listed.
+fn plain_address() -> address.Address {
+  address.from_verification_key(other_device_key)
+}
+
+/// A recipient at the test recipient address with `settings` for a policy
+/// run by `script`.
+fn policied(script: ByteArray, settings: Data) -> Recipient {
+  Recipient {
+    address: recipient_address(),
+    policy: Some(GrantPolicy { script, settings }),
+  }
+}
+
+/// The lovelace grant listing a policied recipient and a plain one.
+fn policied_grant() -> Grant {
+  let settings: Data = 1
+  Grant {
+    ..lovelace_grant(),
+    scope: Scope {
+      ..lovelace_grant().scope,
+      recipients: [
+        policied(policy_hash, settings),
+        plain_recipient(plain_address()),
+      ],
+    },
+  }
+}
+
+/// A grant output carrying the policied grant with `lovelace` spent.
+fn policied_grant_output(grant: Grant, lovelace: Int) -> Output {
+  grant_output(with_caps(grant, 5_000_000 - lovelace, 0), 2_000_000)
+}
+
+/// A spend of the policied grant into `outputs`, withdrawing from
+/// `scripts` beside the logic.
+fn policied_spend(outputs: List<Output>, scripts: List<ByteArray>) -> Bool {
+  run(
+    grant_transaction_within(
+      interval.before(expiry - 1),
+      [grant_input(policied_grant()), fund_input()],
+      [control_reference()],
+      outputs,
+      assets.zero,
+      [stranger_key],
+    )
+      |> withdrawing(scripts),
+  )
+}
+
+/// The grant output, the change and a payout to the policied recipient.
+fn policied_outputs() -> List<Output> {
+  [
+    policied_grant_output(policied_grant(), 2_000_000),
+    change_of(assets.from_lovelace(8_000_000)),
+    payout(2_000_000),
+  ]
+}
+
+test spend_runs_the_policy_of_a_paid_recipient() {
+  policied_spend(policied_outputs(), [policy_hash])
+}
+
+test spend_without_the_policy_of_a_paid_recipient_is_refused() {
+  !policied_spend(policied_outputs(), [])
+}
+
+test spend_running_another_policy_than_the_recipient_names_is_refused() {
+  !policied_spend(policied_outputs(), [other_policy_hash])
+}
+
+test spend_to_a_policied_payment_credential_with_another_stake_part_is_refused() {
+  !policied_spend(
+    [
+      policied_grant_output(policied_grant(), 2_000_000),
+      change_of(assets.from_lovelace(8_000_000)),
+      output(
+        recipient_address() |> address.with_delegation_key(device_key),
+        assets.from_lovelace(2_000_000),
+        NoDatum,
+      ),
+    ],
+    [policy_hash],
+  )
+}
+
+test spend_to_a_plain_recipient_requires_no_policy() {
+  policied_spend(
+    [
+      policied_grant_output(policied_grant(), 2_000_000),
+      change_of(assets.from_lovelace(8_000_000)),
+      output(plain_address(), assets.from_lovelace(2_000_000), NoDatum),
+    ],
+    [],
+  )
+}
+
+test spend_to_a_plain_and_a_policied_recipient_runs_only_the_needed_policy() {
+  policied_spend(
+    [
+      policied_grant_output(policied_grant(), 3_000_000),
+      change_of(assets.from_lovelace(7_000_000)),
+      payout(2_000_000),
+      output(plain_address(), assets.from_lovelace(1_000_000), NoDatum),
+    ],
+    [policy_hash],
+  )
+}
+
+/// Whether a spend whose recreated grant lists `recipients` is accepted.
+fn recreated_with_recipients(recipients: List<Recipient>) -> Bool {
+  policied_spend(
+    [
+      grant_output(
+        with_caps(
+          Grant {
+            ..policied_grant(),
+            scope: Scope { ..policied_grant().scope, recipients },
+          },
+          3_000_000,
+          0,
+        ),
+        2_000_000,
+      ),
+      change_of(assets.from_lovelace(8_000_000)),
+      payout(2_000_000),
+    ],
+    [policy_hash],
+  )
+}
+
+test recreated_grant_output_keeping_the_recipients_is_accepted() {
+  let settings: Data = 1
+  recreated_with_recipients(
+    [policied(policy_hash, settings), plain_recipient(plain_address())],
+  )
+}
+
+test recreated_grant_output_changing_a_policy_script_is_refused() {
+  let settings: Data = 1
+  !recreated_with_recipients(
+    [policied(other_policy_hash, settings), plain_recipient(plain_address())],
+  )
+}
+
+test recreated_grant_output_changing_policy_settings_is_refused() {
+  let settings: Data = 2
+  !recreated_with_recipients(
+    [policied(policy_hash, settings), plain_recipient(plain_address())],
+  )
+}
+
+test recreated_grant_output_dropping_a_policy_is_refused() {
+  !recreated_with_recipients(
+    [
+      plain_recipient(recipient_address()),
+      plain_recipient(plain_address()),
+    ],
+  )
 }

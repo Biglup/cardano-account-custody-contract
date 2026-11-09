@@ -22,8 +22,11 @@
 // USINGS **********************************************************************
 
 use aiken/collection/list
+use aiken/primitive/bytearray
 use cardano/assets.{ada_asset_name, ada_policy_id}
-use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
+use cardano_account_custody_contract/types.{
+  AccountState, Asset, Grant, Recipient, Scope,
+}
 
 // CONSTANTS *******************************************************************
 
@@ -56,8 +59,9 @@ pub fn is_lovelace(asset: Asset) -> Bool {
 }
 
 /// Whether `scope` obeys the bounds of `logic_v1`: all four caps non
-/// negative, `expires_at` positive, at most `max_recipients` recipients,
-/// and both lovelace caps zero when `asset` is lovelace. Returns `False`
+/// negative, `expires_at` positive, at most `max_recipients` recipients
+/// with distinct addresses and well formed policies, and both lovelace
+/// caps zero when `asset` is lovelace. Returns `False`
 /// when any bound does not hold. Never aborts.
 pub fn is_scope_well_formed(scope: Scope) -> Bool {
   let caps_ok = and {
@@ -67,7 +71,10 @@ pub fn is_scope_well_formed(scope: Scope) -> Bool {
     scope.lovelace_cap >= 0,
   }
   let expiry_ok = scope.expires_at > 0
-  let recipients_ok = list.length(scope.recipients) <= max_recipients
+  let recipients_ok = and {
+      list.length(scope.recipients) <= max_recipients,
+      are_recipients_well_formed(scope.recipients),
+    }
   let lovelace_caps_ok = if is_lovelace(scope.asset) {
     scope.lovelace_per_call_cap == 0 && scope.lovelace_cap == 0
   } else {
@@ -82,6 +89,25 @@ pub fn is_scope_well_formed(scope: Scope) -> Bool {
 /// Returns `False` when the scope breaks a bound. Never aborts.
 pub fn is_grant_well_formed(grant: Grant) -> Bool {
   is_scope_well_formed(grant.scope)
+}
+
+/// Whether `recipients` holds distinct addresses and a 28 byte script
+/// hash on every policy. A duplicate would let a payment match an entry
+/// without the policy of another. Never aborts.
+fn are_recipients_well_formed(recipients: List<Recipient>) -> Bool {
+  let addresses = list.map(recipients, fn(recipient) { recipient.address })
+  and {
+    list.length(list.unique(addresses)) == list.length(addresses),
+    list.all(
+      recipients,
+      fn(recipient) {
+        when recipient.policy is {
+          None -> True
+          Some(policy) -> bytearray.length(policy.script) == 28
+        }
+      },
+    ),
+  }
 }
 
 /// Whether `state` obeys every bound of `logic_v1`: one to `max_devices`

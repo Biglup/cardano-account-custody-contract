@@ -41,6 +41,7 @@ use cardano/transaction.{
 use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/state as account_state
 use cardano_account_custody_contract/test_helpers.{
+  plain_recipient,
   account_address, burn, change, control_output, control_reference,
   control_value, creation, delegation, device_key, expiry, fund_output,
   grant_burn, grant_data, grant_datum, grant_output, grant_token, grant_value,
@@ -56,7 +57,7 @@ use cardano_account_custody_contract/test_helpers.{
 }
 use cardano_account_custody_contract/types.{
   AccountState, Asset, BurnGrants, CreateAccount, Device, Fund, Grant,
-  IssueGrants, Operate, Run, Scope, SpendWithGrant, SweepGrant,
+  IssueGrants, Operate, Recipient, Run, Scope, SpendWithGrant, SweepGrant,
 }
 use logic_v1
 
@@ -178,7 +179,7 @@ fn attacker_issued_state() -> AccountState {
 
 /// The lovelace scope restricted to the recipient.
 fn restricted_scope() -> Scope {
-  Scope { ..lovelace_scope(), recipients: [recipient_address()] }
+  Scope { ..lovelace_scope(), recipients: [plain_recipient(recipient_address())] }
 }
 
 /// The granted state of the other account, under the next logic and the
@@ -367,9 +368,11 @@ fn keys(count: Int) -> List<ByteArray> {
 }
 
 /// `count` distinct key addresses.
-fn recipients(count: Int) -> List<Address> {
+fn recipients(count: Int) -> List<Recipient> {
   list.range(1, count)
-    |> list.map(fn(n) { address.from_verification_key(key(100 + n)) })
+    |> list.map(
+        fn(n) { plain_recipient(address.from_verification_key(key(100 + n))) },
+      )
 }
 
 /// Whether the logic accepts a device rewrite of the fresh control UTxO
@@ -2806,7 +2809,7 @@ fn largest_state() -> AccountState {
 fn largest_scope(scope: Scope) -> Scope {
   Scope {
     ..scope,
-    recipients: list.concat(recipients(7), [recipient_address()]),
+    recipients: list.concat(recipients(7), [plain_recipient(recipient_address())]),
   }
 }
 

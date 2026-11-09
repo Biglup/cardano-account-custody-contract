@@ -32,8 +32,8 @@ use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/grant.{
   carries_grant_within, carries_no_reference_script, deposits_are_plain,
   ends_before_expiry, grant_after_spend, is_authorised_by_grantee, is_current,
-  is_dead, leaving_value, pays_only_recipients, spends_one_account_token,
-  stays_within_scope,
+  is_dead, leaving_value, pays_only_recipients, runs_recipient_policies,
+  spends_one_account_token, stays_within_scope,
 }
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/types.{AccountState}
@@ -107,6 +107,9 @@ pub fn device_rule(
 ///   `lovelace_cap` left as it is for a lovelace scope, and carries no
 ///   reference script.
 /// - Nothing is minted or burned under the proxy policy.
+/// - For every output at a recipient with a policy, the transaction
+///   withdraws from that policy's script credential, so the ledger runs
+///   it over the whole transaction.
 ///
 /// Aborts when `own` carries no inline datum or one that is not a
 /// `Grant`, when the slot in that datum does not fit 4 bytes, when the
@@ -155,6 +158,11 @@ pub fn grant_spend_rule(
     carries_grant_within(grant_output, grant_after_spend(grant, leaving)),
     carries_no_reference_script(grant_output),
     custody.holds_no_account_token(self.mint, proxy_hash),
+    runs_recipient_policies(
+      self.outputs,
+      grant.scope.recipients,
+      self.withdrawals,
+    ),
   }
 }
 

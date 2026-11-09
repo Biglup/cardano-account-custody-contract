@@ -39,7 +39,8 @@ use cardano/transaction.{
 use cardano_account_custody_contract/account
 use cardano_account_custody_contract/types.{
   AccountRedeemer, AccountState, Asset, BurnGrants, CreateAccount, Device, Fund,
-  Grant, IssueGrants, MintRedeemer, Operate, Run, Scope, SpendWithGrant,
+  Grant, IssueGrants, MintRedeemer, Operate, Recipient, Run, Scope,
+  SpendWithGrant,
   SweepGrant,
 }
 
@@ -500,7 +501,7 @@ pub fn token_scope() -> Scope {
     lovelace_per_call_cap: 2_000_000,
     lovelace_cap: 2_000_000,
     expires_at: expiry,
-    recipients: [recipient_address()],
+    recipients: [plain_recipient(recipient_address())],
   }
 }
 
@@ -517,6 +518,11 @@ pub fn lovelace_grant() -> Grant {
 /// The grant of slot 1 to the stranger under the token scope.
 pub fn token_grant() -> Grant {
   Grant { slot: 1, grantee: stranger_key, generation: 0, scope: token_scope() }
+}
+
+/// A recipient at `address` with no policy.
+pub fn plain_recipient(address: Address) -> Recipient {
+  Recipient { address, policy: None }
 }
 
 /// The grant with its remaining asset and lovelace caps replaced.
