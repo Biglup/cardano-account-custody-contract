@@ -139,25 +139,25 @@ export const enterpriseAddress = (keyHash: string): string =>
 export const recipientAddress = enterpriseAddress(STRANGER_KEY);
 
 /** A lovelace scope allowing 10 tADA per call and 15 tADA in total. */
-export const lovelaceScope = (recipients: string[] = []): Scope => ({
+export const lovelaceScope = (addresses: string[] = []): Scope => ({
   asset: { policyId: '', assetName: '' },
   perCallCap: 10_000_000n,
   cap: 15_000_000n,
   lovelacePerCallCap: 0n,
   lovelaceCap: 0n,
   expiresAt: EXPIRY,
-  recipients,
+  recipients: addresses.map((address) => ({ address })),
 });
 
 /** A token scope allowing 10 tokens per call, 50 in total, 2.5 tADA alongside per call and 3 tADA alongside in total. */
-export const tokenScope = (recipients: string[] = []): Scope => ({
+export const tokenScope = (addresses: string[] = []): Scope => ({
   asset: { policyId: TOKEN_POLICY, assetName: TOKEN_NAME },
   perCallCap: 10n,
   cap: 50n,
   lovelacePerCallCap: 2_500_000n,
   lovelaceCap: 3_000_000n,
   expiresAt: EXPIRY,
-  recipients,
+  recipients: addresses.map((address) => ({ address })),
 });
 
 /**

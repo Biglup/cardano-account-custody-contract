@@ -501,7 +501,7 @@ const grantSpendFailure = (grantUtxo: UTxO, state: AccountState, keys: AccountKe
     return `Grant ${grant.slot} refuses the spend: ${violation}`;
   }
   const stranger = context.outputs.find(
-    (output) => output.address !== keys.address && grant.scope.recipients.length > 0 && !grant.scope.recipients.includes(output.address),
+    (output) => output.address !== keys.address && grant.scope.recipients.length > 0 && !grant.scope.recipients.some((recipient) => recipient.address === output.address),
   );
   if (stranger) {
     return `${stranger.address} is not a recipient of grant ${grant.slot}`;

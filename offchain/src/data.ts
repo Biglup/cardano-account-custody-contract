@@ -40,7 +40,19 @@ export interface Scope {
   lovelacePerCallCap: bigint;
   lovelaceCap: bigint;
   expiresAt: bigint;
-  recipients: string[];
+  recipients: Recipient[];
+}
+
+/** A script that decides what a grant may pay to one recipient: its hash and the opaque settings it reads. */
+export interface GrantPolicy {
+  script: string;
+  settings: PlutusData;
+}
+
+/** A destination of a grant: a bech32 address, compared whole, and the policy every payment to it must run, when it has one. */
+export interface Recipient {
+  address: string;
+  policy?: GrantPolicy;
 }
 
 /**
@@ -240,6 +252,27 @@ export const decodeAsset = (data: PlutusData): Asset => {
   };
 };
 
+/** A recipient as Plutus data: the address and the optional policy, whose `Some` holds the script hash and the settings. */
+export const encodeRecipient = (recipient: Recipient): ConstrPlutusData =>
+  constr(0, [
+    encodeAddress(recipient.address),
+    encodeOption(recipient.policy ? constr(0, [bytes(recipient.policy.script), recipient.policy.settings]) : undefined),
+  ]);
+
+/** The recipient a Plutus data value stands for. */
+export const decodeRecipient = (data: PlutusData, networkId?: NetworkId): Recipient => {
+  const [address, option] = expectConstr(data, 0, 2, 'a recipient');
+  const decoded = decodeAddress(address as PlutusData, networkId);
+  const stored = option as PlutusData;
+  if (constructorIndex(stored, 'a recipient policy option') === 1) {
+    expectConstr(stored, 1, 0, 'a recipient policy option');
+    return { address: decoded };
+  }
+  const [policy] = expectConstr(stored, 0, 1, 'a recipient policy option');
+  const [script, settings] = expectConstr(policy as PlutusData, 0, 2, 'a recipient policy');
+  return { address: decoded, policy: { script: expectBytes(script as PlutusData, 'a policy script hash'), settings: settings as PlutusData } };
+};
+
 /** A scope as Plutus data, with its fields in declaration order. */
 export const encodeScope = (scope: Scope): ConstrPlutusData =>
   constr(0, [
@@ -249,7 +282,7 @@ export const encodeScope = (scope: Scope): ConstrPlutusData =>
     scope.lovelacePerCallCap,
     scope.lovelaceCap,
     scope.expiresAt,
-    { items: scope.recipients.map((recipient) => encodeAddress(recipient)) },
+    { items: scope.recipients.map(encodeRecipient) },
   ]);
 
 /** The scope a Plutus data value stands for. */
@@ -262,7 +295,7 @@ export const decodeScope = (data: PlutusData, networkId?: NetworkId): Scope => {
     lovelacePerCallCap: expectInt(field(fields, 3), 'a lovelace per call cap'),
     lovelaceCap: expectInt(field(fields, 4), 'a lovelace cap'),
     expiresAt: expectInt(field(fields, 5), 'an expiry'),
-    recipients: expectList(field(fields, 6), 'recipients').map((recipient) => decodeAddress(recipient, networkId)),
+    recipients: expectList(field(fields, 6), 'recipients').map((recipient) => decodeRecipient(recipient, networkId)),
   };
 };
 

@@ -87,7 +87,7 @@ describe('well formedness', () => {
     expect(assertScopeWellFormed(scope)).toBe(scope);
     expect(() => assertScopeWellFormed({ ...scope, cap: -1n })).toThrow(/caps must not be negative/);
     expect(() => assertScopeWellFormed({ ...scope, expiresAt: 0n })).toThrow(/expiry/);
-    expect(() => assertScopeWellFormed({ ...scope, recipients: Array<string>(9).fill(recipientAddress) })).toThrow(/at most 8 recipients/);
+    expect(() => assertScopeWellFormed({ ...scope, recipients: Array<string>(9).fill(recipientAddress).map((address) => ({ address })) })).toThrow(/at most 8 recipients/);
     expect(() => assertScopeWellFormed({ ...scope, lovelaceCap: 1n })).toThrow(/zero lovelace caps/);
     expect(() => assertScopeWellFormed({ ...scope, lovelacePerCallCap: 1n })).toThrow(/zero lovelace caps/);
     expect(() => assertScopeWellFormed({ ...tokenScope(), lovelacePerCallCap: 1n })).not.toThrow();

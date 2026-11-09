@@ -185,6 +185,8 @@ export const accountOnlyCoinSelector: CoinSelector = {
 export interface AccountOutput {
   address: string;
   value: Value;
+  /** The datum the output carries, inline or by hash; none when omitted. */
+  datum?: Datum;
 }
 
 /**
@@ -347,6 +349,15 @@ export type SpendWithGrantParams = AccountUtxoParams & {
   validUntilSlot: bigint;
   /** The lovelace the remaining caps are reduced by ahead of the fee, in place of `DEFAULT_GRANT_FEE_BOUND`. */
   feeBound?: bigint;
+  /**
+   * The policy scripts of the grant's recipients, each applied and ready to
+   * attach, which the builder looks up by the hash a recipient names.
+   */
+  policies?: PlutusScript[];
+  /** The policy scripts to run in place of those the outputs need, as hashes the `policies` catalog holds; unchecked only. */
+  runPolicies?: string[];
+  /** Rewrites the recreated grant datum; unchecked only, to show the validator refusing it. */
+  recreatedGrantDatum?: (datum: PlutusData) => PlutusData;
   /**
    * Skips the builder's liveness, scope, recipient, expiry and fee bound
    * checks, for evidence and testing only. The transaction is built
@@ -876,10 +887,10 @@ const positivePart = (balance: Balance): Balance =>
   Object.fromEntries(Object.entries(balance).filter(([, quantity]) => quantity > 0n));
 
 /** The grant outputs an issuance creates: the next slots in order under the recreated control's generation, each at its minimum lovelace. */
-const grantIssues = (account: Account, state: AccountState, next: AccountState, requests: GrantRequest[], adaPerUtxoByte: bigint): GrantIssue[] =>
+const grantIssues = (account: Account, state: AccountState, next: AccountState, requests: GrantRequest[], adaPerUtxoByte: bigint, unchecked = false): GrantIssue[] =>
   requests.map((request, index) => {
     const slot = state.nextSlot + BigInt(index);
-    const grant: Grant = { slot, grantee: request.grantee, generation: next.grantGeneration, scope: assertScopeWellFormed(request.scope) };
+    const grant: Grant = { slot, grantee: request.grantee, generation: next.grantGeneration, scope: unchecked ? request.scope : assertScopeWellFormed(request.scope) };
     const assetId = grantAssetId(account.scriptHash, account.stakeScriptHash, slot);
     return { grant, assetId, coins: minimumUtxoLovelace(grantOutput(account, assetId, 0n, grant), adaPerUtxoByte) };
   });
@@ -971,7 +982,7 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   const next = assertWellFormed(operation.nextState(state, utxos));
   const parameters = await params.provider.getParameters();
   const adaPerUtxoByte = adaPerUtxoByteOf(parameters);
-  const issued = grantIssues(account, state, next, operation.issued?.(state) ?? [], adaPerUtxoByte);
+  const issued = grantIssues(account, state, next, operation.issued?.(state) ?? [], adaPerUtxoByte, params.unchecked);
   const swept = operation.swept?.(utxos) ?? [];
   if (next.logic === state.logic) {
     assertCountersFollow(state, next, issued.length, swept.length);
@@ -1290,7 +1301,7 @@ const assertRecipientsAllowed = (grant: Grant, outputs: AccountOutput[]): void =
     return;
   }
   for (const output of outputs) {
-    if (!recipients.some((recipient) => sameAddress(recipient, output.address))) {
+    if (!recipients.some((recipient) => sameAddress(recipient.address, output.address))) {
       throw new Error(`${output.address} is not a recipient of grant ${grant.slot}`);
     }
   }
@@ -1303,6 +1314,15 @@ const assertGrantCurrent = (grant: Grant, state: AccountState): void => {
     throw new Error(`Grant ${grant.slot} is dead: ${reason}`);
   }
 };
+
+/** The distinct policy scripts the outputs of a spend need: one per recipient with a policy that some output pays. */
+const neededPolicies = (grant: Grant, outputs: AccountOutput[]): string[] => [
+  ...new Set(
+    grant.scope.recipients.flatMap((recipient) =>
+      recipient.policy !== undefined && outputs.some((output) => sameAddress(recipient.address, output.address)) ? [recipient.policy.script] : [],
+    ),
+  ),
+];
 
 /**
  * Builds an agent spend. The grant UTxO of the slot is spent with the
@@ -1345,6 +1365,11 @@ const assertGrantCurrent = (grant: Grant, state: AccountState): void => {
  * shows the logic refusing it. A grant known by its stable prefix alone,
  * issued under a logic whose scope shape this library does not read, is
  * refused either way.
+ *
+ * Every output at a recipient naming a policy runs that policy script
+ * through a zero withdrawal, referenced from the network's parked UTxOs
+ * when it records one and embedded otherwise; `policies` is the catalog
+ * of those scripts.
  */
 export const spendWithGrant = async (params: SpendWithGrantParams): Promise<string> => {
   assertNoSponsor(params);
@@ -1360,6 +1385,17 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
   const { grant, utxo: grantUtxo } = found;
   assertGranteeMatches(grant, params.grantee);
   const sources = await resolveSources(account, [state.logic], params.provider);
+  const catalog = new Map((params.policies ?? []).map((script) => [Cometa.computeScriptHash(script), script]));
+  const toRun = params.unchecked && params.runPolicies !== undefined ? params.runPolicies : neededPolicies(grant, params.outputs);
+  const policySources = await Promise.all(
+    toRun.map(async (hash): Promise<[string, ScriptSource]> => {
+      const script = catalog.get(hash);
+      if (!script) {
+        throw new Error(`The policy script ${hash} is not in the catalog the spend was given`);
+      }
+      return [hash, await resolveScriptSource(params.provider, params.network, script)];
+    }),
+  );
   const slotConfig = params.slotConfig ?? Cometa.CARDANO_PREPROD_SLOT_CONFIG;
   const feeBound = params.feeBound ?? DEFAULT_GRANT_FEE_BOUND;
   const requested = sumOutputs(params.outputs);
@@ -1393,11 +1429,19 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
     for (const utxo of selected) {
       builder.addInput({ utxo, redeemer: fundRedeemer });
     }
-    builder.lockValue({ scriptAddress: account.address, value: grantUtxo.output.value, datum: inlineDatum(encodeGrant(grantAfterSpend(grant, bounded))) });
+    const recreated = encodeGrant(grantAfterSpend(grant, bounded));
+    builder.lockValue({ scriptAddress: account.address, value: grantUtxo.output.value, datum: inlineDatum(params.unchecked && params.recreatedGrantDatum ? params.recreatedGrantDatum(recreated) : recreated) });
     for (const output of params.outputs) {
-      builder.sendValue(output);
+      if (output.datum) {
+        builder.lockValue({ scriptAddress: output.address, value: output.value, datum: output.datum });
+      } else {
+        builder.sendValue(output);
+      }
     }
     runLogic(builder, account, sources, state.logic);
+    for (const [hash, source] of policySources) {
+      attachScript(builder, source).withdrawRewards({ rewardAddress: rewardAddress(hash, account.networkId), amount: LOGIC_WITHDRAWAL, redeemer: runRedeemer });
+    }
     return attachScript(builder.addSigner(params.grantee).setInvalidAfter(params.validUntilSlot), sources.proxy);
   };
   const tx = params.unchecked ? await (await make()).build() : await buildChecked(params.provider, make);

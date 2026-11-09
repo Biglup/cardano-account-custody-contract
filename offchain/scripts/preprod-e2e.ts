@@ -634,7 +634,7 @@ class Run {
       lovelacePerCallCap: 0n,
       lovelaceCap: 0n,
       expiresAt: BigInt(Date.now()) + lifetimeMs,
-      recipients,
+      recipients: recipients.map((address) => ({ address })),
     };
   }
 
@@ -647,7 +647,7 @@ class Run {
       lovelacePerCallCap: TOKEN_LOVELACE_PER_CALL_CAP,
       lovelaceCap: TOKEN_LOVELACE_CAP,
       expiresAt: BigInt(Date.now()) + GRANT_LIFETIME_MS,
-      recipients: [this.actors.recipientAddress],
+      recipients: [{ address: this.actors.recipientAddress }],
     };
   }
 

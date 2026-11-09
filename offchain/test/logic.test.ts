@@ -46,14 +46,14 @@ import { FOREIGN_LOGIC_PARAMETER, foreignLogic, foreignLogicHash, logicV1, logic
  * devnet evidence and by the accounts on the chain, so they are fixed.
  */
 const PROXY_HASH = 'ed61963ac94d12c0b320be5a336c36af66bc02c380e0aa3001899253';
-const UNAPPLIED_HASH = '7cf7daa6c0a5825e23a9dadece990d5a602fa1508d01f061eacaed52';
-const APPLIED_HASH = '2cd68e398bdf9fbc8d257614b54403451ee722520ec785fe14f8df5a';
-const APPLIED_CODE_DIGEST = '467631d56f1c7ba59adc931ca24953be2f2abb0ac4f2bdbf17a2ac9a2a847a48';
+const UNAPPLIED_HASH = '7a6df629adcef326869a6c7102d6c59b2a05ec7a6770d7f3797fe032';
+const APPLIED_HASH = 'f5527bf822f1449d2e7db40c26d2a5ba5d643e3ac7f1d28028d62a99';
+const APPLIED_CODE_DIGEST = '8495723d5fbfbcaa9c56717b836c0e2ccba75f521d8de92c71a9a04a552386d2';
 const SECOND_UNAPPLIED_HASH = '03489f90cbd00ec38d8669cb582fa7014becd1122b9ba3a03c7b7dc1';
 const SECOND_APPLIED_HASH = '69baa8a8c877247028c56c8130449e186e3658d541536d168f92db3d';
 const SECOND_APPLIED_CODE_DIGEST = '9a109bc665e3fa23b34029f37f3640409eb5758a43570f12bf9105b7b8f2806e';
-const FOREIGN_HASH = 'eca396abf77a650eccc852252e0d7c001dd3d63a57fc2a9c75665f6b';
-const FOREIGN_CODE_DIGEST = 'cddf41f55aae557ff72e7e6705c093433d5e98ac22601c84732acd046ccd835e';
+const FOREIGN_HASH = 'b9b5f29e58988f36f7afeeadabe30bba6d3f884cd57c5369cda5df9e';
+const FOREIGN_CODE_DIGEST = 'be62b4471cb648b5710328d4126077ff9367312eca3bcc86061db2612c8c924e';
 
 /* FUNCTIONS ******************************************************************/
 
