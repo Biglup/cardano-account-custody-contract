@@ -453,10 +453,40 @@ const controlRecreationFailure = (old: AccountState, ownHash: string, keys: Acco
   return undefined;
 };
 
-/** Why a device spend of the control UTxO breaks the owner path, or undefined when it passes. */
+/** Why a device renewal of a grant UTxO in place breaks the owner path, or undefined when it passes. */
+const rewriteFailure = (grantUtxo: UTxO, old: AccountState, keys: AccountKeys, context: Context): string | undefined => {
+  const grant = grantOf(grantUtxo.output);
+  if (!grant) {
+    return 'The device redeemer spends a UTxO that is neither the control UTxO nor a grant of the shape the logic reads';
+  }
+  const assetId = grantAssetId(keys.scriptHash, keys.stakeScriptHash, grant.slot);
+  if (!holdsOnlyLovelaceAnd(grantUtxo.output.value, assetId)) {
+    return `The grant UTxO does not hold only lovelace and the grant token of slot ${grant.slot}`;
+  }
+  if (!signedByDevice(old, context.requiredSigners)) {
+    return 'No device of the account signs the grant renewal';
+  }
+  if (!isGrantCurrent(grant, old)) {
+    return `Grant ${grant.slot} is not current: ${grantDeathReason(grant, old)}`;
+  }
+  const rewritten = tokenOutputOf(context.outputs, assetId);
+  const after = rewritten && grantOf(rewritten);
+  if (!rewritten || !after) {
+    return `Grant ${grant.slot} is not written back as a grant`;
+  }
+  if (rewritten.address !== grantUtxo.output.address || !holdsOnlyLovelaceAnd(rewritten.value, assetId) || rewritten.scriptReference !== undefined) {
+    return `Grant ${grant.slot} is not written back in place holding only lovelace and its token`;
+  }
+  if (after.slot !== grant.slot || after.generation !== grant.generation) {
+    return `Grant ${grant.slot} is written back under another slot or generation`;
+  }
+  return undefined;
+};
+
+/** Why a device spend breaks the owner path, or undefined when it passes: the control UTxO under its rule, any other as a grant renewal. */
 const deviceFailure = (own: UTxO, old: AccountState, ownHash: string, keys: AccountKeys, context: Context): string | undefined => {
   if (own.output.value.assets?.[keys.nftAssetId] !== 1n) {
-    return 'The device redeemer spends a UTxO that is not the control UTxO';
+    return rewriteFailure(own, old, keys, context);
   }
   if (!signedByDevice(old, context.requiredSigners)) {
     return 'No device of the account signs the device spend';
