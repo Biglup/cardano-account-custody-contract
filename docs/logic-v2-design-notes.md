@@ -5,8 +5,11 @@ Each one is a plan, not a promise. A later version is designed, audited
 and deployed on its own, and it may drop, change or add to any of these.
 The name `logic_v2` stands here for whichever version first ships them.
 None of the changes touches the proxy or the stake script, whose
-compiled code is final, and none changes `logic_v1`, whose applied hash
-is the credential its accounts name. The rules each change starts from
+compiled code is final, and none changes `logic_v1` once it is released
+on mainnet, from when its applied hash is the credential its accounts
+name. Until then `logic_v1` may still change, and the library reads a
+grant an account on a test network holds under an earlier build only to
+sweep it. The rules each change starts from
 are those of `logic_v1` in [Validators](protocol/validators.md). What
 every version must keep is in
 [obligations of every logic](security/invariants.md#obligations-of-every-logic).
