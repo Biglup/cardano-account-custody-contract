@@ -232,6 +232,9 @@ pub fn validates_owner_transaction(
 /// Holds when all of these hold:
 ///
 /// - Nothing is minted or burned under the proxy policy.
+/// - No certificate, proposal or treasury donation. Each would take a
+///   deposit or donation out of the account's inputs without an output,
+///   so the value would pass the caps and pay no recipient.
 /// - No output is a control output naming this logic. A referenced
 ///   control UTxO is never recreated and an arrival needs the arrival
 ///   path.
@@ -254,6 +257,9 @@ pub fn validates_agent_transaction(
   let state = custody.state_datum(control)
   and {
     custody.holds_no_account_token(self.mint, proxy_hash),
+    self.certificates == [],
+    self.proposal_procedures == [],
+    self.treasury_donation == None,
     !list.any(
       self.outputs,
       fn(output) { is_own_control(output, proxy_hash, own_hash) },

@@ -197,7 +197,8 @@ validity range starts at a finite time strictly after its expiry.
 ### Agent path
 
 **INV-30.** On the agent path, nothing is minted or burned under the
-policy, no control output names `logic_v1`, and every input at the
+policy, the transaction carries no certificate, proposal or treasury
+donation, no control output names `logic_v1`, and every input at the
 account address carries `Fund` or `SpendWithGrant`.
 [`logic.validates_agent_transaction`, `logic.validates_spends`](../../lib/cardano_account_custody_contract/logic.ak);
 [`rules.grant_spend_rule`](../../lib/cardano_account_custody_contract/rules.ak).

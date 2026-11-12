@@ -35,7 +35,10 @@ use aiken/interval.{Interval, IntervalBound, NegativeInfinity}
 use aiken/primitive/bytearray
 use cardano/address.{Address, Pointer, Script, VerificationKey}
 use cardano/assets.{Assets}
-use cardano/certificate.{UnregisterCredential}
+use cardano/certificate.{
+  RegisterCredential, RegisterDelegateRepresentative, UnregisterCredential,
+}
+use cardano/governance.{NicePoll, ProposalProcedure}
 use cardano/transaction.{
   DatumHash, InlineDatum, Input, NoDatum, Output, Transaction,
 }
@@ -4384,6 +4387,95 @@ test attack_recipient_policy_other_exit_a_certificate_does_not_stand_in_for_the_
     [],
   )
   !run(tx |> publishing(registration(first_policy_hash)))
+}
+
+/// The outputs of a policied spend of `grant` that pays no recipient: the
+/// caps drop by `lovelace`, which leaves the change and no output.
+fn outputs_sinking(grant: Grant, lovelace: Int) -> List<Output> {
+  [
+    grant_output(with_caps(grant, 5_000_000 - lovelace, 0), 2_000_000),
+    change(10_000_000 - lovelace),
+  ]
+}
+
+/// A policied spend of `grant` whose missing 2 ADA leaves through `exit`
+/// instead of an output, so no recipient is paid and no policy runs.
+fn sinking_spend(exit: fn(Transaction) -> Transaction) -> Bool {
+  let grant = single_policied_grant()
+  run(exit(policied_spend_tx(grant, outputs_sinking(grant, 2_000_000), [])))
+}
+
+/// The grantee registers its own stake credential on a grant spend: the
+/// deposit leaves the account's inputs and returns to the grantee's
+/// credential on deregistration. Proves INV-30.
+test attack_recipient_policy_other_exit_a_stake_registration_deposit() {
+  !sinking_spend(
+    fn(tx) {
+      Transaction {
+        ..tx,
+        certificates: [
+          RegisterCredential {
+            credential: VerificationKey(attacker_key),
+            deposit: Never,
+          },
+        ],
+      }
+    },
+  )
+}
+
+/// The grantee registers itself as a delegate representative on a grant
+/// spend, and takes the deposit back when it retires. Proves INV-30.
+test attack_recipient_policy_other_exit_a_delegate_representative_deposit() {
+  !sinking_spend(
+    fn(tx) {
+      Transaction {
+        ..tx,
+        certificates: [
+          RegisterDelegateRepresentative {
+            delegate_representative: VerificationKey(attacker_key),
+            deposit: 2_000_000,
+          },
+        ],
+      }
+    },
+  )
+}
+
+/// The grantee submits a proposal on a grant spend whose return address
+/// is its own, so the deposit comes back to it when the action ends.
+/// Proves INV-30.
+test attack_recipient_policy_other_exit_a_proposal_deposit() {
+  !sinking_spend(
+    fn(tx) {
+      Transaction {
+        ..tx,
+        proposal_procedures: [
+          ProposalProcedure {
+            deposit: 2_000_000,
+            return_address: VerificationKey(attacker_key),
+            governance_action: NicePoll,
+          },
+        ],
+      }
+    },
+  )
+}
+
+/// The grantee donates to the treasury on a grant spend. It gains
+/// nothing, but the account loses up to the caps to no recipient.
+/// Proves INV-30.
+test attack_recipient_policy_other_exit_a_treasury_donation() {
+  !sinking_spend(
+    fn(tx) { Transaction { ..tx, treasury_donation: Some(2_000_000) } },
+  )
+}
+
+/// The same spend with no exit: the lovelace the caps lose can only go to
+/// the fee, which the caps count, so the logic accepts it. The attacks
+/// above differ from this one only by their exit.
+test recipient_policy_sinking_spend_without_an_exit_is_left_to_the_fee_bound() {
+  sinking_spend(fn(tx) { tx })
 }
 
 /// A withdrawal from the account's own stake script instead of the

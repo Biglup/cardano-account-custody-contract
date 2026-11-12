@@ -120,6 +120,8 @@ Cannot:
 - Spend the control UTxO, a reserve or another grant UTxO (INV-30,
   INV-31, INV-11).
 - Mint or burn under the policy, or write a control output (INV-30).
+- Move value out through a certificate deposit, a proposal deposit or a
+  treasury donation, which no recipient check would see (INV-30).
 - Change devices, grants or the logic, withdraw rewards or delegate
   (INV-15, INV-20).
 - Pay back a deposit carrying a datum or a reference script (INV-37).
