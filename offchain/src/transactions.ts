@@ -382,6 +382,13 @@ export type SpendWithGrantParams = AccountUtxoParams & {
   /** Rewrites the recreated grant datum; unchecked only, to show the validator refusing it. */
   recreatedGrantDatum?: (datum: PlutusData) => PlutusData;
   /**
+   * Lovelace the caps and the fund selection cover beside the outputs, and
+   * what takes it out of the account in place of an output, such as a
+   * certificate deposit; unchecked only, to show the validator refusing it.
+   * Without `apply` the lovelace stays in the change.
+   */
+  exit?: { lovelace: bigint; apply?: (builder: TransactionBuilder) => TransactionBuilder };
+  /**
    * Skips the builder's liveness, scope, recipient, expiry and fee bound
    * checks, for evidence and testing only. The transaction is built
    * exactly as the validator will see it, with the caps reduced by the
@@ -1501,7 +1508,8 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
   const slotConfig = params.slotConfig ?? Cometa.CARDANO_PREPROD_SLOT_CONFIG;
   const feeBound = params.feeBound ?? DEFAULT_GRANT_FEE_BOUND;
   const requested = sumOutputs(params.outputs);
-  const bounded = addBalances(requested, { [LOVELACE_ASSET_ID]: feeBound });
+  const exit = params.unchecked ? params.exit : undefined;
+  const bounded = addBalances(requested, { [LOVELACE_ASSET_ID]: feeBound + (exit?.lovelace ?? 0n) });
   if (!params.unchecked) {
     assertGrantCurrent(grant, state);
     assertRecipientsAllowed(grant, params.outputs);
@@ -1541,6 +1549,7 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
       }
     }
     runLogic(builder, account, sources, state.logic);
+    exit?.apply?.(builder);
     for (const [hash, source] of policySources) {
       attachScript(builder, source).withdrawRewards({ rewardAddress: rewardAddress(hash, account.networkId), amount: LOGIC_WITHDRAWAL, redeemer: runRedeemer });
     }

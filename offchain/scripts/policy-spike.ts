@@ -20,7 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { PlutusData, PlutusScript, Provider, UTxO, Wallet } from '@biglup/cometa';
+import type { PlutusData, PlutusScript, Provider, TransactionBuilder, UTxO, Wallet } from '@biglup/cometa';
 import { config as loadEnv } from 'dotenv';
 import { paymentKeyHashOf, rewardAddress } from '../src/address.js';
 import { accountScript, accountScriptHash, loadBlueprint } from '../src/blueprint.js';
@@ -96,6 +96,10 @@ const RECIPIENT_OFFSET = 2;
 
 /** The lovelace the agent holds as collateral and the owner holds to pay creation. */
 const AGENT_WALLET_LOVELACE = 30n * ADA;
+/** The stake key deposit of the devnet's protocol parameters. */
+const KEY_DEPOSIT = 2n * ADA;
+/** What the treasury donation attack gives away. */
+const TREASURY_DONATION = 2n * ADA;
 const OWNER_WALLET_LOVELACE = 40n * ADA;
 
 /** The limits the worst case is compared against. */
@@ -112,7 +116,7 @@ const password = randomBytes(32);
 /* TYPES **********************************************************************/
 
 /** What a step may change about a spend: the unchecked build and its mutations. */
-type SpendExtra = Pick<SpendWithGrantParams, 'unchecked' | 'runPolicies' | 'recreatedGrantDatum'>;
+type SpendExtra = Pick<SpendWithGrantParams, 'unchecked' | 'runPolicies' | 'recreatedGrantDatum' | 'exit'>;
 
 /** A confirmed or refused step of the run, as the table prints it. */
 interface Row {
@@ -658,6 +662,26 @@ const minswapCases = async (context: SpendContext, slot: bigint, deployment: Dep
   }
 };
 
+/**
+ * Spends of the policied grant that pay no recipient and take the lovelace
+ * the caps lose out of the account another way. Each control leaves the
+ * same lovelace in the change.
+ */
+const exitCases = async (context: SpendContext, slot: bigint): Promise<void> => {
+  const cases: [string, bigint, (builder: TransactionBuilder) => TransactionBuilder][] = [
+    ['a stake registration deposit for the grantee', KEY_DEPOSIT, (builder) => builder.registerStakeAddress({ rewardAddress: agentRewardAddress() })],
+    ['a treasury donation', TREASURY_DONATION, (builder) => builder.setDonation(TREASURY_DONATION)],
+  ];
+  for (const [name, lovelace, apply] of cases) {
+    const control = await submitAndConfirm([agent.wallet], () => spend(context, slot, [], { unchecked: true, exit: { lovelace } }));
+    await confirmedRow(`control for: ${name}`, control, 'unchecked twin, the lovelace stays in the change');
+    await refuseAtNode(`REFUSE ${name}`, 'logic', () => spend(context, slot, [], { unchecked: true, exit: { lovelace, apply } }));
+  }
+};
+
+/** The reward address of the agent's key. */
+const agentRewardAddress = (): string => Cometa.RewardAddress.fromCredentials(Cometa.NetworkId.Testnet, { hash: agent.keyHash, type: Cometa.CredentialType.KeyHash }).toBech32();
+
 /** A grant datum with the policy of the Minswap recipient, the first listed, replaced or removed. */
 const withRecipientPolicy = (datum: PlutusData, change: { script?: string; settings?: bigint } | undefined): PlutusData => {
   if (!Cometa.isPlutusDataConstr(datum)) {
@@ -794,6 +818,7 @@ const main = async (): Promise<void> => {
   await minswapCases(context, policiedSlot, deployment, minswapOrderAddress, main.owner.keyHash, receiver);
   await sundaeCases(context, policiedSlot, sundaeOrderAddress, main.owner.keyHash, receiver);
   await refuseDuplicateRecipients(main, deployment.network);
+  await exitCases(context, policiedSlot);
 
   const twelve = await createFundedAccount(deployment, 'B', [30n * ADA]);
   const twelveContext: SpendContext = { account: twelve, slot: 0n, policies: [deployment.minswap, deployment.sundae], network: deployment.network };
