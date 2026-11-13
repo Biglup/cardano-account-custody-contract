@@ -366,27 +366,26 @@ meant to call it, with any other address the call pays, and size the caps
 to the loss that contract can cause, since the contract decides what the
 call does with the funds.
 
-## Renewing a grant takes two transactions
+## Renewing a grant in place
 
-Issue. A sweep and an issuance cannot share a transaction. The proxy's
-mint handler runs once per policy with one redeemer, which is either
-`IssueGrants` or `BurnGrants`, and the sweep burns where the issuance
-mints. A sweep is also judged against the spent control state
-(INV-28), so a grant that the same transaction would kill is not yet dead
-when it is swept.
+Issue. A grant can run out at its cap or at its expiry, and an owner
+needs to renew it. A sweep and an issuance cannot share a transaction:
+the proxy's mint handler runs once per policy with one redeemer, which is
+either `IssueGrants` or `BurnGrants`. A revoke and issue therefore leaves
+the old grant UTxO and its lovelace behind until a later sweep.
 
-Consequence. A grant cannot be renewed and swept in one transaction. The
-old grant stays live until it expires or a revoke has landed, and its
-sweep is a later transaction.
+What to do. Renew with `rewriteGrant`. The grant UTxO is spent under
+`Device` beside the control UTxO and comes back with its token, slot and
+generation and the new grantee and scope, in one transaction. Nothing is
+minted or burned, so the proxy is unchanged, and nothing is left to
+sweep. The old terms stop at once: the UTxO that carried them is gone. An
+expired grant can be renewed; a revoked or superseded one cannot.
 
-What to do. An owner transaction can revoke the old grant and issue the
-new one together, since both only rewrite the account state, but the
-off-chain library builds them as separate transactions (`revokeGrant` and
-`issueGrant`). Revoke and issue in either order, then sweep the old grant
-in a later transaction, as in [Sweep](../guides/grants.md#sweep). When
-the agent must not be left without a grant, issue first; both grants are
-then live until the revoke lands, so the exposure is the sum of their
-caps.
+Consequence. The grant UTxO is the agent's to spend until the renewal
+lands, so if the agent spends it first the owner's transaction fails on
+the spent input and must be built again against the UTxO that spend left.
+A grant whose datum has an older shape cannot be renewed, only swept once
+it is dead.
 
 ## No rolling period caps
 

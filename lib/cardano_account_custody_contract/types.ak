@@ -38,6 +38,27 @@ pub type Asset {
   asset_name: AssetName,
 }
 
+/// A script that decides what a grant may pay to one recipient. The
+/// transaction must withdraw from its credential whenever it pays that
+/// recipient, so the ledger runs it over the whole transaction.
+pub type GrantPolicy {
+  /// The script hash, 28 bytes, of the policy script.
+  script: ScriptHash,
+  /// The parameters the policy script reads from the recipient entry.
+  /// Opaque to the logic.
+  settings: Data,
+}
+
+/// A destination a grant may pay, with the policy script, when it has
+/// one, that every payment to it must run.
+pub type Recipient {
+  /// The address, compared whole, stake part included.
+  address: Address,
+  /// The script that decides what may be paid to `address`. `None`
+  /// requires nothing beyond the address check.
+  policy: Option<GrantPolicy>,
+}
+
 /// The bounds of a grant: one asset class, a per call cap and a
 /// remaining cap on it, lovelace caps for a token scope, an expiry and
 /// the allowed destinations. `is_scope_well_formed` bounds it at
@@ -70,11 +91,12 @@ pub type Scope {
   /// than it, and a sweep by expiry needs a range starting after it.
   /// Positive.
   expires_at: Int,
-  /// The addresses a spend may pay, compared as whole addresses, stake
-  /// part included. Empty allows any destination. Otherwise every
-  /// output is at the account address or at a recipient, change
-  /// included. Under `logic_v1` at most 8.
-  recipients: List<Address>,
+  /// The destinations a spend may pay, compared as whole addresses, stake
+  /// part included. Empty allows any destination, so a policy exists only
+  /// on a listed recipient. Otherwise every output is at the account
+  /// address or at a recipient, change included. Under `logic_v1` at most
+  /// 8, with distinct addresses.
+  recipients: List<Recipient>,
 }
 
 /// A revocable permission, the inline datum of a grant UTxO, under the

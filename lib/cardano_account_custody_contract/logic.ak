@@ -137,9 +137,10 @@ pub fn is_own_control(
 ///   `IssueGrants` and `issue_grants_rule` holds, or `BurnGrants` and
 ///   `burn_grants_rule` holds. `CreateAccount` returns `False`.
 /// - Every input at the account address spent under a proxy redeemer
-///   other than `Fund` passes `device_rule` for `Device` or `sweep_rule`
-///   for `SweepGrant`. `SpendWithGrant` returns `False`. `Fund` is left
-///   to the proxy.
+///   other than `Fund` passes, for `Device`, `device_rule` on the control
+///   UTxO and `rewrite_grant_rule` on any other, or `sweep_rule` for
+///   `SweepGrant`. `SpendWithGrant` returns `False`. `Fund` is left to
+///   the proxy.
 ///
 /// Aborts when the inline datum of `control` is not an `AccountState`,
 /// when the redeemers hold no spend entry for `control` or one that is
@@ -197,14 +198,24 @@ pub fn validates_owner_transaction(
       fn(redeemer, own) {
         when redeemer is {
           Device ->
-            rules.device_rule(
-              own,
-              state,
-              self,
-              proxy_hash,
-              stake_script_hash,
-              own_hash,
-            )
+            if custody.holds_state_nft(own.value, proxy_hash, stake_script_hash) {
+              rules.device_rule(
+                own,
+                state,
+                self,
+                proxy_hash,
+                stake_script_hash,
+                own_hash,
+              )
+            } else {
+              rules.rewrite_grant_rule(
+                own,
+                state,
+                self,
+                proxy_hash,
+                stake_script_hash,
+              )
+            }
           SweepGrant ->
             rules.sweep_rule(own, state, self, proxy_hash, stake_script_hash)
           _ -> False
@@ -221,6 +232,9 @@ pub fn validates_owner_transaction(
 /// Holds when all of these hold:
 ///
 /// - Nothing is minted or burned under the proxy policy.
+/// - No certificate, proposal or treasury donation. Each would take a
+///   deposit or donation out of the account's inputs without an output,
+///   so the value would pass the caps and pay no recipient.
 /// - No output is a control output naming this logic. A referenced
 ///   control UTxO is never recreated and an arrival needs the arrival
 ///   path.
@@ -243,6 +257,9 @@ pub fn validates_agent_transaction(
   let state = custody.state_datum(control)
   and {
     custody.holds_no_account_token(self.mint, proxy_hash),
+    self.certificates == [],
+    self.proposal_procedures == [],
+    self.treasury_donation == None,
     !list.any(
       self.outputs,
       fn(output) { is_own_control(output, proxy_hash, own_hash) },

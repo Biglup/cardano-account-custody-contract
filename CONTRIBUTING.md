@@ -321,8 +321,8 @@ absent from `plutus.json`, nothing ships it and an audit excludes it.
 - Continuous integration checks it like the main project, blueprint
   diff included.
 - Its hashes: unapplied
-  `03489f90cbd00ec38d8669cb582fa7014becd1122b9ba3a03c7b7dc1`, applied to
-  the proxy hash `69baa8a8c877247028c56c8130449e186e3658d541536d168f92db3d`.
+  `f6263fb9eb4d23e0ffd23e2f88540146c58e6f62a02d147574574bb6`, applied to
+  the proxy hash `40dfc0f41b367ca7902e577459d84d619fed2e36557bdd33905c5d35`.
 
 ```sh
 cd fixtures/upgrade-logic

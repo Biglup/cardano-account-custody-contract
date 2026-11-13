@@ -24,6 +24,7 @@ import type {
   NetworkId,
   PlutusData,
   PlutusScript,
+  Script,
   ProtocolParameters,
   Provider,
   RewardAddress,
@@ -185,6 +186,8 @@ export const accountOnlyCoinSelector: CoinSelector = {
 export interface AccountOutput {
   address: string;
   value: Value;
+  /** The datum the output carries, inline or by hash; none when omitted. */
+  datum?: Datum;
 }
 
 /**
@@ -325,6 +328,26 @@ export type IssueGrantParams = DeviceParams & {
   grants: GrantRequest[];
 };
 
+/** Parameters of a renewal in place: the slot of the live grant and what it becomes. */
+export type RewriteGrantParams = DeviceParams &
+  GrantRequest & {
+    slot: bigint;
+    /** The lovelace the renewed grant UTxO holds, in place of what it held or the minimum its datum needs. */
+    lovelace?: bigint;
+    /** The dead grants the same transaction sweeps, by slot. */
+    sweptSlots?: bigint[];
+    /** Changes the written-back output; unchecked only, to show the validator refusing it. */
+    tamper?: RewriteGrantTamper;
+  };
+
+/** What an unchecked renewal changes about the output it writes back. */
+export interface RewriteGrantTamper {
+  grant?: (grant: Grant) => Grant;
+  address?: string;
+  assets?: Record<string, bigint>;
+  scriptReference?: Script;
+}
+
 /** Parameters of a sweep of dead grants. */
 export type SweepGrantParams = DeviceParams & {
   /** The slots of the dead grants to sweep, at most `MAX_GRANT_BATCH`. */
@@ -347,6 +370,24 @@ export type SpendWithGrantParams = AccountUtxoParams & {
   validUntilSlot: bigint;
   /** The lovelace the remaining caps are reduced by ahead of the fee, in place of `DEFAULT_GRANT_FEE_BOUND`. */
   feeBound?: bigint;
+  /**
+   * The policy scripts of the grant's recipients, each applied and ready to
+   * attach, which the builder looks up by the hash a recipient names.
+   */
+  policies?: PlutusScript[];
+  /** The policy scripts to run in place of those the outputs need, as hashes the `policies` catalog holds; unchecked only. */
+  runPolicies?: string[];
+  /** The key required to sign in place of the grantee; unchecked only, to show the validator refusing it. */
+  signer?: string;
+  /** Rewrites the recreated grant datum; unchecked only, to show the validator refusing it. */
+  recreatedGrantDatum?: (datum: PlutusData) => PlutusData;
+  /**
+   * Lovelace the caps and the fund selection cover beside the outputs, and
+   * what takes it out of the account in place of an output, such as a
+   * certificate deposit; unchecked only, to show the validator refusing it.
+   * Without `apply` the lovelace stays in the change.
+   */
+  exit?: { lovelace: bigint; apply?: (builder: TransactionBuilder) => TransactionBuilder };
   /**
    * Skips the builder's liveness, scope, recipient, expiry and fee bound
    * checks, for evidence and testing only. The transaction is built
@@ -407,14 +448,15 @@ type StakeOperation = (builder: TransactionBuilder, account: Account) => Transac
 /**
  * What an owner transaction does beyond spending and recreating the
  * control UTxO: the outputs it pays away, the state it writes, the grants
- * it issues, the dead grants it sweeps, the stake operation it carries
- * and the slot it becomes valid at.
+ * it issues, the dead grants it sweeps, the live grants it rewrites, the
+ * stake operation it carries and the slot it becomes valid at.
  */
 interface DeviceOperation {
   outputs: AccountOutput[];
   nextState: (state: AccountState, utxos: AccountUtxos) => AccountState;
   issued?: (state: AccountState) => GrantRequest[];
   swept?: (utxos: AccountUtxos) => GrantUtxo[];
+  rewritten?: (utxos: AccountUtxos) => GrantRewrite[];
   stakeOperation?: StakeOperation;
   validFromSlot?: bigint;
 }
@@ -424,6 +466,14 @@ interface GrantIssue {
   grant: Grant;
   assetId: string;
   coins: bigint;
+}
+
+/** A live grant UTxO to spend under the device redeemer and the grant to write back with its token. */
+interface GrantRewrite {
+  spent: GrantUtxo;
+  grant: Grant;
+  lovelace?: bigint;
+  tamper?: RewriteGrantTamper;
 }
 
 /** Where a transaction takes the proxy and each logic it runs from, keyed by logic hash. */
@@ -569,7 +619,13 @@ const controlLovelace = (account: Account, coins: bigint, state: AccountState, a
   return coins > minimum ? coins : minimum;
 };
 
-/** The balance a list of outputs pays away in total. */
+/** The lovelace a rewritten grant output holds: what the spent one held, or its minimum when the new datum needs more. */
+const rewrittenGrantLovelace = (account: Account, { spent, grant }: GrantRewrite, adaPerUtxoByte: bigint): bigint => {
+  const held = spent.utxo.output.value.coins;
+  const minimum = minimumUtxoLovelace(grantOutput(account, spent.assetId, 0n, grant), adaPerUtxoByte);
+  return held > minimum ? held : minimum;
+};
+
 const sumOutputs = (outputs: AccountOutput[]): Balance => addBalances(...outputs.map((output) => toBalance(output.value)));
 
 /** Whether a remainder either vanishes or can form an output of the minimum change. */
@@ -876,10 +932,10 @@ const positivePart = (balance: Balance): Balance =>
   Object.fromEntries(Object.entries(balance).filter(([, quantity]) => quantity > 0n));
 
 /** The grant outputs an issuance creates: the next slots in order under the recreated control's generation, each at its minimum lovelace. */
-const grantIssues = (account: Account, state: AccountState, next: AccountState, requests: GrantRequest[], adaPerUtxoByte: bigint): GrantIssue[] =>
+const grantIssues = (account: Account, state: AccountState, next: AccountState, requests: GrantRequest[], adaPerUtxoByte: bigint, unchecked = false): GrantIssue[] =>
   requests.map((request, index) => {
     const slot = state.nextSlot + BigInt(index);
-    const grant: Grant = { slot, grantee: request.grantee, generation: next.grantGeneration, scope: assertScopeWellFormed(request.scope) };
+    const grant: Grant = { slot, grantee: request.grantee, generation: next.grantGeneration, scope: unchecked ? request.scope : assertScopeWellFormed(request.scope) };
     const assetId = grantAssetId(account.scriptHash, account.stakeScriptHash, slot);
     return { grant, assetId, coins: minimumUtxoLovelace(grantOutput(account, assetId, 0n, grant), adaPerUtxoByte) };
   });
@@ -971,8 +1027,9 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   const next = assertWellFormed(operation.nextState(state, utxos));
   const parameters = await params.provider.getParameters();
   const adaPerUtxoByte = adaPerUtxoByteOf(parameters);
-  const issued = grantIssues(account, state, next, operation.issued?.(state) ?? [], adaPerUtxoByte);
+  const issued = grantIssues(account, state, next, operation.issued?.(state) ?? [], adaPerUtxoByte, params.unchecked);
   const swept = operation.swept?.(utxos) ?? [];
+  const rewrites = (operation.rewritten?.(utxos) ?? []).map((rewrite) => ({ ...rewrite, coins: rewrite.lovelace ?? rewrittenGrantLovelace(account, rewrite, adaPerUtxoByte) }));
   if (next.logic === state.logic) {
     assertCountersFollow(state, next, issued.length, swept.length);
   } else {
@@ -982,7 +1039,7 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
   const coins = controlLovelace(account, control.output.value.coins, next, adaPerUtxoByte);
   const growth = coins - control.output.value.coins;
   const freed = addBalances(...swept.map(({ utxo, assetId }) => toBalance({ ...utxo.output.value, assets: { ...utxo.output.value.assets, [assetId]: 0n } })));
-  const requested = addBalances(sumOutputs(operation.outputs), { [LOVELACE_ASSET_ID]: issued.reduce((total, issue) => total + issue.coins, 0n) });
+  const requested = addBalances(sumOutputs(operation.outputs), { [LOVELACE_ASSET_ID]: issued.reduce((total, issue) => total + issue.coins, 0n) + rewrites.reduce((total, { spent, coins: grantCoins }) => total + grantCoins - spent.utxo.output.value.coins, 0n) }, ...rewrites.map(({ tamper }) => tamper?.assets ?? {}));
   const floor = changeFloor(params, account, adaPerUtxoByte);
   /** Builds an assembled transaction, with a fixed budget per redeemer when the caller asked for no checks. */
   const build = (make: () => Promise<TransactionBuilder>): Promise<string> =>
@@ -1001,6 +1058,19 @@ const buildDeviceSpend = async (params: DeviceParams, operation: DeviceOperation
       builder.addInput({ utxo, redeemer: sweepGrantRedeemer }).mintToken({ assetIdHex: assetId, amount: -1n, redeemer: burnGrantsRedeemer });
     }
     inlineState(builder, account, coins, next);
+    for (const { spent, grant, coins: grantCoins, tamper } of rewrites) {
+      builder.addInput({ utxo: spent.utxo, redeemer: deviceRedeemer });
+      if (tamper) {
+        builder.addOutput({
+          address: tamper.address ?? account.address,
+          value: { coins: grantCoins, assets: { [spent.assetId]: 1n, ...tamper.assets } },
+          datum: encodeGrant(tamper.grant?.(grant) ?? grant),
+          ...(tamper.scriptReference ? { scriptReference: tamper.scriptReference } : {}),
+        });
+      } else {
+        builder.lockValue({ scriptAddress: account.address, value: { coins: grantCoins, assets: { [spent.assetId]: 1n } }, datum: inlineDatum(encodeGrant(grant)) });
+      }
+    }
     for (const issue of issued) {
       builder.mintToken({ assetIdHex: issue.assetId, amount: 1n, redeemer: issueGrantsRedeemer });
       builder.lockValue({ scriptAddress: account.address, value: { coins: issue.coins, assets: { [issue.assetId]: 1n } }, datum: inlineDatum(encodeGrant(issue.grant)) });
@@ -1137,6 +1207,56 @@ export const issueGrant = async (params: IssueGrantParams): Promise<string> => {
     issued: () => params.grants,
   });
 };
+
+/**
+ * Builds an owner transaction renewing the live grant in a slot in place:
+ * the control UTxO and the grant UTxO are both spent under the device
+ * redeemer and the grant UTxO comes back with its token, its slot, its
+ * generation and the given grantee and scope, so nothing is minted,
+ * nothing is left to sweep and the state does not change. The grant may
+ * have expired. It keeps its lovelace unless the new datum needs more,
+ * which the account pays. A slot without a grant UTxO, a grant known by
+ * its stable prefix alone and a revoked or superseded grant are refused.
+ * The transaction fails if the agent spends the grant UTxO first, and is
+ * built again against the UTxO that spend left.
+ */
+export const rewriteGrant = (params: RewriteGrantParams): Promise<string> =>
+  buildDeviceSpend(params, {
+    outputs: [],
+    nextState: (state) => stateAfterSweep(state, params.sweptSlots?.length ?? 0),
+    swept: ({ grants }) =>
+      (params.sweptSlots ?? []).map((slot) => {
+        const found = grants.find(({ prefix }) => prefix.slot === slot);
+        if (!found) {
+          throw new Error(`The account has no grant UTxO in slot ${slot}`);
+        }
+        return found;
+      }),
+    rewritten: ({ state, grants }) => {
+      const spent = grants.find(({ prefix }) => prefix.slot === params.slot);
+      if (!spent) {
+        throw new Error(`The account has no grant UTxO in slot ${params.slot}`);
+      }
+      if (spent.grant === undefined) {
+        throw new Error(`Grant ${params.slot} has another logic's shape and can only be swept`);
+      }
+      if (!params.unchecked && !isGrantCurrent(spent.grant, state)) {
+        throw new Error(`Grant ${params.slot} is revoked or superseded and cannot be renewed`);
+      }
+      return [
+        {
+          spent,
+          grant: {
+            ...spent.grant,
+            grantee: params.grantee,
+            scope: params.unchecked ? params.scope : assertScopeWellFormed(params.scope),
+          },
+          ...(params.lovelace === undefined ? {} : { lovelace: params.lovelace }),
+          ...(params.unchecked && params.tamper ? { tamper: params.tamper } : {}),
+        },
+      ];
+    },
+  });
 
 /**
  * Builds an owner transaction revoking the grant in a slot. While the
@@ -1290,7 +1410,7 @@ const assertRecipientsAllowed = (grant: Grant, outputs: AccountOutput[]): void =
     return;
   }
   for (const output of outputs) {
-    if (!recipients.some((recipient) => sameAddress(recipient, output.address))) {
+    if (!recipients.some((recipient) => sameAddress(recipient.address, output.address))) {
       throw new Error(`${output.address} is not a recipient of grant ${grant.slot}`);
     }
   }
@@ -1303,6 +1423,15 @@ const assertGrantCurrent = (grant: Grant, state: AccountState): void => {
     throw new Error(`Grant ${grant.slot} is dead: ${reason}`);
   }
 };
+
+/** The distinct policy scripts the outputs of a spend need: one per recipient with a policy that some output pays. */
+const neededPolicies = (grant: Grant, outputs: AccountOutput[]): string[] => [
+  ...new Set(
+    grant.scope.recipients.flatMap((recipient) =>
+      recipient.policy !== undefined && outputs.some((output) => sameAddress(recipient.address, output.address)) ? [recipient.policy.script] : [],
+    ),
+  ),
+];
 
 /**
  * Builds an agent spend. The grant UTxO of the slot is spent with the
@@ -1345,6 +1474,11 @@ const assertGrantCurrent = (grant: Grant, state: AccountState): void => {
  * shows the logic refusing it. A grant known by its stable prefix alone,
  * issued under a logic whose scope shape this library does not read, is
  * refused either way.
+ *
+ * Every output at a recipient naming a policy runs that policy script
+ * through a zero withdrawal, referenced from the network's parked UTxOs
+ * when it records one and embedded otherwise; `policies` is the catalog
+ * of those scripts.
  */
 export const spendWithGrant = async (params: SpendWithGrantParams): Promise<string> => {
   assertNoSponsor(params);
@@ -1360,10 +1494,22 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
   const { grant, utxo: grantUtxo } = found;
   assertGranteeMatches(grant, params.grantee);
   const sources = await resolveSources(account, [state.logic], params.provider);
+  const catalog = new Map((params.policies ?? []).map((script) => [Cometa.computeScriptHash(script), script]));
+  const toRun = params.unchecked && params.runPolicies !== undefined ? params.runPolicies : neededPolicies(grant, params.outputs);
+  const policySources = await Promise.all(
+    toRun.map(async (hash): Promise<[string, ScriptSource]> => {
+      const script = catalog.get(hash);
+      if (!script) {
+        throw new Error(`The policy script ${hash} is not in the catalog the spend was given`);
+      }
+      return [hash, await resolveScriptSource(params.provider, params.network, script)];
+    }),
+  );
   const slotConfig = params.slotConfig ?? Cometa.CARDANO_PREPROD_SLOT_CONFIG;
   const feeBound = params.feeBound ?? DEFAULT_GRANT_FEE_BOUND;
   const requested = sumOutputs(params.outputs);
-  const bounded = addBalances(requested, { [LOVELACE_ASSET_ID]: feeBound });
+  const exit = params.unchecked ? params.exit : undefined;
+  const bounded = addBalances(requested, { [LOVELACE_ASSET_ID]: feeBound + (exit?.lovelace ?? 0n) });
   if (!params.unchecked) {
     assertGrantCurrent(grant, state);
     assertRecipientsAllowed(grant, params.outputs);
@@ -1393,12 +1539,21 @@ export const spendWithGrant = async (params: SpendWithGrantParams): Promise<stri
     for (const utxo of selected) {
       builder.addInput({ utxo, redeemer: fundRedeemer });
     }
-    builder.lockValue({ scriptAddress: account.address, value: grantUtxo.output.value, datum: inlineDatum(encodeGrant(grantAfterSpend(grant, bounded))) });
+    const recreated = encodeGrant(grantAfterSpend(grant, bounded));
+    builder.lockValue({ scriptAddress: account.address, value: grantUtxo.output.value, datum: inlineDatum(params.unchecked && params.recreatedGrantDatum ? params.recreatedGrantDatum(recreated) : recreated) });
     for (const output of params.outputs) {
-      builder.sendValue(output);
+      if (output.datum) {
+        builder.lockValue({ scriptAddress: output.address, value: output.value, datum: output.datum });
+      } else {
+        builder.sendValue(output);
+      }
     }
     runLogic(builder, account, sources, state.logic);
-    return attachScript(builder.addSigner(params.grantee).setInvalidAfter(params.validUntilSlot), sources.proxy);
+    exit?.apply?.(builder);
+    for (const [hash, source] of policySources) {
+      attachScript(builder, source).withdrawRewards({ rewardAddress: rewardAddress(hash, account.networkId), amount: LOGIC_WITHDRAWAL, redeemer: runRedeemer });
+    }
+    return attachScript(builder.addSigner(params.unchecked && params.signer !== undefined ? params.signer : params.grantee).setInvalidAfter(params.validUntilSlot), sources.proxy);
   };
   const tx = params.unchecked ? await (await make()).build() : await buildChecked(params.provider, make);
   const fee = transactionBodyParts(tx).fee;

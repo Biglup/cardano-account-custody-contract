@@ -32,8 +32,8 @@ use cardano_account_custody_contract/account as custody
 use cardano_account_custody_contract/grant.{
   carries_grant_within, carries_no_reference_script, deposits_are_plain,
   ends_before_expiry, grant_after_spend, is_authorised_by_grantee, is_current,
-  is_dead, leaving_value, pays_only_recipients, spends_one_account_token,
-  stays_within_scope,
+  is_dead, leaving_value, pays_only_recipients, runs_recipient_policies,
+  spends_one_account_token, stays_within_scope,
 }
 use cardano_account_custody_contract/state
 use cardano_account_custody_contract/types.{AccountState}
@@ -107,6 +107,9 @@ pub fn device_rule(
 ///   `lovelace_cap` left as it is for a lovelace scope, and carries no
 ///   reference script.
 /// - Nothing is minted or burned under the proxy policy.
+/// - For every output at a recipient with a policy, the transaction
+///   withdraws from that policy's script credential, so the ledger runs
+///   it over the whole transaction.
 ///
 /// Aborts when `own` carries no inline datum or one that is not a
 /// `Grant`, when the slot in that datum does not fit 4 bytes, when the
@@ -155,6 +158,11 @@ pub fn grant_spend_rule(
     carries_grant_within(grant_output, grant_after_spend(grant, leaving)),
     carries_no_reference_script(grant_output),
     custody.holds_no_account_token(self.mint, proxy_hash),
+    runs_recipient_policies(
+      self.outputs,
+      grant.scope.recipients,
+      self.withdrawals,
+    ),
   }
 }
 
@@ -205,6 +213,68 @@ pub fn sweep_rule(
       proxy_hash,
       custody.grant_token_name(stake_script_hash, slot),
     ) == -1,
+  }
+}
+
+/// The owner path on a live grant UTxO: renews the grant in place, so no
+/// token moves and nothing is left to sweep. `own` is the spent UTxO, which
+/// carries `Device`; `old` is the state of the account's control UTxO,
+/// spent in the same transaction; `self` is the transaction; `proxy_hash`
+/// and `stake_script_hash` name the account.
+///
+/// Holds when all of these hold:
+///
+/// - `own` holds only lovelace and the grant token of the slot in its
+///   datum.
+/// - A device of `old` is among the required signers.
+/// - The grant is current against `old`. An expired grant counts, since
+///   renewing one is the point; a revoked or superseded one stays dead.
+/// - The single output holding the token sits at the address of `own`,
+///   holds only lovelace and the token and carries no reference script.
+/// - Its inline datum is a `Grant` of the same slot and generation whose
+///   scope is well formed. The grantee, caps, expiry and recipients are
+///   the device's to set.
+///
+/// Aborts when `own` carries no inline datum or one that is not a
+/// `Grant`, when the slot in that datum does not fit 4 bytes, when the
+/// grant token of that slot is in no output or in several and when that
+/// output's inline datum is not a `Grant`. Every other violation returns
+/// `False`.
+pub fn rewrite_grant_rule(
+  own: Output,
+  old: AccountState,
+  self: Transaction,
+  proxy_hash: ScriptHash,
+  stake_script_hash: ScriptHash,
+) -> Bool {
+  let grant = custody.grant_datum(own)
+  expect Some(rewritten) = custody.find_grant_output(
+    self.outputs,
+    proxy_hash,
+    stake_script_hash,
+    grant.slot,
+  )
+  let after = custody.grant_datum(rewritten)
+  and {
+    custody.holds_only_lovelace_and_grant_token(
+      own.value,
+      proxy_hash,
+      stake_script_hash,
+      grant.slot,
+    ),
+    custody.is_signed_by_a_device(old, self.extra_signatories),
+    is_current(grant, old),
+    rewritten.address == own.address,
+    custody.holds_only_lovelace_and_grant_token(
+      rewritten.value,
+      proxy_hash,
+      stake_script_hash,
+      grant.slot,
+    ),
+    carries_no_reference_script(rewritten),
+    after.slot == grant.slot,
+    after.generation == grant.generation,
+    state.is_grant_well_formed(after),
   }
 }
 

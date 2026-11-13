@@ -22,7 +22,9 @@ use cardano/assets.{ada_asset_name, ada_policy_id}
 use cardano_account_custody_contract/state.{
   has_zero_counters, is_grant_well_formed, is_scope_well_formed, is_well_formed,
 }
-use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
+use cardano_account_custody_contract/types.{
+  AccountState, Asset, Grant, GrantPolicy, Recipient, Scope,
+}
 
 // FUNCTIONS *******************************************************************
 
@@ -37,9 +39,16 @@ fn devices(count: Int) -> List<ByteArray> {
 }
 
 /// `count` distinct key addresses.
-fn recipients(count: Int) -> List<address.Address> {
+fn recipients(count: Int) -> List<Recipient> {
   list.range(1, count)
-    |> list.map(fn(n) { address.from_verification_key(key(100 + n)) })
+    |> list.map(
+        fn(n) {
+          Recipient {
+            address: address.from_verification_key(key(100 + n)),
+            policy: None,
+          }
+        },
+      )
 }
 
 /// Lovelace as a scoped asset.
@@ -258,6 +267,54 @@ test is_scope_well_formed_accepts_lovelace_with_zero_lovelace_caps() {
       asset: lovelace(),
       lovelace_per_call_cap: 0,
       lovelace_cap: 0,
+    },
+  )
+}
+
+test is_scope_well_formed_rejects_duplicate_recipient_addresses() {
+  let address = address.from_verification_key(key(200))
+  !is_scope_well_formed(
+    Scope {
+      ..valid_scope(),
+      recipients: [
+        Recipient { address, policy: None },
+        Recipient { address, policy: None },
+      ],
+    },
+  )
+}
+
+test is_scope_well_formed_rejects_a_policy_without_a_28_byte_script_hash() {
+  let settings: Data = 1
+  !is_scope_well_formed(
+    Scope {
+      ..valid_scope(),
+      recipients: [
+        Recipient {
+          address: address.from_verification_key(key(200)),
+          policy: Some(GrantPolicy { script: #"aa", settings }),
+        },
+      ],
+    },
+  )
+}
+
+test is_scope_well_formed_accepts_a_recipient_with_a_policy() {
+  let settings: Data = 1
+  is_scope_well_formed(
+    Scope {
+      ..valid_scope(),
+      recipients: [
+        Recipient {
+          address: address.from_verification_key(key(200)),
+          policy: Some(
+            GrantPolicy {
+              script: #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              settings,
+            },
+          ),
+        },
+      ],
     },
   )
 }

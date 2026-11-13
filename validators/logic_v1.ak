@@ -39,9 +39,10 @@ use cardano_account_custody_contract/types.{LogicRedeemer}
 /// logic sits at another address, the mint under the proxy policy is
 /// empty or passes `issue_grants_rule` or `burn_grants_rule` under its
 /// redeemer, with `CreateAccount` returning `False`, and every input at
-/// the account address passes `device_rule` for `Device` or
-/// `sweep_rule` for `SweepGrant`, with `SpendWithGrant` returning
-/// `False` and `Fund` left to the proxy. None
+/// the account address passes, for `Device`, `device_rule` on the control
+/// UTxO and `rewrite_grant_rule` on any other, or `sweep_rule` for
+/// `SweepGrant`, with `SpendWithGrant` returning `False` and `Fund` left
+/// to the proxy. None
 /// spent and exactly one referenced is the agent path,
 /// `logic.validates_agent_transaction`: nothing is minted or burned
 /// under the proxy policy, no output is a control output naming this

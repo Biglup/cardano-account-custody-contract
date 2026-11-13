@@ -65,7 +65,9 @@ A net deposit leaves a cap unchanged. A grant handed back unchanged
 beside a positive outflow fails that rule alone. Any
 surplus appears in an output, which a recipient list refuses when the
 output pays no listed recipient (INV-36), or in the fee, which counts as
-leaving. Two accounts under one logic cannot share a transaction
+leaving. A certificate deposit, a proposal deposit or a treasury donation
+would leave by neither, so the agent path admits none of them (INV-30).
+Two accounts under one logic cannot share a transaction
 (INV-18), so two accounts in one transaction run under different logics,
 and each logic finds its own control UTxO and nets its own address.
 `Fund` looks for an account token of the deposit's own stake credential,
@@ -486,6 +488,16 @@ the fee, both of which the grant accounting covers (INV-35), and an
 Ed25519 grantee signs the whole body anyway. The logic's withdrawal and
 the account's reward withdrawal are two entries of one map keyed by
 credential, and never collide.
+
+A grantee puts a certificate or a proposal on a grant spend: a stake or
+DRep registration of its own key, or a proposal whose return address is
+its own, each paying its deposit from the account's inputs. Or it donates
+to the treasury. The caps count the deposit as leaving, but it reaches no
+output, so no recipient check and no recipient policy sees it, and the
+grantee takes the deposit back later. The agent path refuses every
+certificate, proposal and treasury donation (INV-30). The logic and policy
+credentials are registered in transactions of their own, so no grant spend
+needs one.
 
 ## Evaluation order
 

@@ -66,6 +66,14 @@ export const scopeDefect = (scope: Scope): string | undefined => {
   if (scope.recipients.length > MAX_RECIPIENTS) {
     return `a scope may list at most ${MAX_RECIPIENTS} recipients`;
   }
+  if (hasDuplicates(scope.recipients.map((recipient) => recipient.address))) {
+    return 'a scope may not list the same recipient address twice';
+  }
+  for (const recipient of scope.recipients) {
+    if (recipient.policy !== undefined && (recipient.policy.script.length !== SCRIPT_HASH_HEX_LENGTH || !/^[0-9a-f]*$/.test(recipient.policy.script))) {
+      return `a recipient policy needs a 28 byte script hash, not ${recipient.policy.script}`;
+    }
+  }
   if (isLovelace(scope.asset) && (scope.lovelacePerCallCap !== 0n || scope.lovelaceCap !== 0n)) {
     return 'a lovelace scope must have zero lovelace caps';
   }

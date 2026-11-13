@@ -25,6 +25,7 @@ import {
   type AccountRedeemer,
   type AccountState,
   type Grant,
+  type Scope,
   decodeAccountState,
   decodeGrant,
   encodeAccountRedeemer,
@@ -65,6 +66,7 @@ import {
   removeDevice,
   revokeAllGrants,
   revokeGrant,
+  rewriteGrant,
   rewriteState,
   selectFundUtxos,
   spendWithDevice,
@@ -1056,6 +1058,62 @@ describe('revokeGrant', () => {
     expect(survivingGrantRequests(grants, state, 0n, EXPIRY - 1n)).toEqual([{ grantee: AGENT_PAYMENT_KEY, scope: tokenScope([recipientAddress]) }]);
     expect(survivingGrantRequests(grants, state, 0n, EXPIRY)).toEqual([]);
     expect(survivingGrantRequests(grants, stateWithNextGeneration(state), 0n, EXPIRY - 1n)).toEqual([]);
+  });
+});
+
+describe('rewriteGrant', () => {
+  const renewedScope = (): Scope => ({ ...fixtureGrants[1]!.scope, cap: fixtureGrants[1]!.scope.cap + 1_000_000n, expiresAt: EXPIRY + 1_000n });
+  const expectGrantWritten = (tx: string, slot: bigint, grant: Grant): void => {
+    expect(Cometa.plutusDataToCbor(withoutCborCache(grantOutputOf(tx, slot).datum!))).toBe(Cometa.plutusDataToCbor(encodeGrant(grant)));
+  };
+  const grantOutputOf = (tx: string, slot: bigint) => {
+    const outputs = transactionBodyParts(tx).outputs.filter((output) => output.value.assets?.[grantAssetIdOf(slot)] !== undefined);
+    expect(outputs).toHaveLength(1);
+    return outputs[0]!;
+  };
+
+  it('spends the control and the grant under the device redeemer and writes the grant back, minting nothing', async () => {
+    const { sponsor, ...params } = ownerParams();
+    const tx = await rewriteGrant({ ...params, slot: 1n, grantee: fixtureGrants[1]!.grantee, scope: renewedScope() });
+    expectAccountInputs(tx, [fundInput(0), grantInput(1n)]);
+    expect(redeemerOf(tx, grantInput(1n))).toBe(DEVICE_REDEEMER);
+    expect(redeemerOf(tx, CONTROL_INPUT)).toBe(DEVICE_REDEEMER);
+    expect(mintOf(tx).mint).toEqual({});
+    expect(stateOf(tx)).toEqual(grantedState);
+    expect(grantOutputOf(tx, 1n).value.assets).toEqual({ [grantAssetIdOf(1n)]: 1n });
+    expectGrantWritten(tx, 1n, { ...fixtureGrants[1]!, scope: renewedScope() });
+    expect(params.provider.phaseTwoFailures).toEqual([]);
+    expectLogicRun(tx);
+    void sponsor;
+  });
+
+  it('renews an expired grant, under the next grantee', async () => {
+    const { sponsor, ...params } = ownerParams();
+    const grantee = 'ab'.repeat(28);
+    const tx = await rewriteGrant({ ...params, slot: 0n, grantee, scope: renewedScope() });
+    expectGrantWritten(tx, 0n, { ...fixtureGrants[0]!, grantee, scope: renewedScope() });
+    expect(params.provider.phaseTwoFailures).toEqual([]);
+    void sponsor;
+  });
+
+  it('refuses a slot without a grant UTxO', async () => {
+    const { sponsor, ...params } = ownerParams();
+    await expect(rewriteGrant({ ...params, slot: 7n, grantee: fixtureGrants[0]!.grantee, scope: renewedScope() })).rejects.toThrow(/no grant UTxO in slot 7/);
+    void sponsor;
+  });
+
+  it('refuses a revoked and a superseded grant', async () => {
+    for (const state of [stateWithRevokedSlot(grantedState, 1n), stateWithNextGeneration(grantedState)]) {
+      const { sponsor, ...params } = ownerParams(state);
+      await expect(rewriteGrant({ ...params, slot: 1n, grantee: fixtureGrants[1]!.grantee, scope: renewedScope() })).rejects.toThrow(/revoked or superseded/);
+      void sponsor;
+    }
+  });
+
+  it('refuses a malformed scope', async () => {
+    const { sponsor, ...params } = ownerParams();
+    await expect(rewriteGrant({ ...params, slot: 1n, grantee: fixtureGrants[1]!.grantee, scope: { ...renewedScope(), cap: -1n } })).rejects.toThrow();
+    void sponsor;
   });
 });
 

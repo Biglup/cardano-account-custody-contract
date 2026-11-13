@@ -26,12 +26,14 @@ use aiken/collection/list
 use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use aiken/interval.{Finite}
 use aiken/math
-use cardano/address.{Address}
-use cardano/assets.{Assets}
+use cardano/address.{Address, Credential}
+use cardano/assets.{Assets, Lovelace}
 use cardano/transaction.{InlineDatum, Input, NoDatum, Output, ValidityRange}
 use cardano_account_custody_contract/account
 use cardano_account_custody_contract/state
-use cardano_account_custody_contract/types.{AccountState, Asset, Grant, Scope}
+use cardano_account_custody_contract/types.{
+  AccountState, Asset, Grant, Recipient, Scope,
+}
 
 // FUNCTIONS *******************************************************************
 
@@ -193,12 +195,38 @@ fn nothing_else_leaves(leaving: Assets, asset: Asset) -> Bool {
 pub fn pays_only_recipients(
   outputs: List<Output>,
   account_address: Address,
-  recipients: List<Address>,
+  recipients: List<Recipient>,
 ) -> Bool {
   recipients == [] || list.all(
     outputs,
     fn(output) {
-      output.address == account_address || list.has(recipients, output.address)
+      output.address == account_address || list.any(
+        recipients,
+        fn(recipient) { recipient.address == output.address },
+      )
+    },
+  )
+}
+
+/// Whether, for every recipient with a policy that some output pays,
+/// `withdrawals` draws from the policy's script credential. A recipient
+/// not paid or without a policy requires nothing. Never aborts.
+pub fn runs_recipient_policies(
+  outputs: List<Output>,
+  recipients: List<Recipient>,
+  withdrawals: Pairs<Credential, Lovelace>,
+) -> Bool {
+  list.all(
+    recipients,
+    fn(recipient) {
+      when recipient.policy is {
+        None -> True
+        Some(policy) ->
+          !list.any(outputs, fn(output) { output.address == recipient.address }) || account.withdraws_from(
+            withdrawals,
+            policy.script,
+          )
+      }
     },
   )
 }
